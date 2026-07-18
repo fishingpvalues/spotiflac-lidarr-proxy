@@ -128,7 +128,7 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 		}
 		artist := raw.Artist
 		if artist == "" {
-			artist = raw.Artist
+			artist = raw.Name
 		}
 		results = append(results, MetadataResult{
 			Artist:     artist,
