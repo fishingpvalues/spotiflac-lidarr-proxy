@@ -24,6 +24,12 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 			Error:  "missing 'name' parameter (spotify URL)",
 		})
 	}
+	if !config.IsValidSpotifyURL(spotifyURL) {
+		return c.Status(fiber.StatusBadRequest).JSON(sabnzbd.StatusResponse{
+			Status: false,
+			Error:  "invalid Spotify URL: must be a https://open.spotify.com/(track|album|playlist)/... link",
+		})
+	}
 
 	nzbName := c.Query("nzbname")
 	if nzbName == "" {
