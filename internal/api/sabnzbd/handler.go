@@ -176,14 +176,40 @@ func (h *Handler) processDownload(job *queue.Job) {
 	job.OutputPath = jobDir
 	h.queue.Update(job)
 
+	lastErr := h.runAttemptsWithRetry(job, jobDir, maxAttempts)
+	if lastErr == "" {
+		return
+	}
+
+	for _, fallbackSvc := range h.fallbackChain(job.Service) {
+		if !h.breaker.Allow(fallbackSvc) {
+			continue
+		}
+		h.log.Warn().Str("nzo_id", job.NzoID).Str("from_service", job.Service).Str("to_service", fallbackSvc).Msg("falling back to next service")
+		job.Service = fallbackSvc
+		h.queue.Update(job)
+		if fbErr := h.runAttemptsWithRetry(job, jobDir, 1); fbErr == "" {
+			return
+		} else {
+			lastErr = fbErr
+		}
+	}
+
+	h.failJob(job, lastErr)
+}
+
+// runAttemptsWithRetry runs up to `attempts` tries of the download, sleeping
+// with backoff and clearing the job dir between them. Returns "" on success,
+// the last error otherwise.
+func (h *Handler) runAttemptsWithRetry(job *queue.Job, jobDir string, attempts int) string {
 	var lastErr string
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	for attempt := 1; attempt <= attempts; attempt++ {
 		ok, errMsg := h.attemptDownload(job, jobDir)
 		if ok {
-			return
+			return ""
 		}
 		lastErr = errMsg
-		if attempt < maxAttempts {
+		if attempt < attempts {
 			h.log.Warn().Str("nzo_id", job.NzoID).Int("attempt", attempt).Str("error", errMsg).Msg("download attempt failed, retrying")
 			if cerr := h.storage.CleanupJob(job.NzoID); cerr != nil {
 				h.log.Warn().Err(cerr).Str("nzo_id", job.NzoID).Msg("failed to clean up job dir before retry")
@@ -193,7 +219,19 @@ func (h *Handler) processDownload(job *queue.Job) {
 			time.Sleep(retryBackoff[attempt-1])
 		}
 	}
-	h.failJob(job, lastErr)
+	return lastErr
+}
+
+// fallbackChain returns the configured fallback services after the given
+// current service, preserving configured order, excluding the current one.
+func (h *Handler) fallbackChain(current string) []string {
+	var chain []string
+	for _, svc := range h.cfg.FallbackServices {
+		if svc != current {
+			chain = append(chain, svc)
+		}
+	}
+	return chain
 }
 
 // attemptDownload runs a single CLI invocation and reports whether it

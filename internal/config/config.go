@@ -21,6 +21,7 @@ type Config struct {
 	JobTimeout       time.Duration `mapstructure:"job_timeout"`
 	DBPath           string        `mapstructure:"db_path"`
 	LogLevel         string        `mapstructure:"log_level"`
+	FallbackServices []string      `mapstructure:"-"`
 }
 
 func Load() (*Config, error) {
@@ -33,7 +34,7 @@ func Load() (*Config, error) {
 	for _, key := range []string{
 		"api_key", "port", "output_dir", "spotiflac_cli_path",
 		"default_service", "default_quality", "max_concurrent",
-		"job_timeout", "db_path", "log_level",
+		"job_timeout", "db_path", "log_level", "fallback_services",
 	} {
 		v.BindEnv(key)
 	}
@@ -41,6 +42,15 @@ func Load() (*Config, error) {
 	cfg := &Config{}
 	if err := v.Unmarshal(cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
+	}
+
+	if raw := v.GetString("fallback_services"); raw != "" {
+		for _, s := range strings.Split(raw, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				cfg.FallbackServices = append(cfg.FallbackServices, s)
+			}
+		}
 	}
 
 	if cfg.APIKey == "" {
