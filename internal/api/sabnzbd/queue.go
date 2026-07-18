@@ -52,11 +52,12 @@ func (h *Handler) handleQueue(c fiber.Ctx) error {
 	free1, total1, err := h.storage.GetDiskSpace()
 	if err != nil {
 		h.log.Warn().Err(err).Msg("failed to get disk space")
+	} else {
+		resp.Queue.Diskspace1 = free1
+		resp.Queue.Diskspacetotal1 = total1
+		resp.Queue.Diskspace2 = free1
+		resp.Queue.Diskspacetotal2 = total1
 	}
-	resp.Queue.Diskspace1 = free1
-	resp.Queue.Diskspacetotal1 = total1
-	resp.Queue.Diskspace2 = free1
-	resp.Queue.Diskspacetotal2 = total1
 
 	for i, job := range jobs {
 		slot := jobToSlot(job, i)

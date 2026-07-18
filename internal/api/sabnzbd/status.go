@@ -27,9 +27,16 @@ func (h *Handler) handleGetConfig(c fiber.Ctx) error {
 	resp.Config.Speedlimit = "100"
 	resp.Config.Misc.Version = h.version
 	resp.Config.Misc.CompletedDir = h.cfg.OutputDir
-	resp.Config.Misc.DownloadDir = h.cfg.OutputDir
 	resp.Config.Misc.CompleteDirEnabled = true
+	resp.Config.Misc.PreCheck = true
+	resp.Config.Misc.HistoryRetention = "all"
 	return c.JSON(resp)
+}
+
+func (h *Handler) handleFullStatus(c fiber.Ctx) error {
+	return c.JSON(sabnzbd.FullStatusResponse{
+		CompleteDir: h.cfg.OutputDir,
+	})
 }
 
 func (h *Handler) handleGetCats(c fiber.Ctx) error {

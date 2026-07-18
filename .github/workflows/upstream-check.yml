@@ -1,0 +1,89 @@
+name: Upstream Dependency Check
+
+on:
+  schedule:
+    - cron: "13 7 * * 1"  # Monday 7:13am UTC
+  workflow_dispatch:
+
+jobs:
+  check-lidarr-sabnzbd-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Lidarr SABnzbd client source
+        run: |
+          curl -sL -o /tmp/Sabnzbd.cs \
+            https://raw.githubusercontent.com/Lidarr/Lidarr/develop/src/NzbDrone.Core/Download/Clients/Sabnzbd/Sabnzbd.cs
+          echo "Fetched Lidarr Sabnzbd.cs ($(wc -l < /tmp/Sabnzbd.cs) lines)"
+
+      - name: Check required API endpoints
+        run: |
+          echo "=== Checking Lidarr SABnzbd API requirements ==="
+
+          # Check which API modes Lidarr uses
+          echo "--- API modes used ---"
+          grep -oP 'mode=\w+' /tmp/Sabnzbd.cs | sort -u || true
+          grep -oP '"mode",\s*"\w+"' /tmp/Sabnzbd.cs | sort -u || true
+
+          # Check queue fields Lidarr accesses
+          echo "--- Queue item fields accessed ---"
+          grep -oP 'sabQueueItem\.\w+|sabHistoryItem\.\w+|sabQueue\.\w+' /tmp/Sabnzbd.cs | sort -u || true
+
+          # Verify our handler dispatches all required modes
+          echo "--- Our handler supports these modes ---"
+          grep -oP 'case mode == "\w+"' internal/api/sabnzbd/handler.go | sort -u || true
+
+          echo "--- Summary ---"
+          echo "Lidarr SABnzbd.cs checked. Review output above for any new/removed API modes."
+          echo "If new modes found, update internal/api/sabnzbd/handler.go dispatch switch."
+
+      - name: Check for new Lidarr SABnzbd fields
+        run: |
+          echo "=== Field comparison ==="
+          echo "Lidarr queue fields:"
+          grep -oP 'queue\.Slots\[\d+\]\.\w+' /tmp/Sabnzbd.cs 2>/dev/null | sed 's/.*\.//' | sort -u || echo "(none found — may use property names)"
+          echo ""
+          echo "Our Slot struct fields:"
+          grep 'json:' pkg/sabnzbd/types.go | grep -oP 'json:"\w+' | sed 's/json:"//' | sort -u
+
+  check-spotiflac-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check SpotiFLAC upstream releases
+        run: |
+          LATEST=$(curl -sL https://api.github.com/repos/spotbye/SpotiFLAC/releases/latest | jq -r '.tag_name // "unknown"')
+          echo "Upstream SpotiFLAC latest: $LATEST"
+
+          FORK_LATEST=$(curl -sL https://api.github.com/repos/fishingpvalues/SpotiFLAC/releases/latest | jq -r '.tag_name // "none"')
+          echo "Fork SpotiFLAC latest: $FORK_LATEST"
+
+          if [ "$LATEST" != "unknown" ] && [ "$LATEST" != "$FORK_LATEST" ]; then
+            echo "::warning::Upstream SpotiFLAC $LATEST is ahead of fork $FORK_LATEST — consider rebasing"
+          fi
+
+      - name: Check CLI build tag compatibility
+        run: |
+          echo "Checking if upstream SpotiFLAC structure changed..."
+          curl -sL -o /tmp/upstream-main.go \
+            https://raw.githubusercontent.com/spotbye/SpotiFLAC/main/main.go 2>/dev/null || true
+          if grep -q "package main" /tmp/upstream-main.go 2>/dev/null; then
+            echo "Upstream main.go structure check: OK (still package main)"
+          else
+            echo "::warning::Upstream main.go structure may have changed — verify fork compatibility"
+          fi
+
+  rebuild-if-needed:
+    needs: [check-lidarr-sabnzbd-api, check-spotiflac-upstream]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Rebuild and test against upstream
+        run: |
+          go test ./... -count=1
+          go build ./cmd/server
+          echo "Build and tests pass against current upstream state."

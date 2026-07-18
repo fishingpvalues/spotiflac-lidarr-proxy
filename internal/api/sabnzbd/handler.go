@@ -72,6 +72,8 @@ func (h *Handler) dispatch(c fiber.Ctx) error {
 		return h.handleGetConfig(c)
 	case mode == "get_cats":
 		return h.handleGetCats(c)
+	case mode == "fullstatus":
+		return h.handleFullStatus(c)
 	case mode == "addurl" || mode == "addfile":
 		return h.handleAddURL(c)
 	case mode == "queue":
@@ -191,20 +193,24 @@ func (h *Handler) failJob(job *queue.Job, errMsg string) {
 
 func jobToSlot(job *queue.Job, index int) sabnzbd.Slot {
 	return sabnzbd.Slot{
-		Status:     string(job.Status),
-		Index:      index,
-		NzoID:      job.NzoID,
-		Filename:   job.Filename,
-		Size:       formatBytes(job.Size),
-		Sizeleft:   formatBytes(job.Sizeleft),
-		Mb:         fmt.Sprintf("%.2f", float64(job.Size)/(1024*1024)),
-		Mbleft:     fmt.Sprintf("%.2f", float64(job.Sizeleft)/(1024*1024)),
-		Percentage: fmt.Sprintf("%.0f", job.Percentage),
-		Priority:   job.Priority,
-		Cat:        job.Category,
-		TimeAdded:  job.TimeAdded.Unix(),
-		Script:     "Default",
-		Unpackopts: "3",
+		Status:       string(job.Status),
+		Index:        index,
+		NzoID:        job.NzoID,
+		Filename:     job.Filename,
+		Size:         formatBytes(job.Size),
+		Sizeleft:     formatBytes(job.Sizeleft),
+		Mb:           float64(job.Size) / (1024 * 1024),
+		Mbleft:       float64(job.Sizeleft) / (1024 * 1024),
+		Mbmissing:    0,
+		Percentage:   fmt.Sprintf("%.0f", job.Percentage),
+		Timeleft:     formatTimeleft(job.Sizeleft),
+		Priority:     job.Priority,
+		Cat:          job.Category,
+		TimeAdded:    job.TimeAdded.Unix(),
+		Script:       "Default",
+		Unpackopts:   "3",
+		AvgAge:       "0d",
+		DirectUnpack: "0",
 	}
 }
 
@@ -220,6 +226,17 @@ func formatBytes(bytes int64) string {
 		unitIdx++
 	}
 	return fmt.Sprintf("%.2f %s", size, units[unitIdx])
+}
+
+func formatTimeleft(sizeleft int64) string {
+	if sizeleft == 0 {
+		return "0:00:00"
+	}
+	secs := sizeleft / (1024 * 1024)
+	h := secs / 3600
+	m := (secs % 3600) / 60
+	s := secs % 60
+	return fmt.Sprintf("%d:%02d:%02d", h, m, s)
 }
 
 

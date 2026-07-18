@@ -42,17 +42,12 @@ func (s *Storage) CleanupJob(nzoID string) error {
 	return nil
 }
 
-func (s *Storage) GetDiskSpace() (string, string, error) {
+func (s *Storage) GetDiskSpace() (float64, float64, error) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(s.outputDir, &stat); err != nil {
-		return "", "", fmt.Errorf("statfs %s: %w", s.outputDir, err)
+		return 0, 0, fmt.Errorf("statfs %s: %w", s.outputDir, err)
 	}
 	free := stat.Bavail * uint64(stat.Bsize)
 	total := stat.Blocks * uint64(stat.Bsize)
-	return formatGB(free), formatGB(total), nil
-}
-
-func formatGB(bytes uint64) string {
-	gb := float64(bytes) / (1024 * 1024 * 1024)
-	return fmt.Sprintf("%.2f", gb)
+	return float64(free) / (1024 * 1024 * 1024), float64(total) / (1024 * 1024 * 1024), nil
 }
