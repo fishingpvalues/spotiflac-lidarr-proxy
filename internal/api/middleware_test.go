@@ -1,10 +1,12 @@
 package api_test
 
 import (
+	"bytes"
 	"net/http"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -45,4 +47,20 @@ func TestAPIKeyAuthWithSkiplistRejectsDifferentLengthKey(t *testing.T) {
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, 401, resp.StatusCode)
+}
+
+func TestRequestLoggerRedactsAPIKey(t *testing.T) {
+	var buf bytes.Buffer
+	log := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(api.RequestLogger(log))
+	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	req, _ := http.NewRequest("GET", "/?mode=queue&apikey=super-secret-value", nil)
+	_, err := app.Test(req)
+	require.NoError(t, err)
+
+	assert.NotContains(t, buf.String(), "super-secret-value")
+	assert.Contains(t, buf.String(), "apikey=%2A%2A%2A")
 }
