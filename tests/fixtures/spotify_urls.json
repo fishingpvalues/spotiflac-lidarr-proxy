@@ -1,0 +1,10 @@
+{
+  "albums": [
+    {
+      "url": "https://open.spotify.com/album/0sNOF9WDwhWunNAHPD3Baj",
+      "artist": "Shepherds Reign",
+      "album": "Ala Mai",
+      "description": "Public album for integration testing"
+    }
+  ]
+}
