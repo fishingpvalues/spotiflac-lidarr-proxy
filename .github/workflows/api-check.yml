@@ -23,14 +23,28 @@ jobs:
 
       - name: Validate OpenAPI spec
         run: |
-          npm install -g @redocly/cli 2>/dev/null || true
-          # Basic JSON validation
           python3 -c "
 import json
 with open('openapi.json') as f:
     spec = json.load(f)
-print('OpenAPI spec valid: %d paths, %d schemas' % (
-    len(spec.get('paths', {})),
-    len(spec.get('components', {}).get('schemas', {}))
-))
+
+paths = spec.get('paths', {})
+schemas = spec.get('components', {}).get('schemas', {})
+
+required_paths = ['/api', '/api/newznab', '/api/sabnzbd', '/health']
+for p in required_paths:
+    assert p in paths, f'Missing path: {p}'
+
+required_schemas = [
+    'VersionResponse', 'QueueResponse', 'Queue', 'Slot',
+    'HistoryResponse', 'History', 'HistorySlot',
+    'ConfigResponse', 'Config', 'Category', 'Misc',
+    'StatusResponse', 'AddURLResponse', 'FullStatusResponse',
+    'ServerStatsResponse', 'WarningsResponse', 'RetryResponse',
+    'NewznabRSS',
+]
+for s in required_schemas:
+    assert s in schemas, f'Missing schema: {s}'
+
+print(f'OpenAPI spec valid: {len(paths)} paths, {len(schemas)} schemas, {len(required_schemas)} required schemas OK')
 "
