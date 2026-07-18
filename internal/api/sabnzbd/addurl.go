@@ -36,6 +36,13 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		priority = "Normal"
 	}
 
+	if existing, err := h.queue.FindActiveBySpotifyURL(spotifyURL); err == nil {
+		return c.JSON(sabnzbd.AddURLResponse{
+			Status: true,
+			NzoIDs: []string{existing.NzoID},
+		})
+	}
+
 	nzoID := "SABnzbd_nzo_" + uuid.New().String()[:12]
 
 	// Extract service and quality from category

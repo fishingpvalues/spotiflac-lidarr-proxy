@@ -51,6 +51,7 @@ func migrate(db *sql.DB) error {
 			track_count INTEGER NOT NULL DEFAULT 0,
 			is_history INTEGER NOT NULL DEFAULT 0
 		);
+		CREATE INDEX IF NOT EXISTS idx_jobs_spotify_url ON jobs(spotify_url, is_history, status);
 		`
 	_, err := db.Exec(query)
 	return err
@@ -77,6 +78,32 @@ func (q *SQLiteQueue) Get(nzoID string) (*Job, error) {
 		        output_path, size, sizeleft, percentage, time_added, completed_at,
 		        error_message, service, quality, track_count
 		 FROM jobs WHERE nzo_id = ? AND is_history = 0`, nzoID,
+	).Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status, &job.Category,
+		&job.Priority, &job.Filename, &job.OutputPath, &job.Size, &job.Sizeleft,
+		&job.Percentage, &job.TimeAdded, &completedAt, &job.ErrorMessage,
+		&job.Service, &job.Quality, &job.TrackCount)
+	if err != nil {
+		return nil, err
+	}
+	if completedAt.Valid {
+		job.CompletedAt = &completedAt.Time
+	}
+	return job, nil
+}
+
+// FindActiveBySpotifyURL returns the first non-terminal (Queued or
+// Downloading), non-history job matching the given Spotify URL, if any.
+func (q *SQLiteQueue) FindActiveBySpotifyURL(url string) (*Job, error) {
+	job := &Job{}
+	var completedAt sql.NullTime
+	err := q.db.QueryRow(
+		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
+		        output_path, size, sizeleft, percentage, time_added, completed_at,
+		        error_message, service, quality, track_count
+		 FROM jobs
+		 WHERE spotify_url = ? AND is_history = 0 AND status IN (?, ?)
+		 ORDER BY time_added ASC LIMIT 1`,
+		url, sabnzbd.StatusQueued, sabnzbd.StatusDownloading,
 	).Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status, &job.Category,
 		&job.Priority, &job.Filename, &job.OutputPath, &job.Size, &job.Sizeleft,
 		&job.Percentage, &job.TimeAdded, &completedAt, &job.ErrorMessage,
