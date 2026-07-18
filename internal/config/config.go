@@ -29,6 +29,14 @@ func Load() (*Config, error) {
 
 	setDefaults(v)
 
+	for _, key := range []string{
+		"api_key", "port", "output_dir", "spotiflac_cli_path",
+		"default_service", "default_quality", "max_concurrent",
+		"job_timeout", "db_path", "log_level",
+	} {
+		v.BindEnv(key)
+	}
+
 	cfg := &Config{}
 	if err := v.Unmarshal(cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
