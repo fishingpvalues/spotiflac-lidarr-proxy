@@ -104,6 +104,24 @@ func TestAddURL(t *testing.T) {
 	assert.Contains(t, r.NzoIDs[0], "SABnzbd_nzo_")
 }
 
+func TestAddURLDedupReturnsExistingNzoID(t *testing.T) {
+	app, _ := setupTestApp(t)
+
+	req1, _ := http.NewRequest("POST", "/api/sabnzbd?mode=addurl&name=https://open.spotify.com/album/duptest&apikey=test-key", nil)
+	resp1, err := app.Test(req1)
+	require.NoError(t, err)
+	var r1 sabtypes.AddURLResponse
+	json.NewDecoder(resp1.Body).Decode(&r1)
+
+	req2, _ := http.NewRequest("POST", "/api/sabnzbd?mode=addurl&name=https://open.spotify.com/album/duptest&apikey=test-key", nil)
+	resp2, err := app.Test(req2)
+	require.NoError(t, err)
+	var r2 sabtypes.AddURLResponse
+	json.NewDecoder(resp2.Body).Decode(&r2)
+
+	assert.Equal(t, r1.NzoIDs[0], r2.NzoIDs[0], "re-adding the same URL should return the same nzo_id, not create a new job")
+}
+
 func TestQueue(t *testing.T) {
 	app, _ := setupTestApp(t)
 

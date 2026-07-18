@@ -107,3 +107,32 @@ func TestMoveToHistory(t *testing.T) {
 	assert.Equal(t, 1, total)
 	assert.Len(t, hjobs, 1)
 }
+
+func TestFindActiveBySpotifyURL(t *testing.T) {
+	q := newTestQueue(t)
+
+	job := &queue.Job{
+		NzoID:      "SABnzbd_nzo_dup001",
+		SpotifyURL: "https://open.spotify.com/album/dup",
+		Status:     sabnzbd.StatusQueued,
+	}
+	require.NoError(t, q.Add(job))
+
+	found, err := q.FindActiveBySpotifyURL("https://open.spotify.com/album/dup")
+	require.NoError(t, err)
+	assert.Equal(t, "SABnzbd_nzo_dup001", found.NzoID)
+
+	_, err = q.FindActiveBySpotifyURL("https://open.spotify.com/album/nonexistent")
+	assert.Error(t, err)
+}
+
+func TestFindActiveBySpotifyURLIgnoresHistory(t *testing.T) {
+	q := newTestQueue(t)
+
+	job := &queue.Job{NzoID: "SABnzbd_nzo_dup002", SpotifyURL: "https://open.spotify.com/album/dup2"}
+	require.NoError(t, q.Add(job))
+	require.NoError(t, q.MoveToHistory("SABnzbd_nzo_dup002"))
+
+	_, err := q.FindActiveBySpotifyURL("https://open.spotify.com/album/dup2")
+	assert.Error(t, err, "a job already moved to history should not count as a duplicate")
+}
