@@ -90,8 +90,32 @@ func TestGetCats(t *testing.T) {
 	assert.Len(t, c.Categories, 17)
 }
 
+// waitForHistory polls the queue until a job with the given nzo_id shows up
+// in history (i.e. has reached a terminal state). Several tests fire an
+// addurl request that kicks off a background goroutine
+// (h.ProcessDownloadSync via `go`) which keeps retrying (up to 3 attempts
+// with 5s/15s backoff) against the test's fake CLI before failing. Without
+// waiting here, the test function returns and t.TempDir()'s automatic
+// cleanup races that still-running goroutine's writes into the same
+// directory, causing an intermittent "directory not empty" cleanup failure.
+func waitForHistory(t *testing.T, q *queue.SQLiteQueue, nzoID string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		hist, _, err := q.History(queue.ListParams{Limit: 50})
+		if err != nil {
+			return false
+		}
+		for _, j := range hist {
+			if j.NzoID == nzoID {
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 100*time.Millisecond, "job %s never reached history (background goroutine still running)", nzoID)
+}
+
 func TestAddURL(t *testing.T) {
-	app, _ := setupTestApp(t)
+	app, q := setupTestApp(t)
 
 	req, _ := http.NewRequest("POST", "/api/sabnzbd?mode=addurl&name=https://open.spotify.com/album/test123&apikey=test-key", nil)
 	resp, err := app.Test(req)
@@ -103,10 +127,15 @@ func TestAddURL(t *testing.T) {
 	assert.True(t, r.Status)
 	assert.Len(t, r.NzoIDs, 1)
 	assert.Contains(t, r.NzoIDs[0], "SABnzbd_nzo_")
+
+	// Wait for the background ProcessDownloadSync goroutine to finish (it
+	// will fail against the fake "echo" CLI after retries) so it doesn't
+	// race t.TempDir()'s cleanup after this test function returns.
+	waitForHistory(t, q, r.NzoIDs[0])
 }
 
 func TestAddURLDedupReturnsExistingNzoID(t *testing.T) {
-	app, _ := setupTestApp(t)
+	app, q := setupTestApp(t)
 
 	req1, _ := http.NewRequest("POST", "/api/sabnzbd?mode=addurl&name=https://open.spotify.com/album/duptest&apikey=test-key", nil)
 	resp1, err := app.Test(req1)
@@ -121,6 +150,11 @@ func TestAddURLDedupReturnsExistingNzoID(t *testing.T) {
 	json.NewDecoder(resp2.Body).Decode(&r2)
 
 	assert.Equal(t, r1.NzoIDs[0], r2.NzoIDs[0], "re-adding the same URL should return the same nzo_id, not create a new job")
+
+	// Wait for the background ProcessDownloadSync goroutine (started by the
+	// first addurl request) to finish before the test returns, so it
+	// doesn't race t.TempDir()'s cleanup.
+	waitForHistory(t, q, r1.NzoIDs[0])
 }
 
 func TestQueue(t *testing.T) {
