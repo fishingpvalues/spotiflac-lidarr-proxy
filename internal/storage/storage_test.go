@@ -30,7 +30,8 @@ func TestPrepareAndCleanupJobDir(t *testing.T) {
 
 func TestGetDiskSpace(t *testing.T) {
 	s := storage.New(t.TempDir())
-	free, total := s.GetDiskSpace()
+	free, total, err := s.GetDiskSpace()
+	assert.NoError(t, err)
 	assert.NotEmpty(t, free)
 	assert.NotEmpty(t, total)
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -20,6 +21,9 @@ func (s *Storage) JobDir(nzoID string) string {
 }
 
 func (s *Storage) PrepareJobDir(nzoID string) (string, error) {
+	if strings.Contains(nzoID, "..") || strings.Contains(nzoID, "/") || strings.Contains(nzoID, "\\") {
+		return "", fmt.Errorf("invalid nzo_id: contains path separators")
+	}
 	dir := s.JobDir(nzoID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("create job dir %s: %w", dir, err)
@@ -28,18 +32,24 @@ func (s *Storage) PrepareJobDir(nzoID string) (string, error) {
 }
 
 func (s *Storage) CleanupJob(nzoID string) error {
+	if strings.Contains(nzoID, "..") || strings.Contains(nzoID, "/") || strings.Contains(nzoID, "\\") {
+		return fmt.Errorf("invalid nzo_id: contains path separators")
+	}
 	dir := s.JobDir(nzoID)
-	return os.RemoveAll(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("cleanup job dir %s: %w", dir, err)
+	}
+	return nil
 }
 
-func (s *Storage) GetDiskSpace() (freeGB string, totalGB string) {
+func (s *Storage) GetDiskSpace() (string, string, error) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(s.outputDir, &stat); err != nil {
-		return "0", "0"
+		return "", "", fmt.Errorf("statfs %s: %w", s.outputDir, err)
 	}
 	free := stat.Bavail * uint64(stat.Bsize)
 	total := stat.Blocks * uint64(stat.Bsize)
-	return formatGB(free), formatGB(total)
+	return formatGB(free), formatGB(total), nil
 }
 
 func formatGB(bytes uint64) string {
