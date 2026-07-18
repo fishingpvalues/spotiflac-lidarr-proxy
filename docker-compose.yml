@@ -1,0 +1,37 @@
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8484:8484"
+    environment:
+      - SPF_API_KEY=your-secret-api-key
+      - SPF_OUTPUT_DIR=/downloads
+      - SPF_DB_PATH=/data/queue.db
+      - SPF_LOG_LEVEL=info
+      - SPF_DEFAULT_SERVICE=tidal
+      - SPF_DEFAULT_QUALITY=lossless
+      - SPF_MAX_CONCURRENT=3
+    volumes:
+      - downloads:/downloads
+      - data:/data
+    restart: unless-stopped
+
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    ports:
+      - "8686:8686"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+    volumes:
+      - downloads:/downloads
+      - lidarr_config:/config
+    restart: unless-stopped
+
+volumes:
+  downloads:
+  data:
+  lidarr_config:
