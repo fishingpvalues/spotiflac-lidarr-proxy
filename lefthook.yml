@@ -1,0 +1,25 @@
+pre-commit:
+  commands:
+    gofmt:
+      glob: "*.go"
+      run: gofmt -s -w {staged_files}
+    lint:
+      glob: "*.go"
+      run: golangci-lint run --new-from-rev=HEAD~1
+    commitlint:
+      run: |
+        if ! echo "$(git log -1 --pretty=%B)" | grep -qE "^(feat|fix|chore|docs|test|refactor|ci|build|perf|style)(\(.+\))?: "; then
+          echo "ERROR: Commit message must follow conventional commits format"
+          echo "  feat: ... / fix: ... / chore: ... / docs: ... / test: ..."
+          exit 1
+        fi
+
+commit-msg:
+  commands:
+    commitlint:
+      run: |
+        msg=$(cat "$1")
+        if ! echo "$msg" | grep -qE "^(feat|fix|chore|docs|test|refactor|ci|build|perf|style)(\(.+\))?: "; then
+          echo "ERROR: Commit message must follow conventional commits format"
+          exit 1
+        fi
