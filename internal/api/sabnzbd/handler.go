@@ -144,6 +144,12 @@ func (h *Handler) handleChangeCat(c fiber.Ctx) error {
 	return c.JSON(sabnzbd.StatusResponse{Status: true})
 }
 
+// ProcessDownloadSync runs the download synchronously. Production call sites
+// wrap it in `go h.ProcessDownloadSync(job)`; tests call it directly.
+func (h *Handler) ProcessDownloadSync(job *queue.Job) {
+	h.processDownload(job)
+}
+
 func (h *Handler) processDownload(job *queue.Job) {
 	h.sem <- struct{}{}
 	defer func() { <-h.sem }()
@@ -161,10 +167,15 @@ func (h *Handler) processDownload(job *queue.Job) {
 	ctx := context.Background()
 	events, errs := h.client.Download(ctx, job.SpotifyURL, jobDir, job.Service, job.Quality)
 
+	sawComplete := false
+
 	for {
 		select {
 		case evt, ok := <-events:
 			if !ok {
+				if !sawComplete {
+					h.failJob(job, "cli exited without completion signal")
+				}
 				return
 			}
 			if evt.Type == "progress" {
@@ -173,6 +184,14 @@ func (h *Handler) processDownload(job *queue.Job) {
 				h.queue.Update(job)
 			}
 			if evt.Type == "complete" {
+				sawComplete = true
+				if job.TrackCount > 0 {
+					gotCount, cerr := storage.CountAudioFiles(evt.OutputPath)
+					if cerr != nil || gotCount < job.TrackCount {
+						h.failJob(job, fmt.Sprintf("partial album: %d/%d tracks", gotCount, job.TrackCount))
+						return
+					}
+				}
 				job.Status = sabnzbd.StatusCompleted
 				job.Percentage = 100
 				job.Size = evt.Size

@@ -34,7 +34,7 @@ func (h *Handler) handleResumeAll(c fiber.Ctx) error {
 		if job.Status == sabnzbd.StatusPaused {
 			job.Status = sabnzbd.StatusQueued
 			h.queue.Update(job)
-			go h.processDownload(job)
+			go h.ProcessDownloadSync(job)
 		}
 	}
 	return c.JSON(sabnzbd.StatusResponse{Status: true})

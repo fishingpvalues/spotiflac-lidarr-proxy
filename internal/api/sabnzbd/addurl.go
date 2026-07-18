@@ -55,6 +55,10 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		Filename:   nzbName,
 		Service:    svc,
 		Quality:    qual,
+		// TrackCount left at 0: the CLI's --search flag takes free-text
+		// queries, not a Spotify URL, so no reliable per-URL track count
+		// is available at addurl time. Completion verification in
+		// processDownload only runs when TrackCount > 0.
 	}
 
 	if err := h.queue.Add(job); err != nil {
@@ -64,7 +68,7 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		})
 	}
 
-	go h.processDownload(job)
+	go h.ProcessDownloadSync(job)
 
 	return c.JSON(sabnzbd.AddURLResponse{
 		Status: true,

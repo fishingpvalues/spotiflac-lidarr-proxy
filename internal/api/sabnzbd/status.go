@@ -99,7 +99,7 @@ func (h *Handler) handleRetry(c fiber.Ctx) error {
 	}
 
 	// Restart the download
-	go h.processDownload(job)
+	go h.ProcessDownloadSync(job)
 
 	return c.JSON(sabnzbd.RetryResponse{
 		Status: true,

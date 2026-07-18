@@ -171,7 +171,7 @@ func (h *Handler) handleResume(c fiber.Ctx) error {
 			Status: false, Error: err.Error(),
 		})
 	}
-	go h.processDownload(job)
+	go h.ProcessDownloadSync(job)
 	return c.JSON(sabnzbd.StatusResponse{Status: true, NzoIDs: []string{nzoID}})
 }
 
