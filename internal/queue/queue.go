@@ -302,3 +302,8 @@ func (q *SQLiteQueue) RecoverStuckJobs() (int, error) {
 func (q *SQLiteQueue) Close() error {
 	return q.db.Close()
 }
+
+// DB exposes the underlying *sql.DB for health checks only.
+func (q *SQLiteQueue) DB() *sql.DB {
+	return q.db
+}

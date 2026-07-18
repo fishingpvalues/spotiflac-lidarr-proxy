@@ -17,6 +17,7 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/newznab"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/sabnzbd"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/health"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/metrics"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
@@ -78,6 +79,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	})
 
 	app.Get("/health", func(c fiber.Ctx) error {
+		result := health.Check(q.DB(), cfg.SpotiflacCLIPath, st)
+		if !result.Healthy {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"status": "unhealthy",
+				"failed": result.FailedChecks,
+			})
+		}
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
 
