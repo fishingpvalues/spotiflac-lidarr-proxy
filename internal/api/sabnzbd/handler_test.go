@@ -392,6 +392,54 @@ echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 	assert.Contains(t, names, "01.flac")
 }
 
+func TestProcessDownloadFallsBackToNextService(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		OutputDir:        dir,
+		MaxConcurrent:    1,
+		JobTimeout:       5 * time.Second,
+		FallbackServices: []string{"tidal", "qobuz"},
+	}
+	st := storage.New(dir)
+	q, err := queue.New(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+
+	// Script fails for tidal, succeeds for qobuz (service passed as --service flag).
+	scriptPath := filepath.Join(t.TempDir(), "spotiflac-cli")
+	script := `#!/bin/bash
+SERVICE=""
+OUTDIR=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --service) SERVICE="$2"; shift 2 ;;
+    --output-dir) OUTDIR="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$OUTDIR"
+if [[ "$SERVICE" == "tidal" ]]; then
+  echo '{"type":"error","message":"tidal unavailable"}'
+  exit 1
+fi
+touch "$OUTDIR/01.flac"
+echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless")
+	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+
+	job := &queue.Job{NzoID: "SABnzbd_nzo_fallback001", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/fb"}
+	require.NoError(t, q.Add(job))
+	handler.ProcessDownloadSync(job)
+
+	hist, _, err := q.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, hist, 1)
+	assert.Equal(t, sabtypes.StatusCompleted, hist[0].Status)
+	assert.Equal(t, "qobuz", hist[0].Service, "job's recorded service should reflect the fallback that actually succeeded")
+}
+
 func TestProcessDownloadShortCircuitsWhenBreakerOpen(t *testing.T) {
 	app, q := setupTestApp(t)
 	_ = app
