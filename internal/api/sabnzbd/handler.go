@@ -9,6 +9,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
 
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/breaker"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
@@ -26,6 +27,7 @@ type Handler struct {
 	version string
 	log     zerolog.Logger
 	sem     chan struct{}
+	breaker *breaker.Breaker
 }
 
 func NewHandler(q *queue.SQLiteQueue, client *spotiflac.Client, s *storage.Storage, cfg *config.Config, version string) *Handler {
@@ -37,6 +39,7 @@ func NewHandler(q *queue.SQLiteQueue, client *spotiflac.Client, s *storage.Stora
 		version: version,
 		log:     zerolog.Nop(),
 		sem:     make(chan struct{}, maxConcurrent),
+		breaker: breaker.New(5, 10*time.Minute),
 	}
 	if cfg.MaxConcurrent > 0 {
 		h.sem = make(chan struct{}, cfg.MaxConcurrent)
@@ -154,6 +157,11 @@ func (h *Handler) processDownload(job *queue.Job) {
 	h.sem <- struct{}{}
 	defer func() { <-h.sem }()
 
+	if !h.breaker.Allow(job.Service) {
+		h.failJob(job, fmt.Sprintf("service %s temporarily unavailable (circuit open)", job.Service))
+		return
+	}
+
 	jobDir, err := h.storage.PrepareJobDir(job.NzoID)
 	if err != nil {
 		h.failJob(job, err.Error())
@@ -192,6 +200,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 						return
 					}
 				}
+				h.breaker.RecordSuccess(job.Service)
 				job.Status = sabnzbd.StatusCompleted
 				job.Percentage = 100
 				job.Size = evt.Size
@@ -228,6 +237,7 @@ func (h *Handler) failJob(job *queue.Job, errMsg string) {
 	job.CompletedAt = &now
 	h.queue.Update(job)
 	h.queue.MoveToHistory(job.NzoID)
+	h.breaker.RecordFailure(job.Service)
 	h.log.Error().Str("nzo_id", job.NzoID).Str("error", errMsg).Msg("download failed")
 }
 
