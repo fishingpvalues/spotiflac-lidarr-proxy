@@ -185,6 +185,11 @@ func (h *Handler) processDownload(job *queue.Job) {
 		lastErr = errMsg
 		if attempt < maxAttempts {
 			h.log.Warn().Str("nzo_id", job.NzoID).Int("attempt", attempt).Str("error", errMsg).Msg("download attempt failed, retrying")
+			if cerr := h.storage.CleanupJob(job.NzoID); cerr != nil {
+				h.log.Warn().Err(cerr).Str("nzo_id", job.NzoID).Msg("failed to clean up job dir before retry")
+			} else if _, perr := h.storage.PrepareJobDir(job.NzoID); perr != nil {
+				h.log.Warn().Err(perr).Str("nzo_id", job.NzoID).Msg("failed to recreate job dir before retry")
+			}
 			time.Sleep(retryBackoff[attempt-1])
 		}
 	}

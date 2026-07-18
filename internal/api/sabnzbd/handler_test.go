@@ -326,6 +326,72 @@ echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 	assert.Equal(t, sabtypes.StatusCompleted, hist[0].Status, "job should succeed on the 3rd attempt after 2 retries")
 }
 
+func TestProcessDownloadClearsStaleFilesBetweenRetries(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{OutputDir: dir, MaxConcurrent: 1, JobTimeout: 5 * time.Second}
+	st := storage.New(dir)
+	q, err := queue.New(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+
+	// Script counts invocations via a marker file. On the first invocation it
+	// writes a bogus extra file into the output dir (simulating a partial
+	// write from a real CLI that downloaded some tracks before the network
+	// dropped) and then fails. On the second invocation it writes exactly the
+	// correct file and succeeds. If the job dir isn't cleared between
+	// attempts, "stale.flac" from the first attempt would still be present
+	// after the retry succeeds.
+	counterFile := filepath.Join(t.TempDir(), "count")
+	scriptPath := filepath.Join(t.TempDir(), "spotiflac-cli")
+	script := `#!/bin/bash
+COUNT=0
+if [[ -f "` + counterFile + `" ]]; then COUNT=$(cat "` + counterFile + `"); fi
+COUNT=$((COUNT+1))
+echo $COUNT > "` + counterFile + `"
+OUTDIR=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output-dir) OUTDIR="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$OUTDIR"
+if [[ "$COUNT" -lt 2 ]]; then
+  touch "$OUTDIR/stale.flac"
+  echo '{"type":"error","message":"transient failure"}'
+  exit 1
+fi
+touch "$OUTDIR/01.flac"
+echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless")
+	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+
+	job := &queue.Job{
+		NzoID:      "SABnzbd_nzo_staleclean001",
+		Service:    "tidal",
+		SpotifyURL: "https://open.spotify.com/album/staleclean",
+		TrackCount: 1,
+	}
+	require.NoError(t, q.Add(job))
+	handler.ProcessDownloadSync(job)
+
+	hist, _, err := q.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, hist, 1)
+	require.Equal(t, sabtypes.StatusCompleted, hist[0].Status, "job should succeed on the 2nd attempt after 1 retry")
+
+	entries, err := os.ReadDir(hist[0].OutputPath)
+	require.NoError(t, err)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	assert.NotContains(t, names, "stale.flac", "stale file from the failed first attempt must not survive into the successful retry's output dir")
+	assert.Contains(t, names, "01.flac")
+}
+
 func TestProcessDownloadShortCircuitsWhenBreakerOpen(t *testing.T) {
 	app, q := setupTestApp(t)
 	_ = app
