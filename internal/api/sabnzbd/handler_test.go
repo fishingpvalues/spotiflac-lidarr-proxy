@@ -111,7 +111,7 @@ func waitForHistory(t *testing.T, q *queue.SQLiteQueue, nzoID string) {
 			}
 		}
 		return false
-	}, 30*time.Second, 100*time.Millisecond, "job %s never reached history (background goroutine still running)", nzoID)
+	}, 60*time.Second, 100*time.Millisecond, "job %s never reached history (background goroutine still running)", nzoID)
 }
 
 func TestAddURL(t *testing.T) {

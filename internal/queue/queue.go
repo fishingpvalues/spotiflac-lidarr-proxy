@@ -20,6 +20,12 @@ func New(dbPath string) (*SQLiteQueue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	// modernc.org/sqlite gives each pooled connection its own private
+	// database for a ":memory:" DSN (and serializes writes for file DSNs
+	// anyway) — a single connection avoids both concurrent connections
+	// silently not seeing each other's tables/rows and SQLITE_BUSY
+	// contention between connections.
+	db.SetMaxOpenConns(1)
 
 	if err := migrate(db); err != nil {
 		db.Close()
