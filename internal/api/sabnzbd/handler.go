@@ -11,6 +11,7 @@ import (
 
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/breaker"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/metrics"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/storage"
@@ -183,6 +184,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 		return
 	}
 	h.breaker.RecordFailure(primarySvc)
+	metrics.RecordJobResult(string(sabnzbd.StatusFailed), primarySvc)
 
 	for _, fallbackSvc := range h.fallbackChain(job.Service) {
 		if !h.breaker.Allow(fallbackSvc) {
@@ -201,6 +203,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 		} else {
 			lastErr = fbErr
 			h.breaker.RecordFailure(fallbackSvc)
+			metrics.RecordJobResult(string(sabnzbd.StatusFailed), fallbackSvc)
 		}
 	}
 
@@ -277,6 +280,10 @@ func (h *Handler) attemptDownload(job *queue.Job, jobDir string) (bool, string) 
 					}
 				}
 				h.breaker.RecordSuccess(job.Service)
+				metrics.RecordJobResult(string(sabnzbd.StatusCompleted), job.Service)
+				if !job.TimeAdded.IsZero() {
+					metrics.RecordDownloadDuration(job.Service, job.Quality, time.Since(job.TimeAdded).Seconds())
+				}
 				job.Status = sabnzbd.StatusCompleted
 				job.Percentage = 100
 				job.Size = evt.Size

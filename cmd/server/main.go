@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	fiberadaptor "github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/newznab"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/sabnzbd"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/metrics"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/storage"
@@ -76,6 +78,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	app.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok"})
+	})
+
+	app.Get("/metrics", func(c fiber.Ctx) error {
+		return fiberadaptor.HTTPHandler(metrics.PromHTTPHandler())(c)
 	})
 
 	sabHandler := sabnzbd.NewHandler(q, client, st, cfg, version)
