@@ -96,3 +96,15 @@ func TestDownloadTimeout(t *testing.T) {
 
 	assert.NotEmpty(t, gotErrs)
 }
+
+func TestSearchMetadataArtistFallsBackToName(t *testing.T) {
+	responses := []string{
+		`{"type":"result","name":"Fallback Name","artist":"","album":"Some Album","spotify_url":"https://open.spotify.com/album/xyz","title":"Some Album"}`,
+	}
+	client := spotiflac.NewClient(mockCli(t, responses), 10*time.Second, "tidal", "lossless")
+
+	results, err := client.SearchMetadata(context.Background(), "query")
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "Fallback Name", results[0].Artist)
+}
