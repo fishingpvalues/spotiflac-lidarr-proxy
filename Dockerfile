@@ -7,12 +7,12 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/server ./cmd/server
 
-# Stage 2: Build spotiflac-cli from fork
-FROM golang:1.25-alpine AS cli-builder
+# Stage 2: Build spotiflac-cli from fork (requires Go 1.26)
+FROM golang:1.26-alpine AS cli-builder
 RUN apk add --no-cache git
 RUN git clone https://github.com/fishingpvalues/SpotiFLAC.git /spotiflac
 WORKDIR /spotiflac
-RUN CGO_ENABLED=0 go build -tags headless -ldflags="-s -w" -o /out/spotiflac-cli ./cmd/spotiflac-cli
+RUN CGO_ENABLED=0 go build -tags headless -ldflags="-s -w" -o /out/spotiflac-cli .
 
 # Stage 3: Runtime
 FROM alpine:3.21

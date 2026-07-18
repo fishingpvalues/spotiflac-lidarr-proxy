@@ -45,6 +45,13 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 			errors <- &DownloadError{Message: event.ErrorMessage}
 		case "complete":
 			events <- event
+		case "track_done":
+			// Map track_done to a metadata event so the download processor
+			// can extract artist/album info and update progress
+			event.Type = "metadata"
+			events <- event
+		case "status", "progress", "metadata":
+			events <- event
 		default:
 			events <- event
 		}

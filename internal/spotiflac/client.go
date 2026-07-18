@@ -50,7 +50,6 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			"--output-dir", outputDir,
 			"--service", service,
 			"--quality", quality,
-			"--json-progress",
 		)
 
 		stdout, err := cmd.StdoutPipe()
@@ -84,7 +83,6 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 
 	cmd := exec.CommandContext(ctx, c.cliPath,
 		"--search", query,
-		"--json-progress",
 	)
 
 	stdout, err := cmd.StdoutPipe()
@@ -99,13 +97,46 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 	var results []MetadataResult
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
-		var r MetadataResult
-		if err := json.Unmarshal(scanner.Bytes(), &r); err != nil {
+		var raw struct {
+			Type        string `json:"type"`
+			Name        string `json:"name"`
+			Artist      string `json:"artist"`
+			Album       string `json:"album"`
+			SpotifyURL  string `json:"spotify_url"`
+			CoverURL    string `json:"cover_url"`
+			Year        string `json:"year"`
+			TrackCount  int    `json:"track_count"`
+			// Also try direct MetadataResult fields for backward compat
+			Title string `json:"title"`
+			ISRC  string `json:"isrc"`
+			Genre string `json:"genre"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			continue
 		}
-		if r.SpotifyURL != "" {
-			results = append(results, r)
+		// Accept both search_result and direct MetadataResult formats
+		url := raw.SpotifyURL
+		if url == "" {
+			continue
 		}
+		title := raw.Title
+		if title == "" {
+			title = raw.Name
+		}
+		artist := raw.Artist
+		if artist == "" {
+			artist = raw.Artist
+		}
+		results = append(results, MetadataResult{
+			Artist:     artist,
+			Album:      raw.Album,
+			Title:      title,
+			SpotifyURL: url,
+			CoverURL:   raw.CoverURL,
+			ISRC:       raw.ISRC,
+			Genre:      raw.Genre,
+			TrackCount: raw.TrackCount,
+		})
 	}
 
 	if err := cmd.Wait(); err != nil {
