@@ -1,6 +1,8 @@
 package sabnzbd
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/gofiber/fiber/v3"
@@ -36,11 +38,15 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		priority = "Normal"
 	}
 
-	if existing, err := h.queue.FindActiveBySpotifyURL(spotifyURL); err == nil {
+	existing, err := h.queue.FindActiveBySpotifyURL(spotifyURL)
+	if err == nil {
 		return c.JSON(sabnzbd.AddURLResponse{
 			Status: true,
 			NzoIDs: []string{existing.NzoID},
 		})
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		h.log.Warn().Err(err).Str("spotify_url", spotifyURL).Msg("dedup lookup failed, proceeding to create new job")
 	}
 
 	nzoID := "SABnzbd_nzo_" + uuid.New().String()[:12]
