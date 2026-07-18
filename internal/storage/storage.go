@@ -51,3 +51,33 @@ func (s *Storage) GetDiskSpace() (float64, float64, error) {
 	total := stat.Blocks * uint64(stat.Bsize)
 	return float64(free) / (1024 * 1024 * 1024), float64(total) / (1024 * 1024 * 1024), nil
 }
+
+var audioExtensions = map[string]bool{
+	".flac": true,
+	".mp3":  true,
+	".m4a":  true,
+	".ogg":  true,
+	".opus": true,
+}
+
+// CountAudioFiles walks dir recursively (to cover multi-disc subfolders)
+// and returns the number of files with a recognized audio extension.
+func CountAudioFiles(dir string) (int, error) {
+	count := 0
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if audioExtensions[strings.ToLower(filepath.Ext(path))] {
+			count++
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count audio files in %s: %w", dir, err)
+	}
+	return count, nil
+}
