@@ -91,6 +91,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	sabGroup.Use(api.APIKeyAuthWithSkiplist(cfg.APIKey, "version", "auth"))
 	sabHandler.RegisterRoutesOnGroup(sabGroup)
 
+	// Also register on /api for Lidarr SABnzbd compatibility (urlBase)
+	sabRootGroup := app.Group("/api")
+	sabRootGroup.Use(api.APIKeyAuthWithSkiplist(cfg.APIKey, "version", "auth"))
+	sabHandler.RegisterRoutesOnGroup(sabRootGroup)
+
 	// Newznab routes: require auth except caps
 	nznbGroup := app.Group("/api/newznab")
 	nznbGroup.Use(api.APIKeyAuthWithSkiplist(cfg.APIKey, "caps"))
