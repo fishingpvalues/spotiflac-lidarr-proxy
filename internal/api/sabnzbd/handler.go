@@ -129,6 +129,13 @@ func (h *Handler) handleChangeCat(c fiber.Ctx) error {
 		})
 	}
 	job.Category = newCat
+	svc, qual := config.ParseCategory(newCat)
+	if svc != "" {
+		job.Service = svc
+	}
+	if qual != "" {
+		job.Quality = qual
+	}
 	if err := h.queue.Update(job); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(sabnzbd.StatusResponse{
 			Status: false, Error: err.Error(),

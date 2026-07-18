@@ -143,3 +143,28 @@ func TestAuthRejected(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 401, resp2.StatusCode)
 }
+
+func TestChangeCatUpdatesServiceAndQuality(t *testing.T) {
+	app, q := setupTestApp(t)
+
+	job := &queue.Job{
+		NzoID:      "SABnzbd_nzo_changecat",
+		SpotifyURL: "https://open.spotify.com/album/test",
+		Category:   "music-flac-16",
+		Service:    "tidal",
+		Quality:    "lossless",
+	}
+	require.NoError(t, q.Add(job))
+
+	req, _ := http.NewRequest("GET",
+		"/api/sabnzbd?mode=change_cat&value=SABnzbd_nzo_changecat&value2=music-qobuz-flac-24&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	got, err := q.Get("SABnzbd_nzo_changecat")
+	require.NoError(t, err)
+	assert.Equal(t, "music-qobuz-flac-24", got.Category)
+	assert.Equal(t, "qobuz", got.Service)
+	assert.Equal(t, "hires", got.Quality)
+}
