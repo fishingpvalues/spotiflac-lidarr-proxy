@@ -1,6 +1,7 @@
 package queue_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -135,4 +136,30 @@ func TestFindActiveBySpotifyURLIgnoresHistory(t *testing.T) {
 
 	_, err := q.FindActiveBySpotifyURL("https://open.spotify.com/album/dup2")
 	assert.Error(t, err, "a job already moved to history should not count as a duplicate")
+}
+
+func TestRecoverStuckJobsOnStartup(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+
+	q1, err := queue.New(dbPath)
+	require.NoError(t, err)
+	job := &queue.Job{NzoID: "SABnzbd_nzo_stuck001", Status: sabnzbd.StatusQueued}
+	require.NoError(t, q1.Add(job))
+	job.Status = sabnzbd.StatusDownloading
+	require.NoError(t, q1.Update(job))
+	require.NoError(t, q1.Close())
+
+	// Simulate restart: reopening the DB via New() must recover the stuck job.
+	q2, err := queue.New(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { q2.Close() })
+
+	_, err = q2.Get("SABnzbd_nzo_stuck001")
+	assert.Error(t, err, "recovered job should have moved to history, not stayed in the active queue")
+
+	hist, _, err := q2.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, hist, 1)
+	assert.Equal(t, sabnzbd.StatusFailed, hist[0].Status)
+	assert.Contains(t, hist[0].ErrorMessage, "interrupted by restart")
 }
