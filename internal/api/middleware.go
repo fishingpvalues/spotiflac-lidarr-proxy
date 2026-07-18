@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/subtle"
 	"net/url"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
@@ -52,15 +53,27 @@ func RequestLogger(log zerolog.Logger) fiber.Handler {
 	}
 }
 
-// redactAPIKey replaces the value of an `apikey` query parameter with `***`
-// so request logs never contain the actual secret.
+// redactAPIKey replaces the value of an "apikey" query parameter with "***"
+// so request logs never contain the actual secret, even if some other
+// unrelated query parameter fails to URL-decode. Works on raw key=value
+// segments split by "&" rather than a full url.ParseQuery, so a decode
+// failure elsewhere in the query string can never suppress redaction.
 func redactAPIKey(query string) string {
-	values, err := url.ParseQuery(query)
-	if err != nil {
+	if query == "" {
 		return query
 	}
-	if values.Has("apikey") {
-		values.Set("apikey", "***")
+	segments := strings.Split(query, "&")
+	for i, seg := range segments {
+		key, _, found := strings.Cut(seg, "=")
+		if !found {
+			continue
+		}
+		if unescaped, err := url.QueryUnescape(key); err == nil {
+			key = unescaped
+		}
+		if key == "apikey" {
+			segments[i] = "apikey=***"
+		}
 	}
-	return values.Encode()
+	return strings.Join(segments, "&")
 }

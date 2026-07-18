@@ -62,5 +62,42 @@ func TestRequestLoggerRedactsAPIKey(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotContains(t, buf.String(), "super-secret-value")
-	assert.Contains(t, buf.String(), "apikey=%2A%2A%2A")
+	assert.Contains(t, buf.String(), "apikey=***")
+}
+
+func TestRequestLoggerRedactsAPIKeyEvenWithMalformedUnrelatedParam(t *testing.T) {
+	// Regression guard for the fail-open leak: url.ParseQuery returns an
+	// error if ANY component of the query string fails to unescape (e.g.
+	// a stray %zz), even when apikey itself parsed fine. The old
+	// implementation fell back to returning the raw, unredacted query
+	// string in that case, leaking the secret in cleartext.
+	var buf bytes.Buffer
+	log := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(api.RequestLogger(log))
+	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	req, _ := http.NewRequest("GET", "/?apikey=REALSECRET&x=%zz", nil)
+	_, err := app.Test(req)
+	require.NoError(t, err)
+
+	assert.NotContains(t, buf.String(), "REALSECRET")
+	assert.Contains(t, buf.String(), "apikey=***")
+}
+
+func TestRequestLoggerHandlesEmptyQueryString(t *testing.T) {
+	var buf bytes.Buffer
+	log := zerolog.New(&buf)
+
+	app := fiber.New()
+	app.Use(api.RequestLogger(log))
+	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	req, _ := http.NewRequest("GET", "/", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Contains(t, buf.String(), `"query":""`)
 }
