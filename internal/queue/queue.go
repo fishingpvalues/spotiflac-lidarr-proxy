@@ -117,7 +117,9 @@ func (q *SQLiteQueue) List(params ListParams) ([]*Job, int, error) {
 
 	var total int
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM jobs %s", whereClause)
-	q.db.QueryRow(countQuery, args...).Scan(&total)
+	if err := q.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count query: %w", err)
+	}
 
 	if params.Limit == 0 {
 		params.Limit = 50
@@ -150,6 +152,9 @@ func (q *SQLiteQueue) List(params ListParams) ([]*Job, int, error) {
 			job.CompletedAt = &completedAt.Time
 		}
 		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
 	}
 	return jobs, total, nil
 }
@@ -190,7 +195,9 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 
 	var total int
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM jobs %s", whereClause)
-	q.db.QueryRow(countQuery, args...).Scan(&total)
+	if err := q.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count query: %w", err)
+	}
 
 	if params.Limit == 0 {
 		params.Limit = 50
@@ -223,6 +230,9 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 			job.CompletedAt = &completedAt.Time
 		}
 		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
 	}
 	return jobs, total, nil
 }
