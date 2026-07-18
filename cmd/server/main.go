@@ -21,6 +21,7 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/storage"
+	sabnzbdstatus "github.com/fishingpvalues/spotiflac-lidarr-proxy/pkg/sabnzbd"
 )
 
 const version = "1.0.0"
@@ -81,6 +82,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	})
 
 	app.Get("/metrics", func(c fiber.Ctx) error {
+		refreshQueueDepthMetrics(q)
 		return fiberadaptor.HTTPHandler(metrics.PromHTTPHandler())(c)
 	})
 
@@ -125,4 +127,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return app.ShutdownWithContext(shutdownCtx)
+}
+
+// refreshQueueDepthMetrics updates the spf_queue_depth gauge with current
+// counts by status, right before a /metrics scrape. Gauges reflect current
+// state at read time rather than being incremented/decremented on every
+// queue mutation.
+func refreshQueueDepthMetrics(q *queue.SQLiteQueue) {
+	for _, status := range []sabnzbdstatus.JobStatus{
+		sabnzbdstatus.StatusQueued,
+		sabnzbdstatus.StatusDownloading,
+		sabnzbdstatus.StatusPaused,
+	} {
+		_, total, err := q.List(queue.ListParams{Status: string(status)})
+		if err != nil {
+			continue
+		}
+		metrics.SetQueueDepth(string(status), total)
+	}
 }
