@@ -8,6 +8,25 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
 )
 
+const (
+	avgBytesPerTrackLossless = 35 * 1024 * 1024 // ~35MB/track, 16-bit FLAC estimate
+	avgBytesPerTrackHires    = 90 * 1024 * 1024 // ~90MB/track, 24-bit hi-res FLAC estimate
+)
+
+// EstimateSizeBytes gives a rough, clearly-approximate release size so
+// Lidarr's size-based checks don't see a hard 0. Not exact — SpotiFLAC's
+// search output doesn't expose real payload size ahead of download.
+func EstimateSizeBytes(trackCount int, quality string) int64 {
+	if trackCount <= 0 {
+		return 0
+	}
+	perTrack := int64(avgBytesPerTrackLossless)
+	if quality == "hires" {
+		perTrack = avgBytesPerTrackHires
+	}
+	return int64(trackCount) * perTrack
+}
+
 type RSS struct {
 	XMLName xml.Name `xml:"rss"`
 	Version string   `xml:"version,attr"`
@@ -98,13 +117,14 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL string) ([]byte, e
 	}
 
 	for _, r := range results {
+		estimatedSize := EstimateSizeBytes(r.TrackCount, "lossless")
 		attrs := []Attr{
 			{Name: "artist", Value: r.Artist},
 			{Name: "album", Value: r.Album},
 			{Name: "genre", Value: r.Genre},
 			{Name: "year", Value: fmt.Sprintf("%d", r.Year)},
 			{Name: "title", Value: r.Artist + " - " + r.Album},
-			{Name: "size", Value: "0"},
+			{Name: "size", Value: fmt.Sprintf("%d", estimatedSize)},
 			{Name: "grabs", Value: "0"},
 			{Name: "files", Value: fmt.Sprintf("%d", r.TrackCount)},
 			{Name: "poster", Value: r.CoverURL},
@@ -120,7 +140,7 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL string) ([]byte, e
 			Comments:    "",
 			Enclosure: Enclosure{
 				URL:    r.SpotifyURL,
-				Length: 0,
+				Length: estimatedSize,
 				Type:   "application/x-nzb",
 			},
 			Attrs: attrs,

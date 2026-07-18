@@ -1,0 +1,48 @@
+package api_test
+
+import (
+	"net/http"
+	"testing"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api"
+)
+
+func TestAPIKeyAuthWithSkiplistAcceptsCorrectKey(t *testing.T) {
+	app := fiber.New()
+	app.Use(api.APIKeyAuthWithSkiplist("correct-key"))
+	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	req, _ := http.NewRequest("GET", "/?apikey=correct-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestAPIKeyAuthWithSkiplistRejectsWrongKey(t *testing.T) {
+	app := fiber.New()
+	app.Use(api.APIKeyAuthWithSkiplist("correct-key"))
+	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	req, _ := http.NewRequest("GET", "/?apikey=wrong-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 401, resp.StatusCode)
+}
+
+func TestAPIKeyAuthWithSkiplistRejectsDifferentLengthKey(t *testing.T) {
+	// Regression guard: subtle.ConstantTimeCompare requires equal-length
+	// inputs; a naive switch to it would panic or misbehave on length
+	// mismatch if not handled explicitly.
+	app := fiber.New()
+	app.Use(api.APIKeyAuthWithSkiplist("a-fairly-long-correct-key"))
+	app.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	req, _ := http.NewRequest("GET", "/?apikey=short", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 401, resp.StatusCode)
+}

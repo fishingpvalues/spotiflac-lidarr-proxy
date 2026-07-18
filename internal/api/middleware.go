@@ -1,26 +1,11 @@
 package api
 
 import (
+	"crypto/subtle"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
 )
-
-func APIKeyAuth(apiKey string) fiber.Handler {
-	return func(c fiber.Ctx) error {
-		key := c.Query("apikey")
-		if key == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "API Key Required",
-			})
-		}
-		if key != apiKey {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "API Key Incorrect",
-			})
-		}
-		return c.Next()
-	}
-}
 
 func APIKeyAuthWithSkiplist(apiKey string, skipModes ...string) fiber.Handler {
 	return func(c fiber.Ctx) error {
@@ -44,7 +29,7 @@ func APIKeyAuthWithSkiplist(apiKey string, skipModes ...string) fiber.Handler {
 				"error": "API Key Required",
 			})
 		}
-		if key != apiKey {
+		if subtle.ConstantTimeCompare([]byte(key), []byte(apiKey)) != 1 {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "API Key Incorrect",
 			})
