@@ -199,6 +199,37 @@ All via environment variables prefixed `SPF_`:
 | SPF_DB_PATH | /data/queue.db | SQLite database path |
 | SPF_LOG_LEVEL | info | Log level |
 
+## Security Notes
+
+This proxy has no built-in TLS support — it's designed to run on a trusted
+internal network (the same docker network as Lidarr) and speaks plain HTTP.
+
+- **Do not expose the proxy's port directly to the internet.** If you need
+  remote access, put it behind a reverse proxy (Caddy, Traefik, nginx) that
+  terminates TLS, the same way you would for Lidarr itself.
+- The `SPF_API_KEY` value travels in every request's query string. Over
+  plain HTTP on an untrusted network this is readable by anyone on-path —
+  another reason to keep this behind a reverse proxy or restrict it to a
+  private network.
+
+Example Caddy sidecar snippet for `docker-compose.yml`:
+
+```yaml
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports: ["443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+    depends_on: [proxy]
+```
+
+```
+# Caddyfile
+proxy.yourdomain.com {
+    reverse_proxy proxy:8484
+}
+```
 
 ## Category System
 
