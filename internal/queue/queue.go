@@ -274,38 +274,23 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 // RecoverStuckJobs marks any job left in Downloading status (from a prior
 // crash or unclean restart) as Failed and moves it to history. Called once
 // at startup — partial on-disk state from a killed subprocess is never
-// trusted or auto-resumed.
+// trusted or auto-resumed. Runs as a single atomic UPDATE so a mid-sweep
+// failure can't leave some jobs recovered and others not, and can't strand
+// a job between "marked Failed" and "moved to history".
 func (q *SQLiteQueue) RecoverStuckJobs() (int, error) {
-	rows, err := q.db.Query(`SELECT nzo_id FROM jobs WHERE status = ? AND is_history = 0`, sabnzbd.StatusDownloading)
+	result, err := q.db.Exec(
+		`UPDATE jobs SET status = ?, error_message = ?, is_history = 1
+		 WHERE status = ? AND is_history = 0`,
+		sabnzbd.StatusFailed, "interrupted by restart", sabnzbd.StatusDownloading,
+	)
 	if err != nil {
-		return 0, fmt.Errorf("query stuck jobs: %w", err)
+		return 0, fmt.Errorf("recover stuck jobs: %w", err)
 	}
-	var nzoIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("scan stuck job: %w", err)
-		}
-		nzoIDs = append(nzoIDs, id)
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count recovered jobs: %w", err)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate stuck jobs: %w", err)
-	}
-
-	for _, id := range nzoIDs {
-		if _, err := q.db.Exec(
-			`UPDATE jobs SET status = ?, error_message = ? WHERE nzo_id = ?`,
-			sabnzbd.StatusFailed, "interrupted by restart", id,
-		); err != nil {
-			return 0, fmt.Errorf("mark stuck job %s failed: %w", id, err)
-		}
-		if err := q.MoveToHistory(id); err != nil {
-			return 0, fmt.Errorf("move stuck job %s to history: %w", id, err)
-		}
-	}
-	return len(nzoIDs), nil
+	return int(affected), nil
 }
 
 func (q *SQLiteQueue) Close() error {
