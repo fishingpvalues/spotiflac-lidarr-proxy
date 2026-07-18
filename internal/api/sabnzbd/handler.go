@@ -153,6 +153,10 @@ func (h *Handler) ProcessDownloadSync(job *queue.Job) {
 	h.processDownload(job)
 }
 
+const maxAttempts = 3
+
+var retryBackoff = []time.Duration{5 * time.Second, 15 * time.Second}
+
 func (h *Handler) processDownload(job *queue.Job) {
 	h.sem <- struct{}{}
 	defer func() { <-h.sem }()
@@ -172,6 +176,27 @@ func (h *Handler) processDownload(job *queue.Job) {
 	job.OutputPath = jobDir
 	h.queue.Update(job)
 
+	var lastErr string
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		ok, errMsg := h.attemptDownload(job, jobDir)
+		if ok {
+			return
+		}
+		lastErr = errMsg
+		if attempt < maxAttempts {
+			h.log.Warn().Str("nzo_id", job.NzoID).Int("attempt", attempt).Str("error", errMsg).Msg("download attempt failed, retrying")
+			time.Sleep(retryBackoff[attempt-1])
+		}
+	}
+	h.failJob(job, lastErr)
+}
+
+// attemptDownload runs a single CLI invocation and reports whether it
+// succeeded. On success it fully updates the job to Completed and moves it
+// to history itself (mirroring the previous inline behavior); on failure it
+// returns false with the error message and leaves the job untouched for the
+// caller to retry or ultimately fail.
+func (h *Handler) attemptDownload(job *queue.Job, jobDir string) (bool, string) {
 	ctx := context.Background()
 	events, errs := h.client.Download(ctx, job.SpotifyURL, jobDir, job.Service, job.Quality)
 
@@ -182,9 +207,9 @@ func (h *Handler) processDownload(job *queue.Job) {
 		case evt, ok := <-events:
 			if !ok {
 				if !sawComplete {
-					h.failJob(job, "cli exited without completion signal")
+					return false, "cli exited without completion signal"
 				}
-				return
+				return true, ""
 			}
 			if evt.Type == "progress" {
 				job.Percentage = evt.Percent
@@ -196,8 +221,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 				if job.TrackCount > 0 {
 					gotCount, cerr := storage.CountAudioFiles(evt.OutputPath)
 					if cerr != nil || gotCount < job.TrackCount {
-						h.failJob(job, fmt.Sprintf("partial album: %d/%d tracks", gotCount, job.TrackCount))
-						return
+						return false, fmt.Sprintf("partial album: %d/%d tracks", gotCount, job.TrackCount)
 					}
 				}
 				h.breaker.RecordSuccess(job.Service)
@@ -212,7 +236,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 				h.queue.Update(job)
 				h.queue.MoveToHistory(job.NzoID)
 				h.log.Info().Str("nzo_id", job.NzoID).Str("path", evt.OutputPath).Msg("download complete")
-				return
+				return true, ""
 			}
 			if evt.Type == "metadata" {
 				job.Filename = evt.Artist + " - " + evt.Album
@@ -220,11 +244,10 @@ func (h *Handler) processDownload(job *queue.Job) {
 			}
 		case e, ok := <-errs:
 			if !ok {
-				return
+				continue
 			}
 			if e != nil {
-				h.failJob(job, e.Error())
-				return
+				return false, e.Error()
 			}
 		}
 	}
