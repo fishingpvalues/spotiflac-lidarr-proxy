@@ -166,6 +166,8 @@ func (h *Handler) processDownload(job *queue.Job) {
 		return
 	}
 
+	primarySvc := job.Service
+
 	jobDir, err := h.storage.PrepareJobDir(job.NzoID)
 	if err != nil {
 		h.failJob(job, err.Error())
@@ -180,6 +182,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 	if lastErr == "" {
 		return
 	}
+	h.breaker.RecordFailure(primarySvc)
 
 	for _, fallbackSvc := range h.fallbackChain(job.Service) {
 		if !h.breaker.Allow(fallbackSvc) {
@@ -188,10 +191,16 @@ func (h *Handler) processDownload(job *queue.Job) {
 		h.log.Warn().Str("nzo_id", job.NzoID).Str("from_service", job.Service).Str("to_service", fallbackSvc).Msg("falling back to next service")
 		job.Service = fallbackSvc
 		h.queue.Update(job)
+		if cerr := h.storage.CleanupJob(job.NzoID); cerr != nil {
+			h.log.Warn().Err(cerr).Str("nzo_id", job.NzoID).Msg("failed to clean up job dir before fallback attempt")
+		} else if _, perr := h.storage.PrepareJobDir(job.NzoID); perr != nil {
+			h.log.Warn().Err(perr).Str("nzo_id", job.NzoID).Msg("failed to recreate job dir before fallback attempt")
+		}
 		if fbErr := h.runAttemptsWithRetry(job, jobDir, 1); fbErr == "" {
 			return
 		} else {
 			lastErr = fbErr
+			h.breaker.RecordFailure(fallbackSvc)
 		}
 	}
 
@@ -303,7 +312,6 @@ func (h *Handler) failJob(job *queue.Job, errMsg string) {
 	job.CompletedAt = &now
 	h.queue.Update(job)
 	h.queue.MoveToHistory(job.NzoID)
-	h.breaker.RecordFailure(job.Service)
 	h.log.Error().Str("nzo_id", job.NzoID).Str("error", errMsg).Msg("download failed")
 }
 

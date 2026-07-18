@@ -440,6 +440,144 @@ echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 	assert.Equal(t, "qobuz", hist[0].Service, "job's recorded service should reflect the fallback that actually succeeded")
 }
 
+// TestProcessDownloadAttributesFallbackFailureToPrimaryBreaker guards against
+// a bug where job.Service is mutated to the fallback's name before failJob
+// records a breaker failure, so the primary service's own exhausted-retries
+// failure was never recorded against its own breaker (only ever the
+// last-tried fallback's). It runs enough jobs (primary "tidal", fallback
+// "amazon", both always failing) to trip the breaker threshold (5) purely
+// from primary-attributed failures, then confirms a subsequent tidal-only job
+// (no fallback configured) short-circuits on an open breaker -- which could
+// only happen if "tidal"'s own failures were actually being recorded each
+// time, despite job.Service having been mutated to "amazon" by the time
+// failJob used to run.
+func TestProcessDownloadAttributesFallbackFailureToPrimaryBreaker(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		OutputDir:        dir,
+		MaxConcurrent:    1,
+		JobTimeout:       5 * time.Second,
+		FallbackServices: []string{"tidal", "amazon"},
+	}
+	st := storage.New(dir)
+	q, err := queue.New(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+
+	// Both tidal and amazon always fail.
+	scriptPath := filepath.Join(t.TempDir(), "spotiflac-cli")
+	script := `#!/bin/bash
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output-dir) OUTDIR="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$OUTDIR"
+echo '{"type":"error","message":"unavailable"}'
+exit 1
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless")
+	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+
+	for i := 0; i < 5; i++ {
+		job := &queue.Job{
+			NzoID:      fmt.Sprintf("SABnzbd_nzo_primaryfail%d", i),
+			Service:    "tidal",
+			SpotifyURL: "https://open.spotify.com/album/pf",
+		}
+		require.NoError(t, q.Add(job))
+		handler.ProcessDownloadSync(job)
+	}
+
+	// A fresh job targeting "tidal" alone (no fallback configured this time,
+	// same handler/breaker) must short-circuit: proof that tidal's own
+	// breaker recorded all 5 failures above, not just amazon's.
+	cfg.FallbackServices = nil
+	job := &queue.Job{NzoID: "SABnzbd_nzo_primaryfail_check", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/check"}
+	require.NoError(t, q.Add(job))
+	handler.ProcessDownloadSync(job)
+
+	hist, _, err := q.History(queue.ListParams{Limit: 20})
+	require.NoError(t, err)
+	var found bool
+	for _, j := range hist {
+		if j.NzoID == "SABnzbd_nzo_primaryfail_check" {
+			found = true
+			assert.Contains(t, j.ErrorMessage, "circuit open", "primary service's breaker should have opened from its own recorded failures during the fallback runs")
+		}
+	}
+	assert.True(t, found)
+}
+
+// TestProcessDownloadClearsStaleFilesAcrossServiceFallback guards against a
+// bug where the job dir is only cleared between retries of the SAME service,
+// not when transitioning from the primary's exhausted attempts to the first
+// fallback attempt. A stale file written by the primary's last failed
+// attempt must not survive into the successful fallback's output dir.
+func TestProcessDownloadClearsStaleFilesAcrossServiceFallback(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		OutputDir:        dir,
+		MaxConcurrent:    1,
+		JobTimeout:       5 * time.Second,
+		FallbackServices: []string{"tidal", "qobuz"},
+	}
+	st := storage.New(dir)
+	q, err := queue.New(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+
+	// tidal always writes a stale extra file before failing (simulating a
+	// partial write from a dropped connection); qobuz writes exactly the
+	// correct file and succeeds. If the dir isn't cleared on the primary ->
+	// fallback transition, "stale.flac" from tidal's last attempt would
+	// still be present in qobuz's "successful" output dir.
+	scriptPath := filepath.Join(t.TempDir(), "spotiflac-cli")
+	script := `#!/bin/bash
+SERVICE=""
+OUTDIR=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --service) SERVICE="$2"; shift 2 ;;
+    --output-dir) OUTDIR="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$OUTDIR"
+if [[ "$SERVICE" == "tidal" ]]; then
+  touch "$OUTDIR/stale.flac"
+  echo '{"type":"error","message":"tidal unavailable"}'
+  exit 1
+fi
+touch "$OUTDIR/01.flac"
+echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless")
+	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+
+	job := &queue.Job{NzoID: "SABnzbd_nzo_fbstaleclean001", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/fbstale"}
+	require.NoError(t, q.Add(job))
+	handler.ProcessDownloadSync(job)
+
+	hist, _, err := q.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, hist, 1)
+	require.Equal(t, sabtypes.StatusCompleted, hist[0].Status)
+	require.Equal(t, "qobuz", hist[0].Service)
+
+	entries, err := os.ReadDir(hist[0].OutputPath)
+	require.NoError(t, err)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	assert.NotContains(t, names, "stale.flac", "stale file from the failed primary attempt must not survive into the successful fallback's output dir")
+	assert.Contains(t, names, "01.flac")
+}
+
 func TestProcessDownloadShortCircuitsWhenBreakerOpen(t *testing.T) {
 	app, q := setupTestApp(t)
 	_ = app
