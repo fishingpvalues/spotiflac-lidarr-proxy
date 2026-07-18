@@ -61,11 +61,15 @@ loop:
 			}
 			gotEvents = append(gotEvents, evt)
 		case err, ok := <-errs:
-			if !ok {
-				break loop
+			if ok {
+				gotErrs = append(gotErrs, err)
 			}
-			gotErrs = append(gotErrs, err)
 		}
+	}
+
+	// Drain errs if it wasn't closed yet (defensive)
+	for err := range errs {
+		gotErrs = append(gotErrs, err)
 	}
 
 	assert.Empty(t, gotErrs)

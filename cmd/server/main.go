@@ -1,17 +1,117 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/gofiber/fiber/v3"
+	"github.com/rs/zerolog"
+	"github.com/spf13/cobra"
+
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/newznab"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/sabnzbd"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/storage"
 )
 
+const version = "0.1.0"
+
 func main() {
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+	rootCmd := &cobra.Command{
+		Use:   "server",
+		Short: "Spotiflac-Lidarr Proxy server",
+	}
+
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "serve",
+		Short: "Start the HTTP server",
+		RunE:  runServe,
+	})
+
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("spotiflac-lidarr-proxy starting on port %d\n", cfg.Port)
+}
+
+func runServe(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	log := zerolog.New(os.Stderr).With().Timestamp().Logger()
+	level, err := zerolog.ParseLevel(cfg.LogLevel)
+	if err != nil {
+		level = zerolog.InfoLevel
+	}
+	log = log.Level(level)
+
+	q, err := queue.New(cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("init queue: %w", err)
+	}
+	defer q.Close()
+
+	st := storage.New(cfg.OutputDir)
+
+	client := spotiflac.NewClient(
+		cfg.SpotiflacCLIPath,
+		cfg.JobTimeout,
+		cfg.DefaultService,
+		cfg.DefaultQuality,
+	)
+
+	app := fiber.New(fiber.Config{
+		AppName:      "spotiflac-lidarr-proxy",
+		ServerHeader: "spotiflac-lidarr-proxy",
+	})
+
+	app.Get("/health", func(c fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "ok"})
+	})
+
+	sabHandler := sabnzbd.NewHandler(q, client, st, cfg, version)
+	sabHandler.SetLogger(log)
+
+	nznbHandler := newznab.NewHandler(client, fmt.Sprintf("http://localhost:%d", cfg.Port))
+	nznbHandler.SetLogger(log)
+
+	app.Use(api.RequestLogger(log))
+
+	// SABnzbd routes: require auth except version, auth modes
+	sabGroup := app.Group("/api/sabnzbd")
+	sabGroup.Use(api.APIKeyAuthWithSkiplist(cfg.APIKey, "version", "auth"))
+	sabHandler.RegisterRoutesOnGroup(sabGroup)
+
+	// Newznab routes: require auth except caps
+	nznbGroup := app.Group("/api/newznab")
+	nznbGroup.Use(api.APIKeyAuthWithSkiplist(cfg.APIKey, "caps"))
+	nznbHandler.RegisterRoutesOnGroup(nznbGroup)
+
+	log.Info().Int("port", cfg.Port).Str("version", version).Msg("starting server")
+
+	go func() {
+		addr := fmt.Sprintf(":%d", cfg.Port)
+		if err := app.Listen(addr); err != nil {
+			log.Fatal().Err(err).Msg("server failed")
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Info().Msg("shutting down")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return app.ShutdownWithContext(shutdownCtx)
 }
