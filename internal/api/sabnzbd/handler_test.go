@@ -42,7 +42,7 @@ func setupTestApp(t *testing.T) (*fiber.App, *queue.SQLiteQueue) {
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	app := fiber.New()
-	app.Use(api.APIKeyAuth("test-key"))
+	app.Use(api.APIKeyAuthWithSkiplist("test-key", "version", "auth"))
 	handler.RegisterRoutes(app)
 
 	return app, q
@@ -131,8 +131,15 @@ func TestHistory(t *testing.T) {
 func TestAuthRejected(t *testing.T) {
 	app, _ := setupTestApp(t)
 
-	req, _ := http.NewRequest("GET", "/api/sabnzbd?mode=version&apikey=wrong", nil)
+	// version endpoint should work without API key
+	req, _ := http.NewRequest("GET", "/api/sabnzbd?mode=version", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	assert.Equal(t, 401, resp.StatusCode)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	// queue endpoint should reject without API key
+	req2, _ := http.NewRequest("GET", "/api/sabnzbd?mode=queue", nil)
+	resp2, err := app.Test(req2)
+	require.NoError(t, err)
+	assert.Equal(t, 401, resp2.StatusCode)
 }

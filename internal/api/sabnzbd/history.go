@@ -28,11 +28,16 @@ func (h *Handler) handleHistory(c fiber.Ctx) error {
 	}
 
 	resp := sabnzbd.HistoryResponse{}
-	resp.History.Noofslots = len(jobs)
+	resp.History.Noofslots = total
 	resp.History.Version = h.version
-	resp.History.TotalSize = "0"
 	resp.History.MonthSize = "0"
 	resp.History.WeekSize = "0"
+
+	var totalSize int64
+	for _, job := range jobs {
+		totalSize += job.Size
+	}
+	resp.History.TotalSize = formatBytes(totalSize)
 
 	for _, job := range jobs {
 		slot := sabnzbd.HistorySlot{
@@ -55,6 +60,5 @@ func (h *Handler) handleHistory(c fiber.Ctx) error {
 		resp.History.Slots = append(resp.History.Slots, slot)
 	}
 
-	_ = total
 	return c.JSON(resp)
 }

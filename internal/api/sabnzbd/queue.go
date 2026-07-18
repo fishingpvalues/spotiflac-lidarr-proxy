@@ -36,6 +36,8 @@ func (h *Handler) handleQueue(c fiber.Ctx) error {
 
 	resp := sabnzbd.QueueResponse{}
 	resp.Queue.Status = "Idle"
+	resp.Queue.Speedlimit = "100"
+	resp.Queue.SpeedlimitAbs = "0"
 	resp.Queue.Noofslots = len(jobs)
 	resp.Queue.NoofslotsTotal = total
 	resp.Queue.Limit = limit
@@ -59,8 +61,6 @@ func (h *Handler) handleQueue(c fiber.Ctx) error {
 	for i, job := range jobs {
 		slot := jobToSlot(job, i)
 		resp.Queue.Slots = append(resp.Queue.Slots, slot)
-		resp.Queue.Size = addSize(resp.Queue.Size, slot.Size)
-		resp.Queue.Sizeleft = addSize(resp.Queue.Sizeleft, slot.Sizeleft)
 	}
 
 	return c.JSON(resp)
@@ -125,7 +125,9 @@ func (h *Handler) handleDelete(c fiber.Ctx) error {
 		})
 	}
 	if delFiles {
-		h.storage.CleanupJob(nzoID)
+		if err := h.storage.CleanupJob(nzoID); err != nil {
+			h.log.Warn().Err(err).Str("nzo_id", nzoID).Msg("failed to cleanup job files")
+		}
 	}
 	return c.JSON(sabnzbd.StatusResponse{Status: true, NzoIDs: []string{nzoID}})
 }

@@ -220,9 +220,6 @@ func formatBytes(bytes int64) string {
 	return fmt.Sprintf("%.2f %s", size, units[unitIdx])
 }
 
-func addSize(a, b string) string {
-	return a // simplified: just return first, real SABnzbd sums sizes
-}
 
 func splitComma(s string) []string {
 	parts := strings.Split(s, ",")

@@ -22,6 +22,35 @@ func APIKeyAuth(apiKey string) fiber.Handler {
 	}
 }
 
+func APIKeyAuthWithSkiplist(apiKey string, skipModes ...string) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		mode := c.Query("mode")
+		if mode == "" {
+			mode = c.FormValue("mode")
+		}
+		for _, skip := range skipModes {
+			if mode == skip {
+				return c.Next()
+			}
+		}
+		key := c.Query("apikey")
+		if key == "" {
+			key = c.FormValue("apikey")
+		}
+		if key == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "API Key Required",
+			})
+		}
+		if key != apiKey {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "API Key Incorrect",
+			})
+		}
+		return c.Next()
+	}
+}
+
 func RequestLogger(log zerolog.Logger) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		err := c.Next()
