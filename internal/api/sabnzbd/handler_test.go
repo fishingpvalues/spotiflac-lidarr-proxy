@@ -157,6 +157,19 @@ func TestAddURLDedupReturnsExistingNzoID(t *testing.T) {
 	waitForHistory(t, q, r1.NzoIDs[0])
 }
 
+func TestAddURLRejectsInvalidSpotifyURL(t *testing.T) {
+	app, _ := setupTestApp(t)
+
+	req, _ := http.NewRequest("POST", "/api/sabnzbd?mode=addurl&name=--output-dir&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 400, resp.StatusCode)
+
+	var r sabtypes.StatusResponse
+	json.NewDecoder(resp.Body).Decode(&r)
+	assert.False(t, r.Status)
+}
+
 func TestQueue(t *testing.T) {
 	app, _ := setupTestApp(t)
 
