@@ -2,6 +2,7 @@ package sabnzbd_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -244,4 +245,36 @@ echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 	assert.Equal(t, sabtypes.StatusFailed, hist[0].Status)
 	assert.Contains(t, hist[0].ErrorMessage, "partial album")
 	_ = got
+}
+
+func TestProcessDownloadShortCircuitsWhenBreakerOpen(t *testing.T) {
+	app, q := setupTestApp(t)
+	_ = app
+
+	cfg := &config.Config{OutputDir: t.TempDir(), MaxConcurrent: 1, JobTimeout: 5 * time.Second}
+	st := storage.New(cfg.OutputDir)
+	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless")
+	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+
+	// Force the breaker open by feeding 5 consecutive failures for "tidal".
+	for i := 0; i < 5; i++ {
+		job := &queue.Job{NzoID: fmt.Sprintf("SABnzbd_nzo_fail%d", i), Service: "tidal", SpotifyURL: "bad"}
+		require.NoError(t, q.Add(job))
+		handler.ProcessDownloadSync(job) // "echo" exits 0 with no "complete" event -> fails
+	}
+
+	job := &queue.Job{NzoID: "SABnzbd_nzo_shortcircuit", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/x"}
+	require.NoError(t, q.Add(job))
+	handler.ProcessDownloadSync(job)
+
+	hist, _, err := q.History(queue.ListParams{Limit: 20})
+	require.NoError(t, err)
+	var found bool
+	for _, j := range hist {
+		if j.NzoID == "SABnzbd_nzo_shortcircuit" {
+			found = true
+			assert.Contains(t, j.ErrorMessage, "circuit open")
+		}
+	}
+	assert.True(t, found)
 }
