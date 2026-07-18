@@ -21,7 +21,7 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/storage"
 )
 
-const version = "0.1.0"
+const version = "1.0.0"
 
 func main() {
 	rootCmd := &cobra.Command{
