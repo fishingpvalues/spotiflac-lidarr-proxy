@@ -98,20 +98,20 @@ func SpotiflacQuality(proxyQuality string) string {
 // Categories follow the pattern: music-[service][-quality]
 // Examples: music-tidal, music-flac-16, music-qobuz-flac-24
 func ParseCategory(cat string) (service, quality string) {
-	cat = cat // keep lowercase
+	catLower := strings.ToLower(cat)
 
-	// Detect service
-	for _, svc := range []string{"tidal", "qobuz", "amazon", "deezer"} {
-		if strings.Contains(cat, svc) {
+	for _, svc := range []string{ServiceTidal, ServiceQobuz, ServiceAmazon, ServiceDeezer} {
+		if strings.Contains(catLower, svc) {
 			service = svc
 			break
 		}
 	}
 
-	// Detect quality
-	if strings.Contains(cat, "flac-24") || strings.Contains(cat, "hires") || strings.Contains(cat, "24") {
+	if strings.Contains(catLower, "flac-24") || strings.Contains(catLower, "hires") || strings.Contains(catLower, "24-bit") {
 		quality = "hires"
-	} else if strings.Contains(cat, "flac-16") || strings.Contains(cat, "lossless") || strings.Contains(cat, "16") {
+	} else if strings.Contains(catLower, "flac-16") || strings.Contains(catLower, "lossless") || strings.Contains(catLower, "16-bit") {
+		quality = "lossless"
+	} else if strings.Contains(catLower, "mp3") {
 		quality = "lossless"
 	}
 
