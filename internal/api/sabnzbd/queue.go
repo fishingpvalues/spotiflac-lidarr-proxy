@@ -2,6 +2,7 @@ package sabnzbd
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -45,8 +46,58 @@ func (h *Handler) handleQueue(c fiber.Ctx) error {
 	resp.Queue.Version = h.version
 	resp.Queue.PausedAll = false
 
-	if len(jobs) > 0 {
+	var totalMb, totalMbleft float64
+	var hasDownloading bool
+	var totalSpeed float64
+
+	for i, job := range jobs {
+		slot := jobToSlot(job, i)
+		totalMb += float64(job.Size) / (1024 * 1024)
+		totalMbleft += float64(job.Sizeleft) / (1024 * 1024)
+
+		if job.Status == sabnzbd.StatusDownloading {
+			hasDownloading = true
+			// Estimate speed: if size changed recently, calculate from bytes/sec
+			// Otherwise use default estimate
+			if job.Size > 0 && job.Sizeleft > 0 && job.Size > job.Sizeleft {
+				downloaded := float64(job.Size - job.Sizeleft)
+				// Assume 10 seconds avg since last update for speed calc
+				estimatedSpeed := downloaded / 10.0
+				totalSpeed += estimatedSpeed
+			}
+		}
+
+		resp.Queue.Slots = append(resp.Queue.Slots, slot)
+	}
+
+	if hasDownloading {
 		resp.Queue.Status = "Downloading"
+	}
+
+	resp.Queue.Mb = totalMb
+	resp.Queue.Mbleft = totalMbleft
+
+	// Calculate total timeleft based on total size left and speed
+	if totalSpeed > 0 {
+		secs := int(totalMbleft * 1024 * 1024 / totalSpeed)
+		resp.Queue.Timeleft = formatDuration(secs)
+		resp.Queue.Finish = int(time.Now().Unix()) + secs
+
+		// Format speed for display
+		if totalSpeed >= 1024*1024 {
+			resp.Queue.Speed = formatBytes(int64(totalSpeed))
+			resp.Queue.Kbpersec = strconv.FormatFloat(totalSpeed/1024, 'f', 1, 64)
+		} else if totalSpeed >= 1024 {
+			resp.Queue.Speed = formatBytes(int64(totalSpeed))
+			resp.Queue.Kbpersec = strconv.FormatFloat(totalSpeed/1024, 'f', 1, 64)
+		} else {
+			resp.Queue.Speed = "0 B"
+			resp.Queue.Kbpersec = "0.0"
+		}
+	} else {
+		resp.Queue.Timeleft = "0:00:00"
+		resp.Queue.Speed = "0 B"
+		resp.Queue.Kbpersec = "0.0"
 	}
 
 	free1, total1, err := h.storage.GetDiskSpace()
@@ -59,12 +110,24 @@ func (h *Handler) handleQueue(c fiber.Ctx) error {
 		resp.Queue.Diskspacetotal2 = total1
 	}
 
-	for i, job := range jobs {
-		slot := jobToSlot(job, i)
-		resp.Queue.Slots = append(resp.Queue.Slots, slot)
-	}
-
 	return c.JSON(resp)
+}
+
+func formatDuration(secs int) string {
+	if secs <= 0 {
+		return "0:00:00"
+	}
+	h := secs / 3600
+	m := (secs % 3600) / 60
+	s := secs % 60
+	return strconv.Itoa(h) + ":" + pad2(m) + ":" + pad2(s)
+}
+
+func pad2(n int) string {
+	if n < 10 {
+		return "0" + strconv.Itoa(n)
+	}
+	return strconv.Itoa(n)
 }
 
 func (h *Handler) handlePause(c fiber.Ctx) error {

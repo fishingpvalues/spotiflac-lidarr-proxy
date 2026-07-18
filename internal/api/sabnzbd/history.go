@@ -40,16 +40,22 @@ func (h *Handler) handleHistory(c fiber.Ctx) error {
 	resp.History.TotalSize = formatBytes(totalSize)
 
 	for _, job := range jobs {
+		downloadTime := 0
+		if job.CompletedAt != nil {
+			downloadTime = int(job.CompletedAt.Sub(job.TimeAdded).Seconds())
+		}
+
 		slot := sabnzbd.HistorySlot{
-			Status:    string(job.Status),
-			NzoID:     job.NzoID,
-			Name:      job.Filename,
-			Size:      job.Size,
-			Cat:       job.Category,
-			Storage:   job.OutputPath,
-			Path:      job.OutputPath,
-			Script:    "Default",
-			URL:       job.SpotifyURL,
+			Status:       string(job.Status),
+			NzoID:        job.NzoID,
+			Name:         job.Filename,
+			Size:         job.Size,
+			Cat:          job.Category,
+			DownloadTime: downloadTime,
+			Storage:      job.OutputPath,
+			Path:         job.OutputPath,
+			Script:       "Default",
+			URL:          job.SpotifyURL,
 		}
 		if job.CompletedAt != nil {
 			slot.Completed = job.CompletedAt.Unix()

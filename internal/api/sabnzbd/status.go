@@ -45,3 +45,48 @@ func (h *Handler) handleGetCats(c fiber.Ctx) error {
 		Categories: []string{"music", "music-flac-16", "music-flac-24", "music-mp3"},
 	})
 }
+
+func (h *Handler) handleStatus(c fiber.Ctx) error {
+	return c.JSON(sabnzbd.SimpleStatusResponse{
+		Paused: false,
+	})
+}
+
+func (h *Handler) handleRetry(c fiber.Ctx) error {
+	nzoID := c.Query("value")
+	if nzoID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(sabnzbd.StatusResponse{
+			Status: false, Error: "missing nzo_id",
+		})
+	}
+
+	// Move job back from history to active queue
+	job, err := h.queue.Get(nzoID)
+	if err != nil {
+		// Job might be in history - retrieve it differently
+		return c.Status(fiber.StatusNotFound).JSON(sabnzbd.StatusResponse{
+			Status: false, Error: "job not found",
+		})
+	}
+
+	job.Status = sabnzbd.StatusQueued
+	if err := h.queue.Update(job); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(sabnzbd.StatusResponse{
+			Status: false, Error: err.Error(),
+		})
+	}
+
+	// Restart the download
+	go h.processDownload(job)
+
+	return c.JSON(sabnzbd.RetryResponse{
+		Status: true,
+		NzoID:  nzoID,
+	})
+}
+
+func (h *Handler) handleWarnings(c fiber.Ctx) error {
+	return c.JSON(sabnzbd.WarningsResponse{
+		Warnings: []sabnzbd.Warning{},
+	})
+}

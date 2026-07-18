@@ -84,7 +84,7 @@ func TestGetCats(t *testing.T) {
 
 	var c sabtypes.CategoriesResponse
 	json.NewDecoder(resp.Body).Decode(&c)
-	assert.Len(t, c.Categories, 3)
+	assert.Len(t, c.Categories, 4)
 }
 
 func TestAddURL(t *testing.T) {

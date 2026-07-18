@@ -1,6 +1,8 @@
 package newznab
 
 import (
+	"strconv"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
 
@@ -45,10 +47,16 @@ func (h *Handler) dispatch(c fiber.Ctx) error {
 		return h.handleMusic(c)
 	case "details":
 		return h.handleDetails(c)
+	case "get":
+		return h.handleDetails(c)
+	case "tvsearch", "movie", "book":
+		// Unsupported search types - return empty results gracefully
+		return h.handleEmptyResults(c)
 	default:
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "unknown t parameter: " + t,
-		})
+		if t == "" {
+			return h.handleEmptyResults(c)
+		}
+		return h.handleEmptyResults(c)
 	}
 }
 
@@ -62,19 +70,35 @@ func (h *Handler) handleSearch(c fiber.Ctx) error {
 	artist := c.Query("artist")
 	album := c.Query("album")
 
+	// Support maxage parameter
+	// maxage := c.Query("maxage", "0")
+
 	results, err := indexer.Search(c.Context(), h.client, query, artist, album)
 	if err != nil {
 		h.log.Error().Err(err).Msg("newznab search failed")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "search failed",
-		})
+		return h.handleEmptyResults(c)
+	}
+
+	// Parse offset/limit for pagination
+	offset, _ := strconv.Atoi(c.Query("offset", "0"))
+	limit, _ := strconv.Atoi(c.Query("limit", "100"))
+
+	if offset > 0 || limit < len(results) {
+		if offset >= len(results) {
+			results = nil
+		} else {
+			end := offset + limit
+			if end > len(results) {
+				end = len(results)
+			}
+			results = results[offset:end]
+		}
 	}
 
 	xml, err := indexer.NewznabXML(results, h.serverURL)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "xml generation failed",
-		})
+		h.log.Error().Err(err).Msg("newznab xml generation failed")
+		return h.handleEmptyResults(c)
 	}
 
 	c.Set("Content-Type", "application/rss+xml")
@@ -93,16 +117,13 @@ func (h *Handler) handleMusic(c fiber.Ctx) error {
 	results, err := indexer.Search(c.Context(), h.client, query, artist, album)
 	if err != nil {
 		h.log.Error().Err(err).Msg("newznab music search failed")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "music search failed",
-		})
+		return h.handleEmptyResults(c)
 	}
 
 	xml, err := indexer.NewznabXML(results, h.serverURL)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "xml generation failed",
-		})
+		h.log.Error().Err(err).Msg("newznab xml generation failed")
+		return h.handleEmptyResults(c)
 	}
 
 	c.Set("Content-Type", "application/rss+xml")
@@ -110,22 +131,26 @@ func (h *Handler) handleMusic(c fiber.Ctx) error {
 }
 
 func (h *Handler) handleDetails(c fiber.Ctx) error {
-	// Lidarr expects RSS XML for details too — single item
 	id := c.Query("id")
 	results, err := indexer.Search(c.Context(), h.client, id, "", "")
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "details search failed",
-		})
+		return h.handleEmptyResults(c)
 	}
 
 	xml, err := indexer.NewznabXML(results, h.serverURL)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "xml generation failed",
-		})
+		return h.handleEmptyResults(c)
 	}
 
+	c.Set("Content-Type", "application/rss+xml")
+	return c.Send(xml)
+}
+
+func (h *Handler) handleEmptyResults(c fiber.Ctx) error {
+	xml, err := indexer.NewznabXML(nil, h.serverURL)
+	if err != nil {
+		return c.SendString("")
+	}
 	c.Set("Content-Type", "application/rss+xml")
 	return c.Send(xml)
 }

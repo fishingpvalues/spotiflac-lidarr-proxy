@@ -159,3 +159,42 @@ type Misc struct {
 	HistoryRetention     string `json:"history_retention,omitempty"`
 	PreCheck             bool   `json:"pre_check"`
 }
+
+// ServerStatsResponse for mode=server_stats
+type ServerStatsResponse struct {
+	Total      float64 `json:"total"`
+	Month      float64 `json:"month"`
+	Week       float64 `json:"week"`
+	Daily      float64 `json:"daily"`
+	Articles   int     `json:"articles"`
+	Speed      string  `json:"speed"`
+	Version    string  `json:"version"`
+	Day        float64 `json:"day"`
+	WeekAccel  float64 `json:"week_accel"`
+	MonthAccel float64 `json:"month_accel"`
+}
+
+// WarningsResponse for mode=warnings
+type WarningsResponse struct {
+	Warnings []Warning `json:"warnings"`
+}
+
+type Warning struct {
+	Time    int64  `json:"time"`
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	ID      string `json:"id,omitempty"`
+	Details string `json:"details,omitempty"`
+}
+
+// SimpleStatusResponse for mode=status
+type SimpleStatusResponse struct {
+	Paused bool `json:"paused"`
+}
+
+// RetryResponse for mode=retry
+type RetryResponse struct {
+	Status bool   `json:"status"`
+	NzoID  string `json:"nzo_id,omitempty"`
+	Error  string `json:"error,omitempty"`
+}

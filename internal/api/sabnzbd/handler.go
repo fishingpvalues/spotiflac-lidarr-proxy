@@ -92,6 +92,20 @@ func (h *Handler) dispatch(c fiber.Ctx) error {
 		return h.handleHistory(c)
 	case mode == "change_cat":
 		return h.handleChangeCat(c)
+	case mode == "server_stats":
+		return h.handleServerStats(c)
+	case mode == "status":
+		return h.handleStatus(c)
+	case mode == "retry":
+		return h.handleRetry(c)
+	case mode == "warnings":
+		return h.handleWarnings(c)
+	case mode == "pause_all":
+		return h.handlePauseAll(c)
+	case mode == "resume_all":
+		return h.handleResumeAll(c)
+	case mode == "set_speedlimit":
+		return h.handleSetSpeedlimit(c)
 	default:
 		return c.Status(fiber.StatusBadRequest).JSON(sabnzbd.StatusResponse{
 			Status: false,
