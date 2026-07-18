@@ -163,6 +163,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 	defer func() { <-h.sem }()
 
 	if !h.breaker.Allow(job.Service) {
+		metrics.RecordJobResult(string(sabnzbd.StatusFailed), job.Service)
 		h.failJob(job, fmt.Sprintf("service %s temporarily unavailable (circuit open)", job.Service))
 		return
 	}
@@ -171,6 +172,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 
 	jobDir, err := h.storage.PrepareJobDir(job.NzoID)
 	if err != nil {
+		metrics.RecordJobResult(string(sabnzbd.StatusFailed), job.Service)
 		h.failJob(job, err.Error())
 		return
 	}
