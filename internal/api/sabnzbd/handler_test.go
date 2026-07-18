@@ -3,6 +3,8 @@ package sabnzbd_test
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -167,4 +169,61 @@ func TestChangeCatUpdatesServiceAndQuality(t *testing.T) {
 	assert.Equal(t, "music-qobuz-flac-24", got.Category)
 	assert.Equal(t, "qobuz", got.Service)
 	assert.Equal(t, "hires", got.Quality)
+}
+
+func TestProcessDownloadFailsOnTrackCountMismatch(t *testing.T) {
+	outputDir := t.TempDir()
+	cfg := &config.Config{
+		APIKey:         "test-key",
+		OutputDir:      outputDir,
+		DefaultService: "tidal",
+		DefaultQuality: "lossless",
+		MaxConcurrent:  1,
+		JobTimeout:     30 * time.Second,
+	}
+	q, err := queue.New(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+	st := storage.New(outputDir)
+
+	// mockCli emits "complete" but writes only 1 file for a job expecting 2 tracks
+	scriptPath := filepath.Join(t.TempDir(), "spotiflac-cli")
+	script := `#!/bin/bash
+OUTDIR=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output-dir) OUTDIR="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$OUTDIR"
+touch "$OUTDIR/01.flac"
+echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless")
+
+	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+
+	job := &queue.Job{
+		NzoID:      "SABnzbd_nzo_mismatch",
+		SpotifyURL: "https://open.spotify.com/album/test",
+		Service:    "tidal",
+		Quality:    "lossless",
+		TrackCount: 2,
+	}
+	require.NoError(t, q.Add(job))
+
+	handler.ProcessDownloadSync(job)
+
+	got, err := q.Get("SABnzbd_nzo_mismatch")
+	// job moved to history on failure, so Get (active queue only) errors
+	require.Error(t, err)
+
+	hist, _, err := q.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, hist, 1)
+	assert.Equal(t, sabtypes.StatusFailed, hist[0].Status)
+	assert.Contains(t, hist[0].ErrorMessage, "partial album")
+	_ = got
 }

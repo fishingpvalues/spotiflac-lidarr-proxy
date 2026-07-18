@@ -48,6 +48,7 @@ func migrate(db *sql.DB) error {
 			error_message TEXT DEFAULT '',
 			service TEXT NOT NULL DEFAULT '',
 			quality TEXT NOT NULL DEFAULT '',
+			track_count INTEGER NOT NULL DEFAULT 0,
 			is_history INTEGER NOT NULL DEFAULT 0
 		);
 		`
@@ -59,11 +60,11 @@ func (q *SQLiteQueue) Add(job *Job) error {
 	job.TimeAdded = time.Now()
 	job.Status = sabnzbd.StatusQueued
 	_, err := q.db.Exec(
-		`INSERT INTO jobs (nzo_id, spotify_url, status, category, priority, filename, output_path, size, sizeleft, percentage, time_added, service, quality)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO jobs (nzo_id, spotify_url, status, category, priority, filename, output_path, size, sizeleft, percentage, time_added, service, quality, track_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.NzoID, job.SpotifyURL, job.Status, job.Category, job.Priority,
 		job.Filename, job.OutputPath, job.Size, job.Sizeleft, job.Percentage,
-		job.TimeAdded, job.Service, job.Quality,
+		job.TimeAdded, job.Service, job.Quality, job.TrackCount,
 	)
 	return err
 }
@@ -74,12 +75,12 @@ func (q *SQLiteQueue) Get(nzoID string) (*Job, error) {
 	err := q.db.QueryRow(
 		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
 		        output_path, size, sizeleft, percentage, time_added, completed_at,
-		        error_message, service, quality
+		        error_message, service, quality, track_count
 		 FROM jobs WHERE nzo_id = ? AND is_history = 0`, nzoID,
 	).Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status, &job.Category,
 		&job.Priority, &job.Filename, &job.OutputPath, &job.Size, &job.Sizeleft,
 		&job.Percentage, &job.TimeAdded, &completedAt, &job.ErrorMessage,
-		&job.Service, &job.Quality)
+		&job.Service, &job.Quality, &job.TrackCount)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +129,7 @@ func (q *SQLiteQueue) List(params ListParams) ([]*Job, int, error) {
 	query := fmt.Sprintf(
 		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
 		        output_path, size, sizeleft, percentage, time_added, completed_at,
-		        error_message, service, quality
+		        error_message, service, quality, track_count
 		 FROM jobs %s ORDER BY time_added ASC LIMIT ? OFFSET ?`, whereClause)
 
 	allArgs := append(args, params.Limit, params.Start)
@@ -145,7 +146,7 @@ func (q *SQLiteQueue) List(params ListParams) ([]*Job, int, error) {
 		if err := rows.Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status,
 			&job.Category, &job.Priority, &job.Filename, &job.OutputPath,
 			&job.Size, &job.Sizeleft, &job.Percentage, &job.TimeAdded,
-			&completedAt, &job.ErrorMessage, &job.Service, &job.Quality); err != nil {
+			&completedAt, &job.ErrorMessage, &job.Service, &job.Quality, &job.TrackCount); err != nil {
 			return nil, 0, err
 		}
 		if completedAt.Valid {
@@ -163,11 +164,11 @@ func (q *SQLiteQueue) Update(job *Job) error {
 	_, err := q.db.Exec(
 		`UPDATE jobs SET status=?, category=?, priority=?, filename=?, output_path=?,
 		        size=?, sizeleft=?, percentage=?, completed_at=?, error_message=?,
-		        service=?, quality=?
+		        service=?, quality=?, track_count=?
 		 WHERE nzo_id=?`,
 		job.Status, job.Category, job.Priority, job.Filename, job.OutputPath,
 		job.Size, job.Sizeleft, job.Percentage, job.CompletedAt, job.ErrorMessage,
-		job.Service, job.Quality, job.NzoID,
+		job.Service, job.Quality, job.TrackCount, job.NzoID,
 	)
 	return err
 }
@@ -206,7 +207,7 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 	query := fmt.Sprintf(
 		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
 		        output_path, size, sizeleft, percentage, time_added, completed_at,
-		        error_message, service, quality
+		        error_message, service, quality, track_count
 		 FROM jobs %s ORDER BY completed_at DESC LIMIT ? OFFSET ?`, whereClause)
 
 	allArgs := append(args, params.Limit, params.Start)
@@ -223,7 +224,7 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 		if err := rows.Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status,
 			&job.Category, &job.Priority, &job.Filename, &job.OutputPath,
 			&job.Size, &job.Sizeleft, &job.Percentage, &job.TimeAdded,
-			&completedAt, &job.ErrorMessage, &job.Service, &job.Quality); err != nil {
+			&completedAt, &job.ErrorMessage, &job.Service, &job.Quality, &job.TrackCount); err != nil {
 			return nil, 0, err
 		}
 		if completedAt.Valid {

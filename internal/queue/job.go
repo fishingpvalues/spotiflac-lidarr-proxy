@@ -23,6 +23,7 @@ type Job struct {
 	ErrorMessage string             `json:"error_message,omitempty"`
 	Service      string             `json:"service"`
 	Quality      string             `json:"quality"`
+	TrackCount   int                `json:"track_count"`
 }
 
 type ListParams struct {
