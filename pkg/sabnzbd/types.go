@@ -57,9 +57,10 @@ type Queue struct {
 	Diskspace2     float64 `json:"diskspace2"`
 	Diskspacetotal1 float64 `json:"diskspacetotal1"`
 	Diskspacetotal2 float64 `json:"diskspacetotal2"`
-	Version        string  `json:"version"`
-	Finish         int     `json:"finish"`
-	PausedAll      bool    `json:"paused_all"`
+	Version             string  `json:"version"`
+	DefaultRootFolder   string  `json:"defaultrootfolder,omitempty"`
+	Finish              int     `json:"finish"`
+	PausedAll           bool    `json:"paused_all"`
 }
 
 type Slot struct {
@@ -153,11 +154,19 @@ type Script struct {
 }
 
 type Misc struct {
-	Version              string `json:"version"`
-	CompletedDir         string `json:"complete_dir"`
-	CompleteDirEnabled   bool   `json:"complete_dir_enabled"`
-	HistoryRetention     string `json:"history_retention,omitempty"`
-	PreCheck             bool   `json:"pre_check"`
+	Version                 string   `json:"version"`
+	CompletedDir            string   `json:"complete_dir"`
+	CompleteDirEnabled      bool     `json:"complete_dir_enabled"`
+	HistoryRetention        string   `json:"history_retention,omitempty"`
+	HistoryRetentionOption  string   `json:"history_retention_option,omitempty"`
+	HistoryRetentionNumber  int      `json:"history_retention_number,omitempty"`
+	PreCheck                bool     `json:"pre_check"`
+	TvCategories            []string `json:"tv_categories,omitempty"`
+	MovieCategories         []string `json:"movie_categories,omitempty"`
+	DateCategories          []string `json:"date_categories,omitempty"`
+	EnableTvSorting         bool     `json:"enable_tv_sorting,omitempty"`
+	EnableMovieSorting      bool     `json:"enable_movie_sorting,omitempty"`
+	EnableDateSorting       bool     `json:"enable_date_sorting,omitempty"`
 }
 
 // ServerStatsResponse for mode=server_stats
@@ -195,6 +204,7 @@ type SimpleStatusResponse struct {
 // RetryResponse for mode=retry
 type RetryResponse struct {
 	Status bool   `json:"status"`
+	Id     string `json:"id,omitempty"`
 	NzoID  string `json:"nzo_id,omitempty"`
 	Error  string `json:"error,omitempty"`
 }

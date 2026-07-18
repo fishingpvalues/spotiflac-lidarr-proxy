@@ -1,0 +1,476 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "spotiflac-lidarr-proxy",
+    "description": "Bridge Lidarr ↔ SpotiFLAC. Implements SABnzbd download client API and Newznab indexer API so Lidarr treats this proxy as a standard Usenet downloader.",
+    "version": "1.1.0",
+    "contact": {
+      "url": "https://github.com/fishingpvalues/spotiflac-lidarr-proxy"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://proxy:8484",
+      "description": "Docker compose internal"
+    }
+  ],
+  "security": [
+    {
+      "ApiKeyAuth": []
+    }
+  ],
+  "paths": {
+    "/api": {
+      "get": {
+        "summary": "SABnzbd API dispatch",
+        "description": "Main SABnzbd-compatible API endpoint. Dispatches by mode parameter.",
+        "parameters": [
+          { "$ref": "#/components/parameters/ApiKey" },
+          { "$ref": "#/components/parameters/Mode" },
+          { "$ref": "#/components/parameters/Output" },
+          { "$ref": "#/components/parameters/Name" },
+          { "$ref": "#/components/parameters/NzbName" },
+          { "$ref": "#/components/parameters/Cat" },
+          { "$ref": "#/components/parameters/Priority" },
+          { "$ref": "#/components/parameters/Value" },
+          { "$ref": "#/components/parameters/Value2" },
+          { "$ref": "#/components/parameters/DelFiles" },
+          { "$ref": "#/components/parameters/Start" },
+          { "$ref": "#/components/parameters/Limit" },
+          { "$ref": "#/components/parameters/Search" },
+          { "$ref": "#/components/parameters/NzoIDs" },
+          { "$ref": "#/components/parameters/Status" }
+        ],
+        "responses": {
+          "200": {
+            "description": "SABnzbd API response. Schema varies by mode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/VersionResponse" },
+                    { "$ref": "#/components/schemas/AuthResponse" },
+                    { "$ref": "#/components/schemas/ConfigResponse" },
+                    { "$ref": "#/components/schemas/CategoriesResponse" },
+                    { "$ref": "#/components/schemas/FullStatusResponse" },
+                    { "$ref": "#/components/schemas/QueueResponse" },
+                    { "$ref": "#/components/schemas/HistoryResponse" },
+                    { "$ref": "#/components/schemas/AddURLResponse" },
+                    { "$ref": "#/components/schemas/StatusResponse" },
+                    { "$ref": "#/components/schemas/ServerStatsResponse" },
+                    { "$ref": "#/components/schemas/WarningsResponse" },
+                    { "$ref": "#/components/schemas/SimpleStatusResponse" },
+                    { "$ref": "#/components/schemas/RetryResponse" }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "description": "Bad request - unknown mode or missing parameters" },
+          "401": { "description": "Unauthorized - invalid or missing API key" }
+        }
+      },
+      "post": {
+        "summary": "SABnzbd API dispatch (POST)",
+        "parameters": [
+          { "$ref": "#/components/parameters/ApiKey" },
+          { "$ref": "#/components/parameters/Mode" },
+          { "$ref": "#/components/parameters/Name" }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string", "description": "Spotify URL or NZB file" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "OK" },
+          "400": { "description": "Bad request" }
+        }
+      }
+    },
+    "/api/sabnzbd": {
+      "get": {
+        "summary": "SABnzbd API (legacy path)",
+        "description": "Alternate path for SABnzbd API. Same behavior as /api.",
+        "parameters": [
+          { "$ref": "#/components/parameters/ApiKey" },
+          { "$ref": "#/components/parameters/Mode" },
+          { "$ref": "#/components/parameters/Output" }
+        ],
+        "responses": {
+          "200": { "description": "Same as /api" },
+          "400": { "description": "Bad request" }
+        }
+      }
+    },
+    "/api/newznab": {
+      "get": {
+        "summary": "Newznab indexer API",
+        "description": "Newznab-compatible indexer endpoint. Dispatches by t parameter.",
+        "parameters": [
+          { "$ref": "#/components/parameters/ApiKey" },
+          { "$ref": "#/components/parameters/T" },
+          { "$ref": "#/components/parameters/Q" },
+          { "$ref": "#/components/parameters/Artist" },
+          { "$ref": "#/components/parameters/Album" },
+          { "$ref": "#/components/parameters/Id" },
+          { "$ref": "#/components/parameters/Offset" },
+          { "$ref": "#/components/parameters/Limit" },
+          { "$ref": "#/components/parameters/Cat" },
+          { "$ref": "#/components/parameters/MaxAge" },
+          { "$ref": "#/components/parameters/Extended" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Newznab RSS XML response",
+            "content": {
+              "application/rss+xml": {
+                "schema": { "$ref": "#/components/schemas/NewznabRSS" }
+              }
+            }
+          },
+          "400": { "description": "Bad request" }
+        }
+      }
+    },
+    "/api/newznab/": {
+      "get": {
+        "summary": "Newznab indexer API (trailing slash)",
+        "parameters": [
+          { "$ref": "#/components/parameters/T" },
+          { "$ref": "#/components/parameters/ApiKey" }
+        ],
+        "responses": {
+          "200": { "description": "Same as /api/newznab" }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Server is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "apikey",
+        "description": "API key for authentication. Must match SPF_API_KEY."
+      }
+    },
+    "parameters": {
+      "ApiKey": { "name": "apikey", "in": "query", "required": false, "schema": { "type": "string" }, "description": "API key for authentication" },
+      "Mode": { "name": "mode", "in": "query", "required": false, "schema": { "type": "string" }, "description": "SABnzbd API mode: version, auth, get_config, get_cats, fullstatus, addurl, addfile, queue, history, retry, change_cat, server_stats, warnings, pause_all, resume_all, set_speedlimit, status" },
+      "T": { "name": "t", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Newznab request type: caps, search, music, details, get" },
+      "Q": { "name": "q", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Search query" },
+      "Artist": { "name": "artist", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Artist name for music search" },
+      "Album": { "name": "album", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Album name for music search" },
+      "Id": { "name": "id", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Item ID for details lookup" },
+      "Name": { "name": "name", "in": "query", "required": false, "schema": { "type": "string" }, "description": "For addurl: Spotify URL. For queue: pause/resume/delete" },
+      "NzbName": { "name": "nzbname", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Optional NZB filename for display" },
+      "Cat": { "name": "cat", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Category (e.g. music-flac-16, music-tidal, music-qobuz-flac-24)" },
+      "Priority": { "name": "priority", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Job priority: Normal, High, Low" },
+      "Value": { "name": "value", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Job nzo_id for pause/resume/delete/retry/change_cat" },
+      "Value2": { "name": "value2", "in": "query", "required": false, "schema": { "type": "string" }, "description": "New category for change_cat" },
+      "DelFiles": { "name": "del_files", "in": "query", "required": false, "schema": { "type": "string", "enum": ["0", "1"] }, "description": "Delete files when removing job" },
+      "Start": { "name": "start", "in": "query", "required": false, "schema": { "type": "integer", "default": 0 }, "description": "Pagination offset" },
+      "Limit": { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "default": 50 }, "description": "Pagination limit" },
+      "Search": { "name": "search", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Search term for queue/history" },
+      "NzoIDs": { "name": "nzo_ids", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Comma-separated nzo_ids for queue filtering" },
+      "Status": { "name": "status", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Status filter for queue" },
+      "Output": { "name": "output", "in": "query", "required": false, "schema": { "type": "string", "default": "json" }, "description": "Output format" },
+      "Offset": { "name": "offset", "in": "query", "required": false, "schema": { "type": "integer", "default": 0 }, "description": "Newznab pagination offset" },
+      "MaxAge": { "name": "maxage", "in": "query", "required": false, "schema": { "type": "integer" }, "description": "Maximum age in days" },
+      "Extended": { "name": "extended", "in": "query", "required": false, "schema": { "type": "integer", "enum": [0, 1] }, "description": "Extended attributes" }
+    },
+    "schemas": {
+      "VersionResponse": {
+        "type": "object",
+        "properties": { "version": { "type": "string", "description": "Server version", "example": "1.1.0" } }
+      },
+      "AuthResponse": {
+        "type": "object",
+        "properties": { "auth": { "type": "boolean", "description": "Auth status", "example": true } }
+      },
+      "AddURLResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "boolean" },
+          "nzo_ids": { "type": "array", "items": { "type": "string" }, "description": "Job IDs" }
+        }
+      },
+      "CategoriesResponse": {
+        "type": "object",
+        "properties": {
+          "categories": { "type": "array", "items": { "type": "string" }, "description": "Available categories" }
+        }
+      },
+      "QueueResponse": {
+        "type": "object",
+        "properties": {
+          "queue": { "$ref": "#/components/schemas/Queue" }
+        }
+      },
+      "Queue": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "enum": ["Idle", "Downloading", "Paused"] },
+          "speedlimit": { "type": "string" },
+          "speedlimit_abs": { "type": "string" },
+          "paused": { "type": "boolean" },
+          "noofslots": { "type": "integer" },
+          "noofslots_total": { "type": "integer" },
+          "limit": { "type": "integer" },
+          "start": { "type": "integer" },
+          "timeleft": { "type": "string", "example": "0:15:30" },
+          "speed": { "type": "string", "example": "15.50 M" },
+          "kbpersec": { "type": "string", "example": "15872.0" },
+          "size": { "type": "string" },
+          "sizeleft": { "type": "string" },
+          "mb": { "type": "number", "format": "float" },
+          "mbleft": { "type": "number", "format": "float" },
+          "defaultrootfolder": { "type": "string", "description": "Default output path" },
+          "slots": { "type": "array", "items": { "$ref": "#/components/schemas/Slot" } },
+          "diskspace1": { "type": "number", "format": "float", "description": "Free disk space in GB" },
+          "diskspace2": { "type": "number", "format": "float" },
+          "diskspacetotal1": { "type": "number", "format": "float", "description": "Total disk space in GB" },
+          "diskspacetotal2": { "type": "number", "format": "float" },
+          "version": { "type": "string" },
+          "finish": { "type": "integer", "description": "Estimated finish unix timestamp" },
+          "paused_all": { "type": "boolean" }
+        }
+      },
+      "Slot": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "enum": ["Queued", "Downloading", "Completed", "Failed", "Paused"] },
+          "index": { "type": "integer" },
+          "nzo_id": { "type": "string" },
+          "filename": { "type": "string", "description": "Artist - Album" },
+          "size": { "type": "string", "description": "Human-readable size" },
+          "sizeleft": { "type": "string" },
+          "mb": { "type": "number", "format": "float", "description": "Size in MB" },
+          "mbleft": { "type": "number", "format": "float", "description": "Remaining MB" },
+          "percentage": { "type": "string", "example": "45" },
+          "timeleft": { "type": "string", "example": "0:05:00" },
+          "priority": { "type": "string" },
+          "cat": { "type": "string" },
+          "labels": { "type": "array", "items": { "type": "string" } },
+          "time_added": { "type": "integer", "description": "Unix timestamp" },
+          "script": { "type": "string" },
+          "unpackopts": { "type": "string" },
+          "password": { "type": "string" },
+          "avg_age": { "type": "string" },
+          "direct_unpack": { "type": "string" },
+          "mbmissing": { "type": "number", "format": "float" }
+        }
+      },
+      "HistoryResponse": {
+        "type": "object",
+        "properties": {
+          "history": { "$ref": "#/components/schemas/History" }
+        }
+      },
+      "History": {
+        "type": "object",
+        "properties": {
+          "noofslots": { "type": "integer" },
+          "total_size": { "type": "string" },
+          "month_size": { "type": "string" },
+          "week_size": { "type": "string" },
+          "slots": { "type": "array", "items": { "$ref": "#/components/schemas/HistorySlot" } },
+          "version": { "type": "string" }
+        }
+      },
+      "HistorySlot": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "nzo_id": { "type": "string" },
+          "name": { "type": "string" },
+          "size": { "type": "integer", "description": "Size in bytes" },
+          "cat": { "type": "string" },
+          "completed": { "type": "integer", "description": "Completion unix timestamp" },
+          "download_time": { "type": "integer", "description": "Download duration in seconds" },
+          "script": { "type": "string" },
+          "storage": { "type": "string", "description": "Output directory path" },
+          "path": { "type": "string" },
+          "fail_message": { "type": "string" },
+          "url": { "type": "string" }
+        }
+      },
+      "FullStatusResponse": {
+        "type": "object",
+        "properties": {
+          "complete_dir": { "type": "string", "description": "Download output directory" }
+        }
+      },
+      "StatusResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "boolean" },
+          "nzo_ids": { "type": "array", "items": { "type": "string" } },
+          "error": { "type": "string" }
+        }
+      },
+      "ConfigResponse": {
+        "type": "object",
+        "properties": {
+          "config": { "$ref": "#/components/schemas/Config" }
+        }
+      },
+      "Config": {
+        "type": "object",
+        "properties": {
+          "categories": { "type": "array", "items": { "$ref": "#/components/schemas/Category" } },
+          "scripts": { "type": "array", "items": { "$ref": "#/components/schemas/Script" } },
+          "speedlimit": { "type": "string" },
+          "misc": { "$ref": "#/components/schemas/Misc" }
+        }
+      },
+      "Category": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "order": { "type": "integer" },
+          "dir": { "type": "string", "description": "Output subdirectory" }
+        }
+      },
+      "Script": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "default": { "type": "boolean" }
+        }
+      },
+      "Misc": {
+        "type": "object",
+        "properties": {
+          "version": { "type": "string" },
+          "complete_dir": { "type": "string" },
+          "complete_dir_enabled": { "type": "boolean" },
+          "history_retention": { "type": "string" },
+          "history_retention_option": { "type": "string" },
+          "history_retention_number": { "type": "integer" },
+          "pre_check": { "type": "boolean" },
+          "tv_categories": { "type": "array", "items": { "type": "string" } },
+          "movie_categories": { "type": "array", "items": { "type": "string" } },
+          "date_categories": { "type": "array", "items": { "type": "string" } },
+          "enable_tv_sorting": { "type": "boolean" },
+          "enable_movie_sorting": { "type": "boolean" },
+          "enable_date_sorting": { "type": "boolean" }
+        }
+      },
+      "ServerStatsResponse": {
+        "type": "object",
+        "properties": {
+          "total": { "type": "number", "format": "float" },
+          "month": { "type": "number", "format": "float" },
+          "week": { "type": "number", "format": "float" },
+          "daily": { "type": "number", "format": "float" },
+          "articles": { "type": "integer" },
+          "speed": { "type": "string" },
+          "version": { "type": "string" },
+          "day": { "type": "number", "format": "float" },
+          "week_accel": { "type": "number", "format": "float" },
+          "month_accel": { "type": "number", "format": "float" }
+        }
+      },
+      "WarningsResponse": {
+        "type": "object",
+        "properties": {
+          "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/Warning" } }
+        }
+      },
+      "Warning": {
+        "type": "object",
+        "properties": {
+          "time": { "type": "integer" },
+          "type": { "type": "string" },
+          "text": { "type": "string" },
+          "id": { "type": "string" },
+          "details": { "type": "string" }
+        }
+      },
+      "SimpleStatusResponse": {
+        "type": "object",
+        "properties": {
+          "paused": { "type": "boolean" }
+        }
+      },
+      "RetryResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "boolean" },
+          "id": { "type": "string" },
+          "nzo_id": { "type": "string" },
+          "error": { "type": "string" }
+        }
+      },
+      "NewznabRSS": {
+        "type": "object",
+        "description": "Newznab RSS XML response",
+        "xml": { "name": "rss" },
+        "properties": {
+          "version": { "type": "string" },
+          "channel": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "description": { "type": "string" },
+              "link": { "type": "string" },
+              "language": { "type": "string" },
+              "category": { "type": "string" },
+              "item": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "title": { "type": "string" },
+                    "guid": { "type": "string" },
+                    "link": { "type": "string" },
+                    "pubDate": { "type": "string" },
+                    "description": { "type": "string" },
+                    "enclosure": {
+                      "type": "object",
+                      "properties": {
+                        "url": { "type": "string" },
+                        "length": { "type": "string" },
+                        "type": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

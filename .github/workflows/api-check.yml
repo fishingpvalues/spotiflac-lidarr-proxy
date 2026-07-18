@@ -1,0 +1,36 @@
+name: API Compatibility Check
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 7 * * 1"  # Monday 7am UTC
+  workflow_dispatch:
+
+jobs:
+  api-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build check
+        run: go build ./cmd/server
+
+      - name: API compat tests (Lidarr + SpotiFLAC upstream match)
+        run: go test -tags apicompat -v ./tests/apicompat/
+
+      - name: Validate OpenAPI spec
+        run: |
+          npm install -g @redocly/cli 2>/dev/null || true
+          # Basic JSON validation
+          python3 -c "
+import json
+with open('openapi.json') as f:
+    spec = json.load(f)
+print('OpenAPI spec valid: %d paths, %d schemas' % (
+    len(spec.get('paths', {})),
+    len(spec.get('components', {}).get('schemas', {}))
+))
+"
