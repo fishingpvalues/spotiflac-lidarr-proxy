@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
+
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
 )
 
 type Client struct {
@@ -45,11 +47,14 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 		ctx, cancel := context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 
+		// Map proxy quality names to SpotiFLAC CLI uppercase flags
+		cliQuality := config.SpotiflacQuality(quality)
+
 		cmd := exec.CommandContext(ctx, c.cliPath,
 			"--url", url,
 			"--output-dir", outputDir,
 			"--service", service,
-			"--quality", quality,
+			"--quality", cliQuality,
 		)
 
 		stdout, err := cmd.StdoutPipe()
@@ -106,7 +111,6 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 			CoverURL    string `json:"cover_url"`
 			Year        string `json:"year"`
 			TrackCount  int    `json:"track_count"`
-			// Also try direct MetadataResult fields for backward compat
 			Title string `json:"title"`
 			ISRC  string `json:"isrc"`
 			Genre string `json:"genre"`
@@ -114,7 +118,6 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			continue
 		}
-		// Accept both search_result and direct MetadataResult formats
 		url := raw.SpotifyURL
 		if url == "" {
 			continue

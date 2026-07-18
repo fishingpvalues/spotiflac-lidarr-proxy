@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,4 +69,51 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("job_timeout", "30m")
 	v.SetDefault("db_path", "/data/queue.db")
 	v.SetDefault("log_level", "info")
+}
+
+// Service constants matching SpotiFLAC CLI
+const (
+	ServiceTidal  = "tidal"
+	ServiceQobuz  = "qobuz"
+	ServiceAmazon = "amazon"
+	ServiceDeezer = "deezer"
+)
+
+// SpotiflacQuality maps proxy quality names → SpotiFLAC CLI --quality values.
+// SpotiFLAC CLI expects uppercase: LOSSLESS, HIRES_LOSSLESS.
+func SpotiflacQuality(proxyQuality string) string {
+	switch proxyQuality {
+	case "lossless", "flac-16", "cd", "16":
+		return "LOSSLESS"
+	case "hires", "hires-lossless", "hires_lossless", "flac-24", "24":
+		return "HIRES_LOSSLESS"
+	case "both":
+		return "HIRES_LOSSLESS"
+	default:
+		return "LOSSLESS"
+	}
+}
+
+// ParseCategory extracts service and quality from a SABnzbd category name.
+// Categories follow the pattern: music-[service][-quality]
+// Examples: music-tidal, music-flac-16, music-qobuz-flac-24
+func ParseCategory(cat string) (service, quality string) {
+	cat = cat // keep lowercase
+
+	// Detect service
+	for _, svc := range []string{"tidal", "qobuz", "amazon", "deezer"} {
+		if strings.Contains(cat, svc) {
+			service = svc
+			break
+		}
+	}
+
+	// Detect quality
+	if strings.Contains(cat, "flac-24") || strings.Contains(cat, "hires") || strings.Contains(cat, "24") {
+		quality = "hires"
+	} else if strings.Contains(cat, "flac-16") || strings.Contains(cat, "lossless") || strings.Contains(cat, "16") {
+		quality = "lossless"
+	}
+
+	return
 }

@@ -199,54 +199,66 @@ All via environment variables prefixed `SPF_`:
 | SPF_DB_PATH | /data/queue.db | SQLite database path |
 | SPF_LOG_LEVEL | info | Log level |
 
-## Building
 
-```bash
-# Native build
-go build ./cmd/server
-./server serve
+## Category System
 
-# Docker multi-arch build
-docker buildx create --use --name multiarch 2>/dev/null || true
-docker buildx build --platform linux/amd64,linux/arm64 -t proxy:test .
+The proxy exposes 17 categories that Lidarr can use to select service and quality. Categories follow the pattern `music-[service][-quality]`, parsed at download time to set the correct `--service` and `--quality` flags for SpotiFLAC CLI.
+
+### SABnzbd Categories (Lidarr Download Client)
+
+| Category | Quality | Service | SpotiFLAC --quality |
+|----------|---------|---------|---------------------|
+| music | Default | default (tidal) | LOSSLESS |
+| music-flac-16 | CD Quality 16-bit | default (tidal) | LOSSLESS |
+| music-flac-24 | Hi-Res 24-bit | default (tidal) | HIRES_LOSSLESS |
+| music-lossless | Best available | default (tidal) | HIRES_LOSSLESS |
+| music-mp3 | MP3 | default (tidal) | LOSSLESS |
+| music-tidal | Best available | Tidal | HIRES_LOSSLESS |
+| music-qobuz | Best available | Qobuz | HIRES_LOSSLESS |
+| music-amazon | Best available | Amazon | HIRES_LOSSLESS |
+| music-deezer | Best available | Deezer | HIRES_LOSSLESS |
+| music-tidal-flac-16 | CD Quality | Tidal | LOSSLESS |
+| music-tidal-flac-24 | Hi-Res | Tidal | HIRES_LOSSLESS |
+| music-qobuz-flac-16 | CD Quality | Qobuz | LOSSLESS |
+| music-qobuz-flac-24 | Hi-Res | Qobuz | HIRES_LOSSLESS |
+| music-amazon-flac-16 | CD Quality | Amazon | LOSSLESS |
+| music-amazon-flac-24 | Hi-Res | Amazon | HIRES_LOSSLESS |
+| music-deezer-flac-16 | CD Quality | Deezer | LOSSLESS |
+| music-deezer-flac-24 | Hi-Res | Deezer | HIRES_LOSSLESS |
+
+### Newznab Categories (Lidarr Indexer)
+
+| ID | Name | Maps To |
+|----|------|---------|
+| 3010 | Lossless | music-lossless |
+| 3040 | FLAC 24-bit | music-flac-24 |
+| 3050 | FLAC 16-bit | music-flac-16 |
+| 3060 | Tidal | music-tidal |
+| 3061 | Qobuz | music-qobuz |
+| 3062 | Amazon | music-amazon |
+| 3063 | Deezer | music-deezer |
+
+### SpotiFLAC Service x Quality Matrix
+
+| Service | LOSSLESS (16-bit FLAC) | HIRES_LOSSLESS (24-bit FLAC) |
+|---------|----------------------|------------------------------|
+| tidal | Yes (FLAC 44.1/16) | Yes (FLAC up to 192/24) |
+| qobuz | Yes (FLAC 44.1/16) | Yes (FLAC up to 192/24) |
+| amazon | Yes (FLAC 44.1/16) | Yes (FLAC up to 192/24) |
+| deezer | Yes (FLAC 44.1/16) | Limited availability |
+
+### Quality Mapping
+
+When Lidarr adds a download with a specific category, the proxy extracts service and quality:
+
+```
+music-qobuz-flac-24  →  --service qobuz --quality HIRES_LOSSLESS
+music-tidal-flac-16  →  --service tidal --quality LOSSLESS
+music-flac-24        →  --service [default] --quality HIRES_LOSSLESS
+music-amazon         →  --service amazon --quality HIRES_LOSSLESS (default)
 ```
 
-## Testing
-
-```bash
-# Unit tests
-go test ./... -count=1
-
-# Integration tests (requires docker-compose up)
-INTEGRATION=1 go test ./tests/integration/... -v
-```
-
-## CI/CD
-
-Three workflows:
-
-| Workflow | Trigger | Artifacts |
-|----------|---------|-----------|
-| **CI** | Push/PR to main | Go lint, test, build, multi-arch Docker dry-run |
-| **Release** | Push tag `v*` | Multi-arch Docker images to GHCR (`latest`, semver) |
-| **Beta** | Push to main | Multi-arch Docker images to GHCR (`beta`, `sha-<hash>`) |
-
-## Project Structure
-
-```
-cmd/server/           Entry point
-internal/api/         SABnzbd + Newznab HTTP handlers
-internal/spotiflac/   SpotiFLAC CLI wrapper
-internal/queue/       SQLite job queue
-internal/indexer/     Spotify metadata → Newznab XML
-internal/storage/     File system operations
-pkg/sabnzbd/          Shared SABnzbd API types
-```
-
-## AI Usage
-
-This project was planned, architected, and implemented with assistance from Anthropic Claude (Claude Code). AI contributions include: architecture design, code generation, test authoring, CI/CD pipeline setup, and documentation. All code is human-reviewed and tested.
-
-## License
-
-MIT
+This means users can pick:
+- **Quality-based**: `music-flac-16` or `music-flac-24` — uses default service with desired quality
+- **Service-based**: `music-tidal` — uses best quality on that service
+- **Combined**: `music-qobuz-flac-24` — full control over service and quality

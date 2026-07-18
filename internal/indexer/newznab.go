@@ -149,8 +149,13 @@ func CapsXML(serverURL string) []byte {
   </searching>
   <categories>
     <category id="3000" name="Audio">
-      <subcat id="3010" name="Lossless" />
-      <subcat id="3040" name="Flac" />
+      <subcat id="3010" name="Lossless"/>
+      <subcat id="3040" name="FLAC 24-bit"/>
+      <subcat id="3050" name="FLAC 16-bit"/>
+      <subcat id="3060" name="Tidal"/>
+      <subcat id="3061" name="Qobuz"/>
+      <subcat id="3062" name="Amazon"/>
+      <subcat id="3063" name="Deezer"/>
     </category>
   </categories>
 </caps>`

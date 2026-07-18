@@ -2,6 +2,7 @@ package sabnzbd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -37,14 +38,23 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 
 	nzoID := "SABnzbd_nzo_" + uuid.New().String()[:12]
 
+	// Extract service and quality from category
+	svc, qual := parseCategory(cat)
+	if svc == "" {
+		svc = h.cfg.DefaultService
+	}
+	if qual == "" {
+		qual = h.cfg.DefaultQuality
+	}
+
 	job := &queue.Job{
 		NzoID:      nzoID,
 		SpotifyURL: spotifyURL,
 		Category:   cat,
 		Priority:   priority,
 		Filename:   nzbName,
-		Service:    h.cfg.DefaultService,
-		Quality:    h.cfg.DefaultQuality,
+		Service:    svc,
+		Quality:    qual,
 	}
 
 	if err := h.queue.Add(job); err != nil {
@@ -60,4 +70,35 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		Status: true,
 		NzoIDs: []string{nzoID},
 	})
+}
+
+// parseCategory extracts service and quality from a SABnzbd category name.
+// Category naming: music-[service][-quality]
+// Examples:
+//
+//	music-tidal         → service=tidal, quality=default
+//	music-qobuz-flac-24 → service=qobuz, quality=hires
+//	music-flac-16       → service=default, quality=lossless
+//	music-amazon-flac-24 → service=amazon, quality=hires
+func parseCategory(cat string) (service, quality string) {
+	catLower := strings.ToLower(cat)
+
+	// Detect service
+	for _, svc := range []string{"tidal", "qobuz", "amazon", "deezer"} {
+		if strings.Contains(catLower, svc) {
+			service = svc
+			break
+		}
+	}
+
+	// Detect quality
+	if strings.Contains(catLower, "flac-24") || strings.Contains(catLower, "hires") || strings.Contains(catLower, "24-bit") {
+		quality = "hires"
+	} else if strings.Contains(catLower, "flac-16") || strings.Contains(catLower, "lossless") || strings.Contains(catLower, "16-bit") {
+		quality = "lossless"
+	} else if strings.Contains(catLower, "mp3") {
+		quality = "lossless"
+	}
+
+	return
 }
