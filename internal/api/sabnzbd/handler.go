@@ -49,10 +49,12 @@ func (h *Handler) SetLogger(log zerolog.Logger) {
 }
 
 func (h *Handler) RegisterRoutes(app *fiber.App) {
-	api := app.Group("/api/sabnzbd")
+	h.RegisterRoutesOnGroup(app.Group("/api/sabnzbd"))
+}
 
-	api.Get("/", h.dispatch)
-	api.Post("/", h.dispatch)
+func (h *Handler) RegisterRoutesOnGroup(group fiber.Router) {
+	group.Get("/", h.dispatch)
+	group.Post("/", h.dispatch)
 }
 
 func (h *Handler) dispatch(c fiber.Ctx) error {

@@ -24,12 +24,14 @@ func APIKeyAuth(apiKey string) fiber.Handler {
 
 func APIKeyAuthWithSkiplist(apiKey string, skipModes ...string) fiber.Handler {
 	return func(c fiber.Ctx) error {
+		// Check both "mode" (sabnzbd) and "t" (newznab) parameters
 		mode := c.Query("mode")
 		if mode == "" {
 			mode = c.FormValue("mode")
 		}
+		t := c.Query("t")
 		for _, skip := range skipModes {
-			if mode == skip {
+			if mode == skip || t == skip {
 				return c.Next()
 			}
 		}

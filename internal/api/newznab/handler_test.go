@@ -21,7 +21,7 @@ func setupNewznabApp(t *testing.T) *fiber.App {
 	handler := newznab.NewHandler(client, "http://localhost:8484")
 
 	app := fiber.New()
-	app.Use(api.APIKeyAuth("test-key"))
+	app.Use(api.APIKeyAuthWithSkiplist("test-key", "caps"))
 	handler.RegisterRoutes(app)
 
 	return app
@@ -31,6 +31,16 @@ func TestCaps(t *testing.T) {
 	app := setupNewznabApp(t)
 
 	req, _ := http.NewRequest("GET", "/api/newznab?t=caps&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "xml")
+}
+
+func TestCapsNoAuth(t *testing.T) {
+	app := setupNewznabApp(t)
+
+	req, _ := http.NewRequest("GET", "/api/newznab?t=caps", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
