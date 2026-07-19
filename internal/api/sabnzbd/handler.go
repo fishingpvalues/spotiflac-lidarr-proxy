@@ -2,6 +2,7 @@ package sabnzbd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -308,6 +309,10 @@ func (h *Handler) attemptDownload(job *queue.Job, jobDir string) (bool, string) 
 				continue
 			}
 			if e != nil {
+				var de *spotiflac.DownloadError
+				if errors.As(e, &de) && de.RawOutput != "" {
+					job.CLIOutput = de.RawOutput
+				}
 				return false, e.Error()
 			}
 		}

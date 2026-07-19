@@ -97,6 +97,28 @@ func TestDownloadTimeout(t *testing.T) {
 	assert.NotEmpty(t, gotErrs)
 }
 
+func TestDownloadCapturesOutputOnFailure(t *testing.T) {
+	responses := []string{
+		`{"type":"error","message":"disk full"}`,
+	}
+	client := spotiflac.NewClient(mockCli(t, responses), 5*time.Second, "tidal", "lossless")
+
+	events, errs := client.Download(context.Background(),
+		"https://open.spotify.com/album/test", "/tmp/test-output", "", "")
+
+	for range events {
+	}
+	var gotErr error
+	for e := range errs {
+		gotErr = e
+	}
+	require.Error(t, gotErr)
+
+	var de *spotiflac.DownloadError
+	require.ErrorAs(t, gotErr, &de)
+	assert.Contains(t, de.RawOutput, "disk full")
+}
+
 func TestSearchMetadataArtistFallsBackToName(t *testing.T) {
 	responses := []string{
 		`{"type":"result","name":"Fallback Name","artist":"","album":"Some Album","spotify_url":"https://open.spotify.com/album/xyz","title":"Some Album"}`,

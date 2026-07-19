@@ -61,6 +61,7 @@ func migrate(db *sql.DB) error {
 			service TEXT NOT NULL DEFAULT '',
 			quality TEXT NOT NULL DEFAULT '',
 			track_count INTEGER NOT NULL DEFAULT 0,
+			cli_output TEXT NOT NULL DEFAULT '',
 			is_history INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE INDEX IF NOT EXISTS idx_jobs_spotify_url ON jobs(spotify_url, is_history, status);
@@ -203,11 +204,11 @@ func (q *SQLiteQueue) Update(job *Job) error {
 	_, err := q.db.Exec(
 		`UPDATE jobs SET status=?, category=?, priority=?, filename=?, output_path=?,
 		        size=?, sizeleft=?, percentage=?, completed_at=?, error_message=?,
-		        service=?, quality=?, track_count=?
+		        service=?, quality=?, track_count=?, cli_output=?
 		 WHERE nzo_id=?`,
 		job.Status, job.Category, job.Priority, job.Filename, job.OutputPath,
 		job.Size, job.Sizeleft, job.Percentage, job.CompletedAt, job.ErrorMessage,
-		job.Service, job.Quality, job.TrackCount, job.NzoID,
+		job.Service, job.Quality, job.TrackCount, job.CLIOutput, job.NzoID,
 	)
 	return err
 }

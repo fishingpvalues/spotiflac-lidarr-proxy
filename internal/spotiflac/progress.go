@@ -62,7 +62,8 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 }
 
 type DownloadError struct {
-	Message string
+	Message   string
+	RawOutput string
 }
 
 func (e *DownloadError) Error() string {
