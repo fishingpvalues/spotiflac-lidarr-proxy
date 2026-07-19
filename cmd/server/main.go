@@ -28,11 +28,17 @@ import (
 // version is set at build time via -ldflags "-X main.version=..."; see Dockerfile/release.yml.
 var version = "dev"
 
+// verbose counts -v occurrences (-v, -vv, ...), like ssh/curl/ansible.
+// It only ever raises verbosity above SPF_LOG_LEVEL, never lowers it.
+var verbose int
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "server",
 		Short: "Spotiflac-Lidarr Proxy server",
 	}
+	rootCmd.PersistentFlags().CountVarP(&verbose, "verbose", "v",
+		"increase log verbosity above SPF_LOG_LEVEL (-v debug, -vv trace)")
 
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "serve",
@@ -46,6 +52,24 @@ func main() {
 	}
 }
 
+// resolveLogLevel applies -v/-vv on top of the configured level, only ever
+// making things more verbose (matches ssh/curl/ansible: repeatable -v never
+// silences logging that config already asked for).
+func resolveLogLevel(configuredLevel string, verboseCount int) zerolog.Level {
+	level, err := zerolog.ParseLevel(configuredLevel)
+	if err != nil {
+		level = zerolog.InfoLevel
+	}
+	switch {
+	case verboseCount >= 2 && level > zerolog.TraceLevel:
+		return zerolog.TraceLevel
+	case verboseCount == 1 && level > zerolog.DebugLevel:
+		return zerolog.DebugLevel
+	default:
+		return level
+	}
+}
+
 func runServe(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -53,11 +77,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	log := zerolog.New(os.Stderr).With().Timestamp().Logger()
-	level, err := zerolog.ParseLevel(cfg.LogLevel)
-	if err != nil {
-		level = zerolog.InfoLevel
-	}
-	log = log.Level(level)
+	log = log.Level(resolveLogLevel(cfg.LogLevel, verbose))
 
 	q, err := queue.New(cfg.DBPath)
 	if err != nil {

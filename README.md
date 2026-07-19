@@ -199,8 +199,15 @@ SPF_SPOTIFLAC_CLI_PATH=/path/to/spotiflac-cli \
 ./spotiflac-lidarr-proxy serve
 ```
 
-`serve --help` lists all flags; every flag has a matching `SPF_*` environment
-variable (see [Configuration](#configuration) below).
+Configuration is env-var driven (see [Configuration](#configuration) below);
+the one CLI flag is `-v`/`--verbose`, stackable like `ssh -vvv`: it only ever
+raises verbosity above whatever `SPF_LOG_LEVEL` is set to, never lowers it.
+
+```bash
+./spotiflac-lidarr-proxy serve       # SPF_LOG_LEVEL as configured (default info)
+./spotiflac-lidarr-proxy serve -v    # at least debug
+./spotiflac-lidarr-proxy serve -vv   # at least trace
+```
 
 ## Build from source
 
