@@ -6,6 +6,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/pkg/sabnzbd"
 )
 
@@ -123,6 +124,22 @@ func (h *Handler) handleWarnings(c fiber.Ctx) error {
 			ID:   "breaker_" + service,
 		})
 	}
+
+	stuck, _, err := h.queue.List(queue.ListParams{Status: string(sabnzbd.StatusDownloading), Limit: 1000})
+	if err == nil {
+		for _, job := range stuck {
+			age := time.Since(job.TimeAdded)
+			if age > 2*h.cfg.JobTimeout {
+				warnings = append(warnings, sabnzbd.Warning{
+					Time: job.TimeAdded.Unix(),
+					Type: "WARNING",
+					Text: fmt.Sprintf("job %s (%s) has been downloading for %s, more than 2x the configured timeout", job.NzoID, job.Filename, age.Round(time.Second)),
+					ID:   "stuck_" + job.NzoID,
+				})
+			}
+		}
+	}
+
 	if warnings == nil {
 		warnings = []sabnzbd.Warning{}
 	}
