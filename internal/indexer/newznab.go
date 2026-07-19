@@ -129,6 +129,9 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL string) ([]byte, e
 			{Name: "files", Value: fmt.Sprintf("%d", r.TrackCount)},
 			{Name: "poster", Value: r.CoverURL},
 		}
+		if r.ISRC != "" {
+			attrs = append(attrs, Attr{Name: "isrc", Value: r.ISRC})
+		}
 
 		item := Item{
 			Title:       r.Artist + " - " + r.Album,
