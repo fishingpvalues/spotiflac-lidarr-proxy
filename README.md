@@ -21,97 +21,11 @@
 
 This proxy makes [SpotiFLAC](https://github.com/spotbye/SpotiFLAC) speak Lidarr's language: it implements the SABnzbd download-client API and the Newznab indexer API, so Lidarr believes it's talking to an ordinary Usenet setup. Underneath, it drives a headless SpotiFLAC CLI that pulls FLAC and hi-res audio from Tidal, Qobuz, Amazon Music, and Deezer using Spotify links as the search key — no account or login needed for any of the four.
 
-**Self-contained: this is the only container you need.** The published image bundles a `spotiflac-cli` build from a pinned commit of a [maintained fork](https://github.com/fishingpvalues/SpotiFLAC) alongside the proxy server itself. There is no separate SpotiFLAC service to deploy, configure, or keep in sync — one container talks to Lidarr on one side and shells out to the bundled CLI on the other.
+**Self-contained: this is the only container you need.** The published image bundles a `spotiflac-cli` build from a pinned commit of a [maintained fork](https://github.com/fishingpvalues/SpotiFLAC) alongside the proxy server itself — no separate SpotiFLAC service to deploy or keep in sync.
 
-## How it fits together
+## Getting started
 
-<p align="center">
-  <img src="docs/assets/architecture-venn.svg" width="600" alt="SpotiFLAC and Lidarr, bridged by this proxy">
-</p>
-
-Two ecosystems that were never meant to talk to each other, connected at the one point Lidarr already knows how to speak: SABnzbd and Newznab. Lidarr sees a normal Usenet setup; the proxy drives the bundled SpotiFLAC CLI directly.
-
-<details>
-<summary>Full technical diagram</summary>
-
-```
-                                   Lidarr
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │  ┌──────────────────────┐         ┌──────────────────────────────┐  │
-  │  │  Download Client      │         │  Indexer                     │  │
-  │  │  (SABnzbd mode)       │         │  (Newznab mode)              │  │
-  │  └──────────┬───────────┘         └──────────────┬───────────────┘  │
-  └─────────────┼────────────────────────────────────┼──────────────────┘
-                │                                     │
-        ┌───────▼─────────────────────────────────────▼────────────────┐
-        │               spotiflac-lidarr-proxy                          │
-        │                                                               │
-        │  ┌─────────────────────────┐    ┌──────────────────────────┐  │
-        │  │  /api (SABnzbd)         │    │  /api/newznab             │  │
-        │  │  /api/sabnzbd           │    │                          │  │
-        │  │                         │    │  t=caps → capabilities   │  │
-        │  │  mode=version           │    │  t=search → Spotify      │  │
-        │  │  mode=auth              │    │  t=music → album search  │  │
-        │  │  mode=get_config        │    │  t=details → item info   │  │
-        │  │  mode=get_cats          │    │                          │  │
-        │  │  mode=fullstatus        │    └──────┬───────────────────┘  │
-        │  │  mode=addurl/addfile    │           │                      │
-        │  │  mode=queue             │    ┌──────▼───────────────────┐  │
-        │  │  mode=history           │    │  internal/indexer/        │  │
-        │  │  mode=retry             │    │  Spotify search → XML    │  │
-        │  │  mode=delete            │    └──────────────────────────┘  │
-        │  │  mode=pause/resume      │                                  │
-        │  │  mode=change_cat        │    ┌──────────────────────────┐  │
-        │  │  mode=server_stats      │    │  Job Queue (SQLite)       │  │
-        │  │  mode=status            │    │  ┌─────┐ ┌─────┐ ┌────┐ │  │
-        │  │  mode=warnings          │    │  │ J1 │ │ J2 │ │ J3 │ │  │
-        │  │  mode=pause_all         │    │  └──┬──┘ └──┬──┘ └──┬──┘ │  │
-        │  │  mode=resume_all        │    │     │       │       │    │  │
-        │  │  mode=set_speedlimit    │    │     ▼       ▼       ▼    │  │
-        │  └─────────────────────────┘    │  ┌────────────────────┐  │  │
-        │                                  │  │  SpotiFLAC CLI    │  │  │
-        │                                  │  │  (subprocess)     │  │  │
-        │                                  │  │                    │  │  │
-        │                                  │  │  --url <spotify>   │  │  │
-        │                                  │  │  --service tidal   │  │  │
-        │                                  │  │  --quality lossless│  │  │
-        │                                  │  │  --output-dir <dir>│  │  │
-        │                                  │  └────────┬───────────┘  │  │
-        │                                  │           │              │  │
-        │                                  │    ┌──────▼──────────┐   │  │
-        │                                  │    │ Tidal / Qobuz    │   │  │
-        │                                  │    │ Amazon / Deezer  │   │  │
-        │                                  │    └──────┬──────────┘   │  │
-        │                                  │           │              │  │
-        │                                  │    ┌──────▼──────────┐   │  │
-        │                                  │    │  FLAC files      │   │  │
-        │                                  │    │  → /downloads/   │   │  │
-        │                                  │    └─────────────────┘   │  │
-        │                                  └──────────────────────────┘  │
-        └────────────────────────────────────────────────────────────────┘
-                          │
-                   ┌──────▼──────────────────────────────────────────────┐
-                   │  Lidarr Import                                      │
-                   │  Lidarr scans /downloads/, imports FLAC, renames,    │
-                   │  tags, and organizes into your music library         │
-                   └─────────────────────────────────────────────────────┘
-```
-
-</details>
-
-## Features
-
-- Speaks both halves of Lidarr's expected protocol: SABnzbd (download client) and Newznab (indexer).
-- Quality- and service-based categories (`music-flac-24`, `music-tidal`, `music-qobuz-flac-24`, ...), so Lidarr's quality profiles map directly onto SpotiFLAC's service/quality flags.
-- Verifies each download actually completed (event signal plus a file-count check against expected track count) before reporting success to Lidarr.
-- Per-service circuit breaker: a service that keeps failing gets skipped automatically instead of retried forever.
-- Optional fallback chain: if the primary service fails, try the next configured one.
-- Prometheus `/metrics`, a real `/health` check, and a `warnings` endpoint that surfaces open circuit breakers and stuck jobs.
-- SQLite-backed job queue that survives restarts.
-
-## Quick start
-
-For the lazy: clone, set one environment variable, and go.
+Clone, set one environment variable, go:
 
 ```bash
 git clone https://github.com/fishingpvalues/spotiflac-lidarr-proxy.git
@@ -158,6 +72,15 @@ services:
    - URL: `http://proxy:8484/api/newznab`
    - API Key: your `SPF_API_KEY` value
    - Categories: 3010, 3040
+
+## Features
+
+- Speaks both halves of Lidarr's protocol: SABnzbd (download client) and Newznab (indexer).
+- Quality/service categories (`music-flac-24`, `music-tidal`, ...) map straight onto Lidarr's quality profiles.
+- Verifies each download actually completed (event signal + track-count check) before reporting success.
+- Per-service circuit breaker and an optional fallback chain across Tidal/Qobuz/Amazon/Deezer.
+- Prometheus `/metrics` (`spf_jobs_total`, `spf_queue_depth`, `spf_download_duration_seconds`), a real `/health` check, and a `warnings` endpoint for open breakers/stuck jobs.
+- SQLite-backed job queue that survives restarts.
 
 ## Running without Docker
 
