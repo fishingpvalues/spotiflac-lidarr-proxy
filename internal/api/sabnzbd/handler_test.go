@@ -623,6 +623,85 @@ func TestProcessDownloadShortCircuitsWhenBreakerOpen(t *testing.T) {
 	assert.True(t, found)
 }
 
+// TestProcessDownloadFallsBackWhenPrimaryBreakerAlreadyOpen guards against a
+// bug where an already-open primary breaker caused processDownload to fail
+// the job immediately without ever consulting the configured fallback
+// chain. If the fallback chain has a healthy service, the job should
+// succeed via that fallback instead of failing outright.
+func TestProcessDownloadFallsBackWhenPrimaryBreakerAlreadyOpen(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		OutputDir:     dir,
+		MaxConcurrent: 1,
+		JobTimeout:    5 * time.Second,
+	}
+	st := storage.New(dir)
+	q, err := queue.New(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+
+	// tidal always fails; qobuz always succeeds.
+	scriptPath := filepath.Join(t.TempDir(), "spotiflac-cli")
+	script := `#!/bin/bash
+SERVICE=""
+OUTDIR=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --service) SERVICE="$2"; shift 2 ;;
+    --output-dir) OUTDIR="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$OUTDIR"
+if [[ "$SERVICE" == "tidal" ]]; then
+  echo '{"type":"error","message":"tidal unavailable"}'
+  exit 1
+fi
+touch "$OUTDIR/01.flac"
+echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless")
+	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+
+	// Trip tidal's breaker with 5 consecutive real failures (no fallback
+	// configured yet), matching how a breaker actually opens.
+	for i := 0; i < 5; i++ {
+		job := &queue.Job{
+			NzoID:      fmt.Sprintf("SABnzbd_nzo_preopen%d", i),
+			Service:    "tidal",
+			SpotifyURL: "https://open.spotify.com/album/preopen",
+		}
+		require.NoError(t, q.Add(job))
+		handler.ProcessDownloadSync(job)
+	}
+
+	// Now configure a healthy fallback and submit a fresh job against the
+	// (now open) tidal breaker. The fix under test: processDownload must
+	// skip the primary attempt (breaker open) and go straight to the
+	// fallback chain rather than failing the job immediately.
+	cfg.FallbackServices = []string{"tidal", "qobuz"}
+	job := &queue.Job{
+		NzoID:      "SABnzbd_nzo_breakeropenfallback",
+		Service:    "tidal",
+		SpotifyURL: "https://open.spotify.com/album/breakeropenfallback",
+	}
+	require.NoError(t, q.Add(job))
+	handler.ProcessDownloadSync(job)
+
+	hist, _, err := q.History(queue.ListParams{Limit: 20})
+	require.NoError(t, err)
+	var found *queue.Job
+	for _, j := range hist {
+		if j.NzoID == "SABnzbd_nzo_breakeropenfallback" {
+			found = j
+		}
+	}
+	require.NotNil(t, found, "job should have reached history")
+	assert.Equal(t, sabtypes.StatusCompleted, found.Status, "job should succeed via the healthy fallback instead of failing on the already-open primary breaker")
+	assert.Equal(t, "qobuz", found.Service, "job's recorded service should reflect the fallback that actually succeeded")
+}
+
 func TestWarningsSurfacesOpenBreaker(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{OutputDir: dir, MaxConcurrent: 1, JobTimeout: 2 * time.Second}
@@ -651,4 +730,60 @@ func TestWarningsSurfacesOpenBreaker(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&w)
 	require.NotEmpty(t, w.Warnings)
 	assert.Contains(t, w.Warnings[0].Text, "tidal")
+}
+
+// TestWarningsSurfacesStuckJob guards against handleWarnings only ever
+// checking open circuit breakers and never noticing a job stuck in
+// Downloading well past its expected timeout -- a sign of a wedged CLI
+// subprocess or a job that fell through some other gap in the retry/breaker
+// pipeline.
+func TestWarningsSurfacesStuckJob(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{OutputDir: dir, MaxConcurrent: 1, JobTimeout: 1 * time.Second}
+	st := storage.New(dir)
+	q, err := queue.New(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+	client := apispotiflac.NewClient("echo", 1*time.Second, "tidal", "lossless")
+	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+
+	job := &queue.Job{
+		NzoID:      "SABnzbd_nzo_stuckwarn",
+		SpotifyURL: "https://open.spotify.com/album/stuck",
+		Service:    "tidal",
+		Filename:   "Stuck Artist - Stuck Album",
+	}
+	require.NoError(t, q.Add(job))
+	job.Status = sabtypes.StatusDownloading
+	require.NoError(t, q.Update(job))
+
+	// Backdate time_added directly (Update doesn't expose it) to simulate a
+	// job that's been "downloading" for far longer than 2x the 1s timeout.
+	_, err = q.DB().Exec(
+		"UPDATE jobs SET time_added = ? WHERE nzo_id = ?",
+		time.Now().Add(-1*time.Hour), job.NzoID,
+	)
+	require.NoError(t, err)
+
+	app := fiber.New()
+	app.Use(api.APIKeyAuthWithSkiplist("test-key", "version", "auth"))
+	handler.RegisterRoutes(app)
+
+	req, _ := http.NewRequest("GET", "/api/sabnzbd?mode=warnings&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+
+	var w sabtypes.WarningsResponse
+	json.NewDecoder(resp.Body).Decode(&w)
+	require.NotEmpty(t, w.Warnings)
+
+	var found bool
+	for _, warn := range w.Warnings {
+		if warn.ID == "stuck_"+job.NzoID {
+			found = true
+			assert.Contains(t, warn.Text, job.NzoID)
+			assert.Contains(t, warn.Text, "Stuck Artist - Stuck Album")
+		}
+	}
+	assert.True(t, found, "warnings should surface the job stuck in Downloading past 2x its timeout")
 }
