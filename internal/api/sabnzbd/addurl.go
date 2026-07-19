@@ -4,24 +4,23 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/indexer"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/pkg/sabnzbd"
 )
 
 func (h *Handler) handleAddURL(c fiber.Ctx) error {
-	spotifyURL := c.Query("name")
-	if spotifyURL == "" {
-		spotifyURL = c.FormValue("name")
-	}
+	spotifyURL := resolveSpotifyURL(c)
 	if spotifyURL == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(sabnzbd.StatusResponse{
 			Status: false,
-			Error:  "missing 'name' parameter (spotify URL)",
+			Error:  "missing 'name' parameter (spotify URL) and no uploaded NZB with an embedded one",
 		})
 	}
 	if !config.IsValidSpotifyURL(spotifyURL) {
@@ -99,4 +98,49 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		Status: true,
 		NzoIDs: []string{nzoID},
 	})
+}
+
+// resolveSpotifyURL covers both SABnzbd add modes: mode=addurl passes the
+// Spotify URL directly as "name"; mode=addfile (what Lidarr's real grab
+// flow uses) uploads our synthetic NZB's bytes instead, so the URL has to
+// be recovered from its embedded metadata.
+func resolveSpotifyURL(c fiber.Ctx) string {
+	if name := c.Query("name"); name != "" {
+		return name
+	}
+	if name := c.FormValue("name"); name != "" {
+		return name
+	}
+	if extracted, ok := extractSpotifyURLFromUpload(c); ok {
+		return extracted
+	}
+	return ""
+}
+
+// extractSpotifyURLFromUpload looks for an uploaded file in a mode=addfile
+// request (SABnzbd clients vary in which multipart field name they use for
+// the .nzb, so this checks all of them) and, if found, extracts the
+// spotify_url meta our own synthetic NZB embeds (see indexer.GenerateNZB).
+func extractSpotifyURLFromUpload(c fiber.Ctx) (string, bool) {
+	form, err := c.Req().MultipartForm()
+	if err != nil {
+		return "", false
+	}
+	for _, files := range form.File {
+		for _, fh := range files {
+			f, err := fh.Open()
+			if err != nil {
+				continue
+			}
+			data, err := io.ReadAll(f)
+			f.Close()
+			if err != nil {
+				continue
+			}
+			if spotifyURL, err := indexer.ExtractSpotifyURLFromNZB(data); err == nil {
+				return spotifyURL, true
+			}
+		}
+	}
+	return "", false
 }

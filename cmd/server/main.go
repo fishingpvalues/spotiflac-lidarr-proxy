@@ -124,7 +124,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	sabHandler := sabnzbd.NewHandler(q, client, st, cfg, version)
 	sabHandler.SetLogger(log)
 
-	nznbHandler := newznab.NewHandler(client, fmt.Sprintf("http://localhost:%d", cfg.Port), version)
+	nznbHandler := newznab.NewHandler(client, version, cfg.APIKey)
 	nznbHandler.SetLogger(log)
 
 	app.Use(api.RequestLogger(log))

@@ -1,8 +1,10 @@
 package sabnzbd_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/sabnzbd"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/indexer"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	apispotiflac "github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/storage"
@@ -131,6 +134,45 @@ func TestAddURL(t *testing.T) {
 	// Wait for the background ProcessDownloadSync goroutine to finish (it
 	// will fail against the fake "echo" CLI after retries) so it doesn't
 	// race t.TempDir()'s cleanup after this test function returns.
+	waitForHistory(t, q, r.NzoIDs[0])
+}
+
+// TestAddFileExtractsSpotifyURLFromUploadedNZB covers the mode=addfile path
+// Lidarr actually uses: it fetches our synthetic NZB (see
+// indexer.GenerateNZB / the newznab package's t=get) and re-uploads the
+// bytes rather than passing a plain "name" URL. Regression guard for the
+// grab flow discovered broken against a real production Lidarr this
+// session ("Expected 'nzb' found 'html'", then a missing addfile parser).
+func TestAddFileExtractsSpotifyURLFromUploadedNZB(t *testing.T) {
+	app, q := setupTestApp(t)
+
+	const spotifyURL = "https://open.spotify.com/album/addfiletest"
+	nzb, err := indexer.GenerateNZB(spotifyURL, "Artist - Album", "", 1700000000)
+	require.NoError(t, err)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("name", "release.nzb")
+	require.NoError(t, err)
+	_, err = part.Write(nzb)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req, _ := http.NewRequest("POST", "/api/sabnzbd?mode=addfile&apikey=test-key", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	var r sabtypes.AddURLResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&r))
+	assert.True(t, r.Status)
+	require.Len(t, r.NzoIDs, 1)
+
+	job, err := q.Get(r.NzoIDs[0])
+	require.NoError(t, err)
+	assert.Equal(t, spotifyURL, job.SpotifyURL, "addfile must recover the Spotify URL embedded in the uploaded NZB")
+
 	waitForHistory(t, q, r.NzoIDs[0])
 }
 

@@ -2,6 +2,7 @@ package newznab
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
@@ -11,18 +12,18 @@ import (
 )
 
 type Handler struct {
-	client    *spotiflac.Client
-	log       zerolog.Logger
-	serverURL string
-	version   string
+	client  *spotiflac.Client
+	log     zerolog.Logger
+	version string
+	apiKey  string
 }
 
-func NewHandler(client *spotiflac.Client, serverURL, version string) *Handler {
+func NewHandler(client *spotiflac.Client, version, apiKey string) *Handler {
 	return &Handler{
-		client:    client,
-		log:       zerolog.Nop(),
-		serverURL: serverURL,
-		version:   version,
+		client:  client,
+		log:     zerolog.Nop(),
+		version: version,
+		apiKey:  apiKey,
 	}
 }
 
@@ -50,7 +51,7 @@ func (h *Handler) dispatch(c fiber.Ctx) error {
 	case "details":
 		return h.handleDetails(c)
 	case "get":
-		return h.handleDetails(c)
+		return h.handleGet(c)
 	case "tvsearch", "movie", "book":
 		// Unsupported search types - return empty results gracefully
 		return h.handleEmptyResults(c)
@@ -64,7 +65,7 @@ func (h *Handler) dispatch(c fiber.Ctx) error {
 
 func (h *Handler) handleCaps(c fiber.Ctx) error {
 	c.Set("Content-Type", "application/xml")
-	return c.Send(indexer.CapsXML(h.serverURL, h.version))
+	return c.Send(indexer.CapsXML(c.BaseURL(), h.version))
 }
 
 func (h *Handler) handleSearch(c fiber.Ctx) error {
@@ -97,7 +98,7 @@ func (h *Handler) handleSearch(c fiber.Ctx) error {
 		}
 	}
 
-	xml, err := indexer.NewznabXML(results, h.serverURL)
+	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey)
 	if err != nil {
 		h.log.Error().Err(err).Msg("newznab xml generation failed")
 		return h.handleEmptyResults(c)
@@ -122,7 +123,7 @@ func (h *Handler) handleMusic(c fiber.Ctx) error {
 		return h.handleEmptyResults(c)
 	}
 
-	xml, err := indexer.NewznabXML(results, h.serverURL)
+	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey)
 	if err != nil {
 		h.log.Error().Err(err).Msg("newznab xml generation failed")
 		return h.handleEmptyResults(c)
@@ -139,7 +140,7 @@ func (h *Handler) handleDetails(c fiber.Ctx) error {
 		return h.handleEmptyResults(c)
 	}
 
-	xml, err := indexer.NewznabXML(results, h.serverURL)
+	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey)
 	if err != nil {
 		return h.handleEmptyResults(c)
 	}
@@ -148,8 +149,31 @@ func (h *Handler) handleDetails(c fiber.Ctx) error {
 	return c.Send(xml)
 }
 
+// handleGet serves t=get, the actual release download Lidarr fetches
+// after picking a search result. It must return a well-formed NZB (root
+// element "nzb") - Lidarr validates that itself before ever contacting
+// the download client, so a redirect to the raw Spotify page (HTML)
+// fails immediately ("Expected 'nzb' found 'html'"). id is the Spotify
+// URL embedded verbatim in the search results' download link (see
+// indexer.NewznabXML); wrap it back up as a synthetic NZB whose
+// mode=addfile handler (internal/api/sabnzbd/addurl.go) knows how to
+// unwrap.
+func (h *Handler) handleGet(c fiber.Ctx) error {
+	id := c.Query("id")
+	if id == "" {
+		return c.Status(fiber.StatusBadRequest).SendString("missing id")
+	}
+	nzb, err := indexer.GenerateNZB(id, id, "", time.Now().Unix())
+	if err != nil {
+		h.log.Error().Err(err).Str("id", id).Msg("nzb generation failed")
+		return c.Status(fiber.StatusInternalServerError).SendString("nzb generation failed")
+	}
+	c.Set("Content-Type", "application/x-nzb")
+	return c.Send(nzb)
+}
+
 func (h *Handler) handleEmptyResults(c fiber.Ctx) error {
-	xml, err := indexer.NewznabXML(nil, h.serverURL)
+	xml, err := indexer.NewznabXML(nil, c.BaseURL(), h.apiKey)
 	if err != nil {
 		return c.SendString("")
 	}
