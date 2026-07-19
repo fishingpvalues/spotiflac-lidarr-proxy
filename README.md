@@ -13,19 +13,17 @@
 </p>
 
 <p align="center">
-  You run Lidarr. You've heard of SpotiFLAC. Now they can talk to each other.
+  Lets Lidarr talk to SpotiFLAC.
 </p>
 
 > [!WARNING]
-> Use this only to download content you have the legal right to download. See [Legal](#legal) for the full disclaimer.
+> Use this only to download content you have the legal right to download. See [Legal](#legal).
 
-This proxy makes [SpotiFLAC](https://github.com/spotbye/SpotiFLAC) speak Lidarr's language: it implements the SABnzbd download-client API and the Newznab indexer API, so Lidarr believes it's talking to an ordinary Usenet setup. Underneath, it drives a headless SpotiFLAC CLI that pulls FLAC and hi-res audio from Tidal, Qobuz, Amazon Music, and Deezer using Spotify links as the search key — no account or login needed for any of the four.
+This proxy implements the SABnzbd download client API and the Newznab indexer API, so Lidarr treats it like an ordinary Usenet setup. Underneath, it drives a headless SpotiFLAC CLI to pull FLAC and hi-res audio from Tidal, Qobuz, Amazon Music, and Deezer, using Spotify links as the search key. No account or login required for any of the four services.
 
-**Self-contained: this is the only container you need.** The published image bundles a `spotiflac-cli` build from a pinned commit of a [maintained fork](https://github.com/fishingpvalues/SpotiFLAC) alongside the proxy server itself — no separate SpotiFLAC service to deploy or keep in sync.
+**Self-contained.** The published Docker image bundles a `spotiflac-cli` build from a pinned commit of a [maintained fork](https://github.com/fishingpvalues/SpotiFLAC), so there is no separate SpotiFLAC service to run or keep in sync.
 
 ## Getting started
-
-Clone, set one environment variable, go:
 
 ```bash
 git clone https://github.com/fishingpvalues/spotiflac-lidarr-proxy.git
@@ -35,9 +33,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-This builds the proxy and starts it alongside a Lidarr container on the same Docker network, sharing a `/downloads` volume.
-
-Prefer a prebuilt image over building locally:
+This builds the proxy and starts it next to a Lidarr container on the same Docker network, sharing a `/downloads` volume. To use a prebuilt image instead of building locally:
 
 ```yaml
 services:
@@ -76,62 +72,46 @@ services:
 ## Features
 
 - Speaks both halves of Lidarr's protocol: SABnzbd (download client) and Newznab (indexer).
-- Quality/service categories (`music-flac-24`, `music-tidal`, ...) map straight onto Lidarr's quality profiles.
-- Verifies each download actually completed (event signal + track-count check) before reporting success.
-- Per-service circuit breaker and an optional fallback chain across Tidal/Qobuz/Amazon/Deezer.
-- Prometheus `/metrics` (`spf_jobs_total`, `spf_queue_depth`, `spf_download_duration_seconds`), a real `/health` check, and a `warnings` endpoint for open breakers/stuck jobs.
+- Quality/service categories (`music-flac-24`, `music-tidal`, ...) map onto Lidarr's quality profiles.
+- Confirms each download actually completed (event signal plus track-count check) before reporting success.
+- Per-service circuit breaker, with an optional fallback chain across Tidal/Qobuz/Amazon/Deezer.
+- Prometheus `/metrics` (`spf_jobs_total`, `spf_queue_depth`, `spf_download_duration_seconds`), a real `/health` check, and a `warnings` endpoint for open breakers or stuck jobs.
 - SQLite-backed job queue that survives restarts.
+
+## Standalone spotiflac-cli
+
+Every [release](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases) also ships `spotiflac-cli` on its own, for `linux`/`darwin`/`windows` on `amd64`/`arm64`, built from the exact upstream commit that release was tested against. Use it if you just want SpotiFLAC downloads from the command line, with no Lidarr or proxy involved:
+
+```bash
+curl -L -o spotiflac-cli.tar.gz \
+  https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases/latest/download/spotiflac-cli_<tag>_<os>_<arch>.tar.gz
+tar xzf spotiflac-cli.tar.gz
+./spotiflac-cli --help
+```
 
 ## Running without Docker
 
-The Docker image is still the recommended way to run this — it's the only
-distribution that bundles a matching `spotiflac-cli` build. Running the
-server binary directly means building or obtaining `spotiflac-cli` yourself.
-
-**Option A — prebuilt release binary:**
+Docker is still the recommended way to run this: it is the only distribution that bundles a matching `spotiflac-cli`. Running the server binary directly means getting `spotiflac-cli` yourself, either from a [release](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases) as above or built from the pinned commit in the [Dockerfile](Dockerfile).
 
 ```bash
+# server: prebuilt release binary, or `go build ./cmd/server` from source (Go 1.25+)
 curl -L -o spotiflac-lidarr-proxy.tar.gz \
   https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases/latest/download/spotiflac-lidarr-proxy_<tag>_<os>_<arch>.tar.gz
 tar xzf spotiflac-lidarr-proxy.tar.gz
-```
 
-Every [GitHub Release](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases)
-builds straight from the pushed git tag and ships `linux`/`darwin`/`windows`
-binaries for `amd64`/`arm64`, a `checksums.txt`, and a changelog grouped by
-commit type. Verify what you downloaded: `sha256sum --ignore-missing -c checksums.txt`.
-
-**Option B — build from source** (requires Go 1.25+):
-
-```bash
-git clone https://github.com/fishingpvalues/spotiflac-lidarr-proxy.git
-cd spotiflac-lidarr-proxy
-go build ./cmd/server
-```
-
-Either way, you still need `spotiflac-cli` — build it from the exact pinned
-commit in the [Dockerfile](Dockerfile):
-
-```bash
-git clone https://github.com/fishingpvalues/SpotiFLAC.git
-cd SpotiFLAC && git checkout <commit-from-Dockerfile>
-go build -tags headless -o spotiflac-cli .
-```
-
-Then run the server, pointing it at that CLI:
-
-```bash
 SPF_API_KEY=your-secret-key \
 SPF_OUTPUT_DIR=/path/to/downloads \
 SPF_SPOTIFLAC_CLI_PATH=/path/to/spotiflac-cli \
 ./spotiflac-lidarr-proxy serve       # -v for debug, -vv for trace (stacks like ssh -vvv)
 ```
 
+Verify a downloaded archive with `sha256sum --ignore-missing -c checksums.txt`.
+
 Testing: `go test ./... -count=1` (unit), `INTEGRATION=1 go test ./tests/integration/... -v` (spins up the real docker-compose stack). Cross-compiling like CI does: `goreleaser release --snapshot --clean --skip=publish`.
 
 ## Configuration
 
-The essentials, via environment variables prefixed `SPF_`. Full reference: [`docs/API.md`](docs/API.md).
+The essentials, as environment variables prefixed `SPF_`. Full reference: [`docs/API.md`](docs/API.md).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -146,17 +126,18 @@ The essentials, via environment variables prefixed `SPF_`. Full reference: [`doc
 
 ## Security and hardening
 
-This proxy authenticates with a single static API key — the same trust model SABnzbd, Prowlarr, and every other Lidarr download client already use. It's only as safe as the network it sits on.
+This proxy authenticates with a single static API key, the same trust model SABnzbd, Prowlarr, and every other Lidarr download client already use. It is only as safe as the network it sits on.
 
-**We're aware of the Huntarr incident** (early 2026: a widely-used *arr management tool shipped unauthenticated endpoints that leaked every connected app's API keys in plaintext). That drove real decisions here: the API key is compared in constant time, redacted before it ever reaches a log line, and every value passed to the SpotiFLAC subprocess is validated against a strict allowlist. None of that helps if the *arr stack itself is exposed to the internet — no download client can fix an exposed network.
+We built this with the Huntarr incident in mind (early 2026, a widely-used *arr management tool shipped unauthenticated endpoints that leaked every connected app's API keys in plaintext). The API key here is compared in constant time, redacted before it reaches a log line, and every value passed to the SpotiFLAC subprocess is checked against a strict allowlist. None of that helps if the *arr stack itself is exposed to the internet; no download client can fix an exposed network.
 
-- **Never publish this proxy's port to the internet.** Keep it on Lidarr's internal Docker network; no `ports:` mapping beyond `localhost` unless a reverse proxy sits in front.
-- **Reverse proxy for remote access**, terminating TLS there (Caddy/Traefik/nginx) — the API key travels in the query string, unreadable over TLS but plaintext-on-path over plain HTTP.
-- **VPN over port-forwarding.** Tailscale/WireGuard into your home network beats opening a router port. For a kill switch on the underlying streaming traffic itself, run something like Gluetun as a sidecar — the same pattern qBittorrent/Sonarr/Radarr stacks use with NordVPN/PIA.
-- **Rotate `SPF_API_KEY`** if it ever leaks; check `GET /api/sabnzbd?mode=warnings` and `/metrics` periodically.
-- **Keep the image updated** — Renovate tracks dependency and base-image updates on this repo.
+- **Never publish this proxy's port to the internet.** Keep it on Lidarr's internal Docker network, with no `ports:` mapping beyond `localhost` unless a reverse proxy sits in front.
+- **Use a reverse proxy for remote access** and terminate TLS there (Caddy/Traefik/nginx). The API key travels in the query string: unreadable over TLS, plaintext on the wire over plain HTTP.
+- **Prefer a VPN over port-forwarding.** Tailscale/WireGuard into your home network beats opening a router port. For a kill switch on the streaming traffic itself, run something like Gluetun as a sidecar, the same pattern qBittorrent/Sonarr/Radarr stacks use with NordVPN/PIA.
+- **Rotate `SPF_API_KEY`** if it ever leaks, and check `GET /api/sabnzbd?mode=warnings` and `/metrics` periodically.
+- **Keep the image updated.** Renovate tracks dependency and base-image updates on this repo.
 
-Example Caddy sidecar for TLS termination:
+<details>
+<summary>Example Caddy sidecar for TLS termination</summary>
 
 ```yaml
 services:
@@ -175,15 +156,13 @@ proxy.yourdomain.com {
 }
 ```
 
+</details>
+
 ## Troubleshooting
 
-### Repeated download failures for one service (Tidal/Qobuz/Amazon/Deezer)
+**Repeated download failures for one service (Tidal/Qobuz/Amazon/Deezer):** usually IP-based rate limiting, not an authentication problem. SpotiFLAC's own project confirms metadata and audio fetches can get rate-limited per IP, and recommends waiting or using a VPN.
 
-The most common real-world failure is IP-based rate limiting, not an authentication problem. SpotiFLAC's own project confirms metadata and audio fetches can get rate-limited per IP, and recommends waiting or using a VPN.
-
-This proxy has a built-in per-service circuit breaker: after 5 consecutive failures for one service, it stops sending new jobs to that service for 10 minutes and fails them immediately instead of waiting out a full timeout. Check `GET /api/sabnzbd?mode=warnings` — an open breaker shows up there with the service name and retry time.
-
-If one service's breaker keeps tripping, that service is likely rate-limiting you. Either wait it out or set `SPF_FALLBACK_SERVICES` so jobs automatically try another service.
+This proxy has a built-in per-service circuit breaker: after 5 consecutive failures for one service, it stops sending it new jobs for 10 minutes and fails them immediately instead of waiting out a full timeout. Check `GET /api/sabnzbd?mode=warnings`; an open breaker shows up there with the service name and retry time. If one service's breaker keeps tripping, it is likely rate-limiting you. Either wait it out or set `SPF_FALLBACK_SERVICES` so jobs automatically try another service.
 
 ## API reference
 
@@ -195,11 +174,11 @@ This project was planned and implemented with AI assistance (Anthropic Claude Co
 
 ## Legal
 
-SpotiFLAC and this proxy are third-party tools and are not affiliated with, endorsed by, or connected to Spotify, Tidal, Qobuz, Amazon Music, or any other streaming service. This project is for educational and private use only. The developer does not condone or encourage copyright infringement.
+SpotiFLAC and this proxy are third-party tools, not affiliated with, endorsed by, or connected to Spotify, Tidal, Qobuz, Amazon Music, or any other streaming service. This project is for educational and private use only. The developer does not condone or encourage copyright infringement.
 
 You are solely responsible for:
 - Ensuring your use of this software complies with your local laws.
-- Reading and adhering to the Terms of Service of the respective platforms.
+- Reading and following the Terms of Service of the respective platforms.
 - Any legal consequences resulting from misuse of this tool.
 
 The software is provided "as is", without warranty of any kind. The author assumes no liability for any bans, damages, or legal issues arising from its use.
