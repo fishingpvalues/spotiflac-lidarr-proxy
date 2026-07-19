@@ -1,9 +1,12 @@
 package queue_test
 
 import (
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"testing"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -194,6 +197,87 @@ func TestPruneHistoryKeepsOnlyMostRecent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, total)
 	assert.Len(t, hist, 2)
+}
+
+// TestMigrateAddsColumnsToPreExistingDatabase guards against the single
+// most important migration bug: a real deployed /data/queue.db created by a
+// version of this schema that predates the track_count/cli_output columns
+// must not be left behind by "CREATE TABLE IF NOT EXISTS" (a no-op against
+// an already-existing table). Without an additive-column migration step,
+// every subsequent Add/Update/Get call referencing those columns would fail
+// at runtime with "no such column" despite queue.New succeeding.
+func TestMigrateAddsColumnsToPreExistingDatabase(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "old-schema.db")
+
+	// Hand-build the OLD schema: identical to the current one but missing
+	// track_count and cli_output entirely (as it would have been before
+	// those columns were introduced).
+	oldDB, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	_, err = oldDB.Exec(`
+		CREATE TABLE IF NOT EXISTS jobs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			nzo_id TEXT UNIQUE NOT NULL,
+			spotify_url TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'Queued',
+			category TEXT NOT NULL DEFAULT 'music-flac-16',
+			priority TEXT NOT NULL DEFAULT 'Normal',
+			filename TEXT NOT NULL DEFAULT '',
+			output_path TEXT NOT NULL DEFAULT '',
+			size INTEGER NOT NULL DEFAULT 0,
+			sizeleft INTEGER NOT NULL DEFAULT 0,
+			percentage REAL NOT NULL DEFAULT 0.0,
+			time_added DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			completed_at DATETIME,
+			error_message TEXT DEFAULT '',
+			service TEXT NOT NULL DEFAULT '',
+			quality TEXT NOT NULL DEFAULT '',
+			is_history INTEGER NOT NULL DEFAULT 0
+		);
+	`)
+	require.NoError(t, err)
+
+	// Seed a pre-existing row, as a real deployment would have.
+	_, err = oldDB.Exec(
+		`INSERT INTO jobs (nzo_id, spotify_url, service, quality) VALUES (?, ?, ?, ?)`,
+		"SABnzbd_nzo_preexisting", "https://open.spotify.com/album/pre", "tidal", "lossless",
+	)
+	require.NoError(t, err)
+	require.NoError(t, oldDB.Close())
+
+	// Now open it through the real migration path.
+	q, err := queue.New(dbPath)
+	require.NoError(t, err, "New must succeed against a database missing the newer columns")
+	t.Cleanup(func() { q.Close() })
+
+	// The pre-existing row must be readable with sane zero-value defaults
+	// for the newly-added columns.
+	pre, err := q.Get("SABnzbd_nzo_preexisting")
+	require.NoError(t, err)
+	assert.Equal(t, 0, pre.TrackCount)
+	assert.Equal(t, "", pre.CLIOutput)
+
+	// A subsequent Add+Get round-trip (including the new columns) must work.
+	job := &queue.Job{
+		NzoID:      "SABnzbd_nzo_afterupgrade",
+		SpotifyURL: "https://open.spotify.com/album/post",
+		Service:    "qobuz",
+		Quality:    "hires",
+		TrackCount: 12,
+	}
+	require.NoError(t, q.Add(job))
+
+	got, err := q.Get("SABnzbd_nzo_afterupgrade")
+	require.NoError(t, err)
+	assert.Equal(t, 12, got.TrackCount)
+
+	got.CLIOutput = "postmortem output"
+	require.NoError(t, q.Update(got))
+
+	var cliOutput string
+	row := q.DB().QueryRow("SELECT cli_output FROM jobs WHERE nzo_id = ?", "SABnzbd_nzo_afterupgrade")
+	require.NoError(t, row.Scan(&cliOutput))
+	assert.Equal(t, "postmortem output", cliOutput)
 }
 
 func TestPruneHistoryZeroMeansUnlimited(t *testing.T) {
