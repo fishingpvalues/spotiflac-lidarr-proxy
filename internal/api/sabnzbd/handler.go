@@ -163,12 +163,6 @@ func (h *Handler) processDownload(job *queue.Job) {
 	h.sem <- struct{}{}
 	defer func() { <-h.sem }()
 
-	if !h.breaker.Allow(job.Service) {
-		metrics.RecordJobResult(string(sabnzbd.StatusFailed), job.Service)
-		h.failJob(job, fmt.Sprintf("service %s temporarily unavailable (circuit open)", job.Service))
-		return
-	}
-
 	primarySvc := job.Service
 
 	jobDir, err := h.storage.PrepareJobDir(job.NzoID)
@@ -182,12 +176,23 @@ func (h *Handler) processDownload(job *queue.Job) {
 	job.OutputPath = jobDir
 	h.queue.Update(job)
 
-	lastErr := h.runAttemptsWithRetry(job, jobDir, maxAttempts)
-	if lastErr == "" {
-		return
+	// If the primary's breaker is already open, don't attempt it at all --
+	// but still fall through to the fallback loop below instead of failing
+	// immediately, so a healthy fallback service (if configured) still gets
+	// a chance. Only treat "attempted and failed" primaries as a breaker
+	// failure to record; an open breaker we skipped isn't a new failure.
+	var lastErr string
+	if !h.breaker.Allow(primarySvc) {
+		lastErr = fmt.Sprintf("service %s temporarily unavailable (circuit open)", primarySvc)
+		metrics.RecordJobResult(string(sabnzbd.StatusFailed), primarySvc)
+	} else {
+		lastErr = h.runAttemptsWithRetry(job, jobDir, maxAttempts)
+		if lastErr == "" {
+			return
+		}
+		h.breaker.RecordFailure(primarySvc)
+		metrics.RecordJobResult(string(sabnzbd.StatusFailed), primarySvc)
 	}
-	h.breaker.RecordFailure(primarySvc)
-	metrics.RecordJobResult(string(sabnzbd.StatusFailed), primarySvc)
 
 	for _, fallbackSvc := range h.fallbackChain(job.Service) {
 		if !h.breaker.Allow(fallbackSvc) {
