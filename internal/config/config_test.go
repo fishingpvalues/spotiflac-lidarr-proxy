@@ -40,6 +40,28 @@ func TestFallbackServicesParsing(t *testing.T) {
 	assert.Equal(t, []string{"tidal", "qobuz", "amazon"}, cfg.FallbackServices)
 }
 
+func TestFallbackServicesRejectsInvalidEntry(t *testing.T) {
+	t.Setenv("SPF_API_KEY", "test")
+	t.Setenv("SPF_FALLBACK_SERVICES", "tidall,qobuz")
+	t.Setenv("SPF_OUTPUT_DIR", t.TempDir())
+	t.Setenv("SPF_DB_PATH", filepath.Join(t.TempDir(), "q.db"))
+
+	_, err := config.Load()
+	require.Error(t, err, "a typo'd service name should be rejected, not silently configured")
+	assert.Contains(t, err.Error(), "tidall")
+}
+
+func TestFallbackServicesAcceptsAllValidEntries(t *testing.T) {
+	t.Setenv("SPF_API_KEY", "test")
+	t.Setenv("SPF_FALLBACK_SERVICES", "tidal,qobuz,amazon,deezer")
+	t.Setenv("SPF_OUTPUT_DIR", t.TempDir())
+	t.Setenv("SPF_DB_PATH", filepath.Join(t.TempDir(), "q.db"))
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"tidal", "qobuz", "amazon", "deezer"}, cfg.FallbackServices)
+}
+
 func TestFallbackServicesDefaultEmpty(t *testing.T) {
 	t.Setenv("SPF_API_KEY", "test")
 	t.Setenv("SPF_OUTPUT_DIR", t.TempDir())
