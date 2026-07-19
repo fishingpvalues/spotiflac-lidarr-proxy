@@ -55,6 +55,12 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		h.log.Warn().Err(err).Str("spotify_url", spotifyURL).Msg("dedup lookup failed, proceeding to create new job")
 	}
 
+	if h.cfg.HistoryRetentionCount > 0 {
+		if err := h.queue.PruneHistory(h.cfg.HistoryRetentionCount); err != nil {
+			h.log.Warn().Err(err).Msg("history prune failed")
+		}
+	}
+
 	nzoID := "SABnzbd_nzo_" + uuid.New().String()[:12]
 
 	// Extract service and quality from category

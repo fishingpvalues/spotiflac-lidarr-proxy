@@ -22,6 +22,8 @@ type Config struct {
 	DBPath           string        `mapstructure:"db_path"`
 	LogLevel         string        `mapstructure:"log_level"`
 	FallbackServices []string      `mapstructure:"-"`
+
+	HistoryRetentionCount int `mapstructure:"history_retention_count"`
 }
 
 func Load() (*Config, error) {
@@ -35,6 +37,7 @@ func Load() (*Config, error) {
 		"api_key", "port", "output_dir", "spotiflac_cli_path",
 		"default_service", "default_quality", "max_concurrent",
 		"job_timeout", "db_path", "log_level", "fallback_services",
+		"history_retention_count",
 	} {
 		v.BindEnv(key)
 	}
@@ -79,6 +82,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("job_timeout", "30m")
 	v.SetDefault("db_path", "/data/queue.db")
 	v.SetDefault("log_level", "info")
+	v.SetDefault("history_retention_count", 500)
 }
 
 // Service constants matching SpotiFLAC CLI

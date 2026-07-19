@@ -300,6 +300,23 @@ func (q *SQLiteQueue) RecoverStuckJobs() (int, error) {
 	return int(affected), nil
 }
 
+// PruneHistory deletes history rows beyond the `keep` most recent
+// (by completed_at). keep <= 0 disables pruning (unlimited retention).
+func (q *SQLiteQueue) PruneHistory(keep int) error {
+	if keep <= 0 {
+		return nil
+	}
+	_, err := q.db.Exec(
+		`DELETE FROM jobs WHERE is_history = 1 AND id NOT IN (
+			SELECT id FROM jobs WHERE is_history = 1 ORDER BY completed_at DESC LIMIT ?
+		)`, keep,
+	)
+	if err != nil {
+		return fmt.Errorf("prune history: %w", err)
+	}
+	return nil
+}
+
 func (q *SQLiteQueue) Close() error {
 	return q.db.Close()
 }

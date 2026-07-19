@@ -1,6 +1,7 @@
 package queue_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -176,4 +177,36 @@ func TestRecoverStuckJobsOnStartup(t *testing.T) {
 	require.Len(t, hist, 1)
 	assert.Equal(t, sabnzbd.StatusFailed, hist[0].Status)
 	assert.Contains(t, hist[0].ErrorMessage, "interrupted by restart")
+}
+
+func TestPruneHistoryKeepsOnlyMostRecent(t *testing.T) {
+	q := newTestQueue(t)
+
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("SABnzbd_nzo_hist%d", i)
+		require.NoError(t, q.Add(&queue.Job{NzoID: id}))
+		require.NoError(t, q.MoveToHistory(id))
+	}
+
+	require.NoError(t, q.PruneHistory(2))
+
+	hist, total, err := q.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, 2, total)
+	assert.Len(t, hist, 2)
+}
+
+func TestPruneHistoryZeroMeansUnlimited(t *testing.T) {
+	q := newTestQueue(t)
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("SABnzbd_nzo_histunlim%d", i)
+		require.NoError(t, q.Add(&queue.Job{NzoID: id}))
+		require.NoError(t, q.MoveToHistory(id))
+	}
+
+	require.NoError(t, q.PruneHistory(0))
+
+	_, total, err := q.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, 3, total, "keep=0 should mean no pruning")
 }
