@@ -1,11 +1,37 @@
-# Spotiflac-Lidarr Proxy
+<p align="center">
+  <img src="docs/assets/icon.svg" width="96" height="96" alt="spotiflac-lidarr-proxy icon">
+</p>
 
-> [!NOTE]
-> This project was planned and implemented with AI assistance (Anthropic Claude Code). All AI-generated code is reviewed and tested before merging. See [AI Usage](#ai-usage) for details.
+<h1 align="center">Spotiflac-Lidarr Proxy</h1>
 
-Bridge Lidarr ↔ SpotiFLAC. Implements SABnzbd download client API and Newznab indexer API so Lidarr treats this proxy as a standard Usenet downloader. The proxy shells out to a headless SpotiFLAC CLI to download high-quality FLAC files from Tidal, Qobuz, Amazon Music, and Deezer.
+<p align="center">
+  <a href="https://github.com/fishingpvalues/spotiflac-lidarr-proxy/actions/workflows/ci.yml"><img src="https://github.com/fishingpvalues/spotiflac-lidarr-proxy/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/go-1.25%2B-00ADD8.svg" alt="Go version"></a>
+  <a href="https://github.com/fishingpvalues/spotiflac-lidarr-proxy/pkgs/container/spotiflac-lidarr-proxy"><img src="https://img.shields.io/badge/docker-ghcr.io-2496ED.svg" alt="Docker image"></a>
+</p>
 
-## Architecture
+<p align="center">
+  You run Lidarr. You've heard of SpotiFLAC. Now they can talk to each other.
+</p>
+
+> [!WARNING]
+> Use this only to download content you have the legal right to download. See [Legal](#legal) for the full disclaimer.
+
+This proxy makes [SpotiFLAC](https://github.com/spotbye/SpotiFLAC) speak Lidarr's language. It implements the SABnzbd download-client API and the Newznab indexer API, so Lidarr believes it is talking to an ordinary Usenet setup. Underneath, it shells out to a headless SpotiFLAC CLI that pulls FLAC and hi-res audio from Tidal, Qobuz, Amazon Music, and Deezer using Spotify links as the search key.
+
+No account or credentials are needed for any of the four backing services. SpotiFLAC works by reverse-engineering public APIs, not by logging in anywhere.
+
+## How it fits together
+
+<p align="center">
+  <img src="docs/assets/architecture-venn.svg" width="600" alt="SpotiFLAC and Lidarr, bridged by this proxy">
+</p>
+
+Two ecosystems that were never meant to talk to each other, connected at the one point Lidarr already knows how to speak: the SABnzbd and Newznab protocols. Lidarr's indexer and download-client screens see a normal Usenet setup. On the other side, the proxy drives the SpotiFLAC CLI directly.
+
+<details>
+<summary>Full technical diagram</summary>
 
 ```
                                    Lidarr
@@ -70,83 +96,33 @@ Bridge Lidarr ↔ SpotiFLAC. Implements SABnzbd download client API and Newznab 
                    └─────────────────────────────────────────────────────┘
 ```
 
-## API Routes
+</details>
 
-### SABnzbd Download Client API (`/api` or `/api/sabnzbd`)
+## Features
 
-| Lidarr Action           | HTTP Request                              | Handler            | Status |
-|--------------------------|-------------------------------------------|--------------------|--------|
-| Test connection          | `GET /api?mode=version`                   | `handleVersion`    | Done   |
-| Authorization check      | `GET /api?mode=auth`                      | `handleAuth`       | Done   |
-| Get config               | `GET /api?mode=get_config`                | `handleGetConfig`  | Done   |
-| Get categories           | `GET /api?mode=get_cats`                 | `handleGetCats`    | Done   |
-| Full status              | `GET /api?mode=fullstatus`               | `handleFullStatus` | Done   |
-| Add download             | `GET /api?mode=addurl&name=<spotify>`    | `handleAddURL`     | Done   |
-| Queue status             | `GET /api?mode=queue`                    | `handleQueue`      | Done   |
-| History                  | `GET /api?mode=history`                  | `handleHistory`    | Done   |
-| Pause job                | `GET /api?mode=queue&name=pause`         | `handlePause`      | Done   |
-| Resume job               | `GET /api?mode=queue&name=resume`        | `handleResume`     | Done   |
-| Delete job               | `GET /api?mode=queue&name=delete`        | `handleDelete`     | Done   |
-| Retry failed             | `GET /api?mode=retry`                    | `handleRetry`      | Done   |
-| Server stats             | `GET /api?mode=server_stats`             | `handleServerStats`| Done   |
-| Warnings                 | `GET /api?mode=warnings`                 | `handleWarnings`   | Done   |
-| Change category          | `GET /api?mode=change_cat`               | `handleChangeCat`  | Done   |
-| Pause all                | `GET /api?mode=pause_all`                | `handlePauseAll`   | Done   |
-| Resume all               | `GET /api?mode=resume_all`               | `handleResumeAll`  | Done   |
-| Set speed limit          | `GET /api?mode=set_speedlimit`           | `handleSetSpeedlimit`| Done |
+- Speaks both halves of Lidarr's expected protocol: SABnzbd (download client) and Newznab (indexer).
+- Quality- and service-based categories (`music-flac-24`, `music-tidal`, `music-qobuz-flac-24`, ...), so Lidarr's quality profiles map directly onto SpotiFLAC's service/quality flags.
+- Verifies each download actually completed (event signal plus a file-count check against expected track count) before reporting success to Lidarr.
+- Per-service circuit breaker: a service that keeps failing gets skipped automatically instead of retried forever.
+- Optional fallback chain: if the primary service fails, try the next configured one.
+- Prometheus `/metrics`, a real `/health` check, and a `warnings` endpoint that surfaces open circuit breakers and stuck jobs.
+- SQLite-backed job queue that survives restarts.
 
-### Newznab Indexer API (`/api/newznab`)
+## Quick start
 
-| Lidarr Action           | HTTP Request                              | Handler            | Status |
-|--------------------------|-------------------------------------------|--------------------|--------|
-| Capabilities             | `GET /api/newznab?t=caps`                | `handleCaps`       | Done   |
-| Search                   | `GET /api/newznab?t=search&q=<query>`    | `handleSearch`     | Done   |
-| Music search             | `GET /api/newznab?t=music&artist=<a>`    | `handleMusic`      | Done   |
-| Item details             | `GET /api/newznab?t=details&id=<id>`     | `handleDetails`    | Done   |
+For the lazy: clone, set one environment variable, and go.
 
-### Queue Response Fields
+```bash
+git clone https://github.com/fishingpvalues/spotiflac-lidarr-proxy.git
+cd spotiflac-lidarr-proxy
+cp .env.example .env
+# edit .env and set SPF_API_KEY to a random string
+docker compose up -d
+```
 
-| Field           | Type      | Description                        |
-|-----------------|-----------|------------------------------------|
-| status          | string    | `Idle`, `Downloading`, `Paused`   |
-| speed           | string    | Human-readable download speed      |
-| kbpersec        | string    | KiloBytes/sec                      |
-| timeleft        | string    | `HH:MM:SS` ETA for all jobs        |
-| mb              | float64   | Total MB of all queued jobs        |
-| mbleft          | float64   | Total MB remaining                 |
-| slots           | array     | Individual job slots               |
-| diskspace1/2    | float64   | Free disk space in GB              |
+This builds the proxy and starts it alongside a Lidarr container on the same Docker network, sharing a `/downloads` volume.
 
-### Slot Fields
-
-| Field        | Type    | Description                       |
-|--------------|---------|-----------------------------------|
-| status       | string  | `Queued`, `Downloading`, `Paused` |
-| nzo_id       | string  | Unique job identifier             |
-| filename     | string  | Artist - Album name               |
-| mb           | float64 | Job size in MB                    |
-| mbleft       | float64 | MB remaining                      |
-| mbmissing    | float64 | MB missing (always 0 for Spotify) |
-| percentage   | string  | Progress percentage               |
-| timeleft     | string  | `HH:MM:SS` per-job ETA            |
-| time_added   | int64   | Unix timestamp when added         |
-| cat          | string  | Category                          |
-
-### History Response Fields
-
-| Field         | Type   | Description                        |
-|---------------|--------|------------------------------------|
-| status        | string | `Completed` or `Failed`           |
-| name          | string | Artist - Album name               |
-| size          | int64  | Size in bytes                     |
-| completed     | int64  | Unix timestamp of completion      |
-| download_time | int    | Duration in seconds               |
-| storage       | string | Output directory path             |
-| fail_message  | string | Error message on failure          |
-
-## Quick Start
-
-### Docker Compose
+Prefer a prebuilt image over building locally:
 
 ```yaml
 services:
@@ -169,50 +145,62 @@ services:
       - config:/config
 ```
 
-### Lidarr Setup
+### Lidarr setup
 
-1. **Download Client:** Settings → Download Clients → Add → SABnzbd
+1. **Download Client:** Settings -> Download Clients -> Add -> SABnzbd
    - Host: `proxy`, Port: `8484`
-   - URL Base: leave empty (proxy handles `/api` route)
-   - API Key: your SPF_API_KEY value
+   - URL Base: leave empty
+   - API Key: your `SPF_API_KEY` value
    - Category: `music`
 
-2. **Indexer:** Settings → Indexers → Add → Newznab
+2. **Indexer:** Settings -> Indexers -> Add -> Newznab
    - URL: `http://proxy:8484/api/newznab`
-   - API Key: your SPF_API_KEY value
+   - API Key: your `SPF_API_KEY` value
    - Categories: 3010, 3040
+
+## Build from source
+
+Requires Go 1.25+ and a SpotiFLAC CLI build (see the [Dockerfile](Dockerfile) for the exact pinned commit and build flags).
+
+```bash
+git clone https://github.com/fishingpvalues/spotiflac-lidarr-proxy.git
+cd spotiflac-lidarr-proxy
+go build ./cmd/server
+./server serve
+```
+
+Run the test suite with `go test ./... -count=1`. `INTEGRATION=1 go test ./tests/integration/... -v` runs the docker-compose-backed integration test.
 
 ## Configuration
 
-All via environment variables prefixed `SPF_`:
+The essentials, via environment variables prefixed `SPF_`. Full reference: [`docs/API.md`](docs/API.md).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| SPF_PORT | 8484 | HTTP listen port |
-| SPF_API_KEY | (required) | API key for Lidarr auth |
-| SPF_OUTPUT_DIR | /downloads | FLAC output directory |
-| SPF_SPOTIFLAC_CLI_PATH | /usr/local/bin/spotiflac-cli | SpotiFLAC binary |
-| SPF_DEFAULT_SERVICE | tidal | Download service priority |
-| SPF_DEFAULT_QUALITY | lossless | Quality: lossless, hires, both |
-| SPF_MAX_CONCURRENT | 3 | Max concurrent downloads |
-| SPF_JOB_TIMEOUT | 30m | Max time per download |
-| SPF_DB_PATH | /data/queue.db | SQLite database path |
-| SPF_LOG_LEVEL | info | Log level |
+| `SPF_PORT` | 8484 | HTTP listen port |
+| `SPF_API_KEY` | (required) | API key for Lidarr auth |
+| `SPF_OUTPUT_DIR` | /downloads | FLAC output directory |
+| `SPF_DEFAULT_SERVICE` | tidal | Download service |
+| `SPF_DEFAULT_QUALITY` | lossless | Quality: lossless, hires |
+| `SPF_FALLBACK_SERVICES` | (none) | Services to try, in order, if the primary fails |
+| `SPF_MAX_CONCURRENT` | 3 | Max concurrent downloads |
+| `SPF_DB_PATH` | /data/queue.db | SQLite database path |
 
-## Security Notes
+## Security and hardening
 
-This proxy has no built-in TLS support — it's designed to run on a trusted
-internal network (the same docker network as Lidarr) and speaks plain HTTP.
+This proxy authenticates every request with a single static API key. That is the same trust model SABnzbd, Prowlarr, and every other download client Lidarr talks to already use, but it means the proxy is only as safe as the network it sits on.
 
-- **Do not expose the proxy's port directly to the internet.** If you need
-  remote access, put it behind a reverse proxy (Caddy, Traefik, nginx) that
-  terminates TLS, the same way you would for Lidarr itself.
-- The `SPF_API_KEY` value travels in every request's query string. Over
-  plain HTTP on an untrusted network this is readable by anyone on-path —
-  another reason to keep this behind a reverse proxy or restrict it to a
-  private network.
+**We are aware of the Huntarr incident.** In early 2026, a widely used *arr-stack management tool shipped unauthenticated endpoints that dumped every connected app's API keys and instance URLs in plaintext to anyone who could reach it. The lesson from that incident drove real decisions in this codebase: the API key is compared in constant time, it is redacted before it ever reaches a log line, and every value that reaches the SpotiFLAC subprocess is validated against a strict allowlist first. None of that protects you if the *arr stack itself is reachable from the open internet. No download client can fix an exposed network.
 
-Example Caddy sidecar snippet for `docker-compose.yml`:
+Harden your deployment the same way you would harden Lidarr itself:
+
+- **Never publish this proxy's port to the internet.** Keep it on the same internal Docker network as Lidarr; do not add a `ports:` mapping that exposes it beyond `localhost` unless a reverse proxy sits in front.
+- **Put a reverse proxy in front if you need remote access**, terminating TLS there (Caddy, Traefik, nginx). The API key travels in the query string on every request; over plain HTTP on an untrusted network that is readable by anyone on-path.
+- **Prefer a VPN over port-forwarding.** Tailscale or WireGuard into your home network, rather than opening a port on your router, removes an entire class of exposure. If you also want a kill switch for the underlying streaming traffic itself (in case of ISP-level blocking or to keep those connections off your home IP), run a VPN with kill-switch support (e.g. Gluetun) as a network sidecar for the SpotiFLAC-side traffic, the same pattern used by qBittorrent/Sonarr/Radarr stacks that route through NordVPN or PIA.
+- **Rotate `SPF_API_KEY`** if you ever suspect it leaked, and check `GET /api/sabnzbd?mode=warnings` and `/metrics` periodically for anything that looks wrong.
+- **Keep the image updated.** Renovate is configured on this repo to track dependency and base-image updates.
+
+Example Caddy sidecar for TLS termination:
 
 ```yaml
 services:
@@ -235,81 +223,33 @@ proxy.yourdomain.com {
 
 ### Repeated download failures for one service (Tidal/Qobuz/Amazon/Deezer)
 
-SpotiFLAC requires no account or credentials for any of the four backing
-services — it reverse-engineers public APIs, not user logins. The most
-common real-world failure mode instead is **IP-based rate limiting**: the
-upstream SpotiFLAC project's own FAQ confirms metadata/audio fetches can
-get rate-limited per IP, recommending a wait or a VPN.
+The most common real-world failure is IP-based rate limiting, not an authentication problem. SpotiFLAC's own project confirms metadata and audio fetches can get rate-limited per IP, and recommends waiting or using a VPN.
 
-This proxy has a built-in per-service circuit breaker: after 5 consecutive
-failures for one service, it stops sending new jobs to that service for 10
-minutes and fails them immediately instead of waiting out a full timeout.
-Check `GET /api/sabnzbd?mode=warnings` — an open breaker shows up there
-with the service name and when it'll retry.
+This proxy has a built-in per-service circuit breaker: after 5 consecutive failures for one service, it stops sending new jobs to that service for 10 minutes and fails them immediately instead of waiting out a full timeout. Check `GET /api/sabnzbd?mode=warnings` — an open breaker shows up there with the service name and retry time.
 
-If you see one service's breaker tripping repeatedly, that service is
-likely rate-limiting you; either wait it out, or set
-`SPF_FALLBACK_SERVICES` so jobs automatically try another service instead.
+If one service's breaker keeps tripping, that service is likely rate-limiting you. Either wait it out or set `SPF_FALLBACK_SERVICES` so jobs automatically try another service.
 
-## Category System
+## API reference
 
-The proxy exposes 17 categories that Lidarr can use to select service and quality. Categories follow the pattern `music-[service][-quality]`, parsed at download time to set the correct `--service` and `--quality` flags for SpotiFLAC CLI.
+Full route tables, response field reference, and the category system: [`docs/API.md`](docs/API.md). Machine-readable spec: [`openapi.json`](openapi.json), checked against the running server on every CI run.
 
-### SABnzbd Categories (Lidarr Download Client)
+## AI usage
 
-| Category | Quality | Service | SpotiFLAC --quality |
-|----------|---------|---------|---------------------|
-| music | Default | default (tidal) | LOSSLESS |
-| music-flac-16 | CD Quality 16-bit | default (tidal) | LOSSLESS |
-| music-flac-24 | Hi-Res 24-bit | default (tidal) | HIRES_LOSSLESS |
-| music-lossless | Best available | default (tidal) | HIRES_LOSSLESS |
-| music-mp3 | MP3 | default (tidal) | LOSSLESS |
-| music-tidal | Best available | Tidal | HIRES_LOSSLESS |
-| music-qobuz | Best available | Qobuz | HIRES_LOSSLESS |
-| music-amazon | Best available | Amazon | HIRES_LOSSLESS |
-| music-deezer | Best available | Deezer | HIRES_LOSSLESS |
-| music-tidal-flac-16 | CD Quality | Tidal | LOSSLESS |
-| music-tidal-flac-24 | Hi-Res | Tidal | HIRES_LOSSLESS |
-| music-qobuz-flac-16 | CD Quality | Qobuz | LOSSLESS |
-| music-qobuz-flac-24 | Hi-Res | Qobuz | HIRES_LOSSLESS |
-| music-amazon-flac-16 | CD Quality | Amazon | LOSSLESS |
-| music-amazon-flac-24 | Hi-Res | Amazon | HIRES_LOSSLESS |
-| music-deezer-flac-16 | CD Quality | Deezer | LOSSLESS |
-| music-deezer-flac-24 | Hi-Res | Deezer | HIRES_LOSSLESS |
+This project was planned and implemented with AI assistance (Anthropic Claude Code). All AI-generated code goes through automated tests and manual review before merging, the same as any other contribution. Nothing here is exempt from that bar because an AI wrote the first draft.
 
-### Newznab Categories (Lidarr Indexer)
+## Legal
 
-| ID | Name | Maps To |
-|----|------|---------|
-| 3010 | Lossless | music-lossless |
-| 3040 | FLAC 24-bit | music-flac-24 |
-| 3050 | FLAC 16-bit | music-flac-16 |
-| 3060 | Tidal | music-tidal |
-| 3061 | Qobuz | music-qobuz |
-| 3062 | Amazon | music-amazon |
-| 3063 | Deezer | music-deezer |
+SpotiFLAC and this proxy are third-party tools and are not affiliated with, endorsed by, or connected to Spotify, Tidal, Qobuz, Amazon Music, or any other streaming service. This project is for educational and private use only. The developer does not condone or encourage copyright infringement.
 
-### SpotiFLAC Service x Quality Matrix
+You are solely responsible for:
+- Ensuring your use of this software complies with your local laws.
+- Reading and adhering to the Terms of Service of the respective platforms.
+- Any legal consequences resulting from misuse of this tool.
 
-| Service | LOSSLESS (16-bit FLAC) | HIRES_LOSSLESS (24-bit FLAC) |
-|---------|----------------------|------------------------------|
-| tidal | Yes (FLAC 44.1/16) | Yes (FLAC up to 192/24) |
-| qobuz | Yes (FLAC 44.1/16) | Yes (FLAC up to 192/24) |
-| amazon | Yes (FLAC 44.1/16) | Yes (FLAC up to 192/24) |
-| deezer | Yes (FLAC 44.1/16) | Limited availability |
+The software is provided "as is", without warranty of any kind. The author assumes no liability for any bans, damages, or legal issues arising from its use.
 
-### Quality Mapping
+**API credits (from the upstream SpotiFLAC project):** [MusicBrainz](https://musicbrainz.org), [LRCLIB](https://lrclib.net), [Songlink/Odesli](https://song.link), [Songstats](https://songstats.com), [hifi-api](https://github.com/binimum/hifi-api), [Qobuz-DL](https://github.com/QobuzDL/Qobuz-DL).
 
-When Lidarr adds a download with a specific category, the proxy extracts service and quality:
+## License
 
-```
-music-qobuz-flac-24  →  --service qobuz --quality HIRES_LOSSLESS
-music-tidal-flac-16  →  --service tidal --quality LOSSLESS
-music-flac-24        →  --service [default] --quality HIRES_LOSSLESS
-music-amazon         →  --service amazon --quality HIRES_LOSSLESS (default)
-```
-
-This means users can pick:
-- **Quality-based**: `music-flac-16` or `music-flac-24` — uses default service with desired quality
-- **Service-based**: `music-tidal` — uses best quality on that service
-- **Combined**: `music-qobuz-flac-24` — full control over service and quality
+[Apache License 2.0](LICENSE).
