@@ -2,6 +2,7 @@ package spotiflac
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 )
@@ -32,7 +33,7 @@ type MetadataResult struct {
 	TrackCount int    `json:"track_count"`
 }
 
-func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- error) {
+func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- error, output *bytes.Buffer) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -42,7 +43,10 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 		}
 		switch event.Type {
 		case "error":
-			errors <- &DownloadError{Message: event.ErrorMessage}
+			errors <- &DownloadError{
+				Message:   event.ErrorMessage,
+				RawOutput: lastNBytes(output.Bytes(), 4096),
+			}
 		case "complete":
 			events <- event
 		case "track_done":
