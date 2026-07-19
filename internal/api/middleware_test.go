@@ -13,6 +13,27 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api"
 )
 
+func TestAPIKeyAuthWithSkiplistOnOverlappingGroupsExemptsSharedSkipMode(t *testing.T) {
+	// Regression guard: main.go mounts a broad group at the bare "/api"
+	// prefix alongside a narrower "/api/newznab" group. Fiber matches Use()
+	// middleware by path prefix, so a request to /api/newznab also runs the
+	// bare "/api" group's middleware first - if that group's skiplist
+	// doesn't independently know about a mode the narrower group exempts
+	// (e.g. newznab's "caps"), it 401s before the narrower group's own
+	// skiplist ever gets a chance to run. Both overlapping groups' skiplists
+	// must agree, not just the one that logically "owns" the route.
+	app := fiber.New()
+	app.Group("/api").Use(api.APIKeyAuthWithSkiplist("correct-key", "version", "auth", "caps"))
+	nznb := app.Group("/api/newznab")
+	nznb.Use(api.APIKeyAuthWithSkiplist("correct-key", "caps"))
+	nznb.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	req, _ := http.NewRequest("GET", "/api/newznab?t=caps", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
 func TestAPIKeyAuthWithSkiplistAcceptsCorrectKey(t *testing.T) {
 	app := fiber.New()
 	app.Use(api.APIKeyAuthWithSkiplist("correct-key"))

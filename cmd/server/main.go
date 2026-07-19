@@ -103,6 +103,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 	app := fiber.New(fiber.Config{
 		AppName:      "spotiflac-lidarr-proxy",
 		ServerHeader: "spotiflac-lidarr-proxy",
+		// Fiber (fasthttp) defaults to unsafe, zero-copy strings from
+		// c.Query()/c.FormValue(): the returned string aliases the
+		// connection's read buffer, valid only until the handler returns.
+		// addurl.go stores query values (spotify URL, category, ...) in a
+		// Job handed to a goroutine that outlives the handler and re-persists
+		// them on every later queue.Update() call - without Immutable, a
+		// concurrent request on the same connection can silently overwrite
+		// that buffer, corrupting an already-queued job's fields the next
+		// time it's re-saved. Confirmed against a real production run this
+		// session: a job's category was found stored as "jsonc-flac-16"
+		// instead of "music-flac-16".
+		Immutable: true,
 	})
 
 	app.Get("/health", func(c fiber.Ctx) error {
@@ -134,9 +146,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 	sabGroup.Use(api.APIKeyAuthWithSkiplist(cfg.APIKey, "version", "auth"))
 	sabHandler.RegisterRoutesOnGroup(sabGroup)
 
-	// Also register on /api for Lidarr SABnzbd compatibility (urlBase)
+	// Also register on /api for Lidarr SABnzbd compatibility (urlBase). This
+	// group is mounted at the bare "/api" prefix, so its middleware also
+	// matches every /api/newznab/* request (fiber matches Use() by path
+	// prefix, not by which group's own routes it is). Without "caps" in its
+	// own skiplist here too, it 401s t=caps before nznbGroup's skiplist
+	// below ever gets a chance to exempt it.
 	sabRootGroup := app.Group("/api")
-	sabRootGroup.Use(api.APIKeyAuthWithSkiplist(cfg.APIKey, "version", "auth"))
+	sabRootGroup.Use(api.APIKeyAuthWithSkiplist(cfg.APIKey, "version", "auth", "caps"))
 	sabHandler.RegisterRoutesOnGroup(sabRootGroup)
 
 	// Newznab routes: require auth except caps
