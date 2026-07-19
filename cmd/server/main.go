@@ -25,7 +25,7 @@ import (
 	sabnzbdstatus "github.com/fishingpvalues/spotiflac-lidarr-proxy/pkg/sabnzbd"
 )
 
-const version = "1.3.0"
+const version = "1.3.1"
 
 func main() {
 	rootCmd := &cobra.Command{

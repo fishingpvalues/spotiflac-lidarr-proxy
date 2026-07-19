@@ -164,7 +164,7 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL string) ([]byte, e
 func CapsXML(serverURL string) []byte {
 	xmlStr := `<?xml version="1.0" encoding="UTF-8"?>
 <caps>
-  <server title="Spotiflac-Lidarr Proxy" version="1.3.0" url="` + serverURL + `" />
+  <server title="Spotiflac-Lidarr Proxy" version="1.3.1" url="` + serverURL + `" />
   <searching>
     <search available="yes" supported="yes" />
     <music-search available="yes" supported="yes" />
