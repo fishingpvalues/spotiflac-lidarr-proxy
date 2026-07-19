@@ -66,8 +66,65 @@ func migrate(db *sql.DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_jobs_spotify_url ON jobs(spotify_url, is_history, status);
 		`
-	_, err := db.Exec(query)
-	return err
+	if _, err := db.Exec(query); err != nil {
+		return err
+	}
+	return addMissingColumns(db)
+}
+
+// addMissingColumns adds any columns to the jobs table that don't yet exist,
+// for databases created before those columns were introduced (e.g. a
+// production /data/queue.db from a version of this schema that predates
+// track_count/cli_output). CREATE TABLE IF NOT EXISTS is a no-op against an
+// already-existing table, so without this step an old database would keep
+// missing these columns forever and every subsequent query referencing them
+// would fail at runtime with "no such column". Safe to run on every startup:
+// each ALTER is skipped if the column is already present (which is always
+// the case on a freshly created database, since CREATE TABLE above already
+// includes these columns).
+func addMissingColumns(db *sql.DB) error {
+	existing, err := existingColumns(db)
+	if err != nil {
+		return fmt.Errorf("read table info: %w", err)
+	}
+
+	additions := []struct {
+		name string
+		ddl  string
+	}{
+		{"track_count", "ALTER TABLE jobs ADD COLUMN track_count INTEGER NOT NULL DEFAULT 0"},
+		{"cli_output", "ALTER TABLE jobs ADD COLUMN cli_output TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, a := range additions {
+		if existing[a.name] {
+			continue
+		}
+		if _, err := db.Exec(a.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", a.name, err)
+		}
+	}
+	return nil
+}
+
+func existingColumns(db *sql.DB) (map[string]bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols[name] = true
+	}
+	return cols, rows.Err()
 }
 
 func (q *SQLiteQueue) Add(job *Job) error {
