@@ -6,6 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/fishingpvalues/spotiflac-lidarr-proxy/actions/workflows/ci.yml"><img src="https://github.com/fishingpvalues/spotiflac-lidarr-proxy/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases/latest"><img src="https://img.shields.io/github/v/release/fishingpvalues/spotiflac-lidarr-proxy" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
   <a href="go.mod"><img src="https://img.shields.io/badge/go-1.25%2B-00ADD8.svg" alt="Go version"></a>
   <a href="https://github.com/fishingpvalues/spotiflac-lidarr-proxy/pkgs/container/spotiflac-lidarr-proxy"><img src="https://img.shields.io/badge/docker-ghcr.io-2496ED.svg" alt="Docker image"></a>
@@ -18,9 +19,9 @@
 > [!WARNING]
 > Use this only to download content you have the legal right to download. See [Legal](#legal) for the full disclaimer.
 
-This proxy makes [SpotiFLAC](https://github.com/spotbye/SpotiFLAC) speak Lidarr's language. It implements the SABnzbd download-client API and the Newznab indexer API, so Lidarr believes it is talking to an ordinary Usenet setup. Underneath, it shells out to a headless SpotiFLAC CLI that pulls FLAC and hi-res audio from Tidal, Qobuz, Amazon Music, and Deezer using Spotify links as the search key.
+This proxy makes [SpotiFLAC](https://github.com/spotbye/SpotiFLAC) speak Lidarr's language: it implements the SABnzbd download-client API and the Newznab indexer API, so Lidarr believes it's talking to an ordinary Usenet setup. Underneath, it drives a headless SpotiFLAC CLI that pulls FLAC and hi-res audio from Tidal, Qobuz, Amazon Music, and Deezer using Spotify links as the search key — no account or login needed for any of the four.
 
-No account or credentials are needed for any of the four backing services. SpotiFLAC works by reverse-engineering public APIs, not by logging in anywhere.
+**Self-contained: this is the only container you need.** The published image bundles a `spotiflac-cli` build from a pinned commit of a [maintained fork](https://github.com/fishingpvalues/SpotiFLAC) alongside the proxy server itself. There is no separate SpotiFLAC service to deploy, configure, or keep in sync — one container talks to Lidarr on one side and shells out to the bundled CLI on the other.
 
 ## How it fits together
 
@@ -28,7 +29,7 @@ No account or credentials are needed for any of the four backing services. Spoti
   <img src="docs/assets/architecture-venn.svg" width="600" alt="SpotiFLAC and Lidarr, bridged by this proxy">
 </p>
 
-Two ecosystems that were never meant to talk to each other, connected at the one point Lidarr already knows how to speak: the SABnzbd and Newznab protocols. Lidarr's indexer and download-client screens see a normal Usenet setup. On the other side, the proxy drives the SpotiFLAC CLI directly.
+Two ecosystems that were never meant to talk to each other, connected at the one point Lidarr already knows how to speak: SABnzbd and Newznab. Lidarr sees a normal Usenet setup; the proxy drives the bundled SpotiFLAC CLI directly.
 
 <details>
 <summary>Full technical diagram</summary>
@@ -158,71 +159,52 @@ services:
    - API Key: your `SPF_API_KEY` value
    - Categories: 3010, 3040
 
-## Running the binary directly
+## Running without Docker
 
-The Docker image is the recommended way to run this in production - it bundles
-a matching `spotiflac-cli` build alongside the server. If you'd rather run the
-server binary directly on the host (no container), grab a prebuilt release:
+The Docker image is still the recommended way to run this — it's the only
+distribution that bundles a matching `spotiflac-cli` build. Running the
+server binary directly means building or obtaining `spotiflac-cli` yourself.
+
+**Option A — prebuilt release binary:**
 
 ```bash
-# Linux/macOS
 curl -L -o spotiflac-lidarr-proxy.tar.gz \
   https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases/latest/download/spotiflac-lidarr-proxy_<tag>_<os>_<arch>.tar.gz
 tar xzf spotiflac-lidarr-proxy.tar.gz
-
-# verify against the published checksums
-curl -L -o checksums.txt \
-  https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases/latest/download/checksums.txt
-sha256sum --ignore-missing -c checksums.txt
 ```
 
 Every [GitHub Release](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases)
-is built straight from the pushed git tag (`vX.Y.Z`) and ships binaries for
-`linux`, `darwin` and `windows` on `amd64`/`arm64`, plus a `checksums.txt` and
-an auto-generated changelog grouped by commit type. Pick the archive matching
-your OS/arch (e.g. `spotiflac-lidarr-proxy_v1.3.2_linux_amd64.tar.gz`,
-`..._windows_amd64.zip`).
+builds straight from the pushed git tag and ships `linux`/`darwin`/`windows`
+binaries for `amd64`/`arm64`, a `checksums.txt`, and a changelog grouped by
+commit type. Verify what you downloaded: `sha256sum --ignore-missing -c checksums.txt`.
 
-The binary alone only runs the proxy server - it still shells out to a
-separate `spotiflac-cli` for the actual SpotiFLAC/Tidal/Qobuz downloading.
-Build it from the pinned fork commit (see the [Dockerfile](Dockerfile) for the
-exact commit and flags), then point the proxy at it:
-
-```bash
-git clone https://github.com/fishingpvalues/SpotiFLAC.git
-cd SpotiFLAC && git checkout <commit-from-Dockerfile>
-go build -tags headless -o spotiflac-cli .
-
-SPF_API_KEY=your-secret-key \
-SPF_OUTPUT_DIR=/path/to/downloads \
-SPF_SPOTIFLAC_CLI_PATH=/path/to/spotiflac-cli \
-./spotiflac-lidarr-proxy serve
-```
-
-Configuration is env-var driven (see [Configuration](#configuration) below);
-the one CLI flag is `-v`/`--verbose`, stackable like `ssh -vvv`: it only ever
-raises verbosity above whatever `SPF_LOG_LEVEL` is set to, never lowers it.
-
-```bash
-./spotiflac-lidarr-proxy serve       # SPF_LOG_LEVEL as configured (default info)
-./spotiflac-lidarr-proxy serve -v    # at least debug
-./spotiflac-lidarr-proxy serve -vv   # at least trace
-```
-
-## Build from source
-
-Requires Go 1.25+ and a SpotiFLAC CLI build (see the [Dockerfile](Dockerfile) for the exact pinned commit and build flags).
+**Option B — build from source** (requires Go 1.25+):
 
 ```bash
 git clone https://github.com/fishingpvalues/spotiflac-lidarr-proxy.git
 cd spotiflac-lidarr-proxy
 go build ./cmd/server
-./server serve
 ```
 
-Run the test suite with `go test ./... -count=1`. `INTEGRATION=1 go test ./tests/integration/... -v` runs the docker-compose-backed integration test.
+Either way, you still need `spotiflac-cli` — build it from the exact pinned
+commit in the [Dockerfile](Dockerfile):
 
-Cross-compiling for a release build (matches what CI publishes): `goreleaser release --snapshot --clean --skip=publish` (requires [GoReleaser](https://goreleaser.com/)).
+```bash
+git clone https://github.com/fishingpvalues/SpotiFLAC.git
+cd SpotiFLAC && git checkout <commit-from-Dockerfile>
+go build -tags headless -o spotiflac-cli .
+```
+
+Then run the server, pointing it at that CLI:
+
+```bash
+SPF_API_KEY=your-secret-key \
+SPF_OUTPUT_DIR=/path/to/downloads \
+SPF_SPOTIFLAC_CLI_PATH=/path/to/spotiflac-cli \
+./spotiflac-lidarr-proxy serve       # -v for debug, -vv for trace (stacks like ssh -vvv)
+```
+
+Testing: `go test ./... -count=1` (unit), `INTEGRATION=1 go test ./tests/integration/... -v` (spins up the real docker-compose stack). Cross-compiling like CI does: `goreleaser release --snapshot --clean --skip=publish`.
 
 ## Configuration
 
@@ -241,17 +223,15 @@ The essentials, via environment variables prefixed `SPF_`. Full reference: [`doc
 
 ## Security and hardening
 
-This proxy authenticates every request with a single static API key. That is the same trust model SABnzbd, Prowlarr, and every other download client Lidarr talks to already use, but it means the proxy is only as safe as the network it sits on.
+This proxy authenticates with a single static API key — the same trust model SABnzbd, Prowlarr, and every other Lidarr download client already use. It's only as safe as the network it sits on.
 
-**We are aware of the Huntarr incident.** In early 2026, a widely used *arr-stack management tool shipped unauthenticated endpoints that dumped every connected app's API keys and instance URLs in plaintext to anyone who could reach it. The lesson from that incident drove real decisions in this codebase: the API key is compared in constant time, it is redacted before it ever reaches a log line, and every value that reaches the SpotiFLAC subprocess is validated against a strict allowlist first. None of that protects you if the *arr stack itself is reachable from the open internet. No download client can fix an exposed network.
+**We're aware of the Huntarr incident** (early 2026: a widely-used *arr management tool shipped unauthenticated endpoints that leaked every connected app's API keys in plaintext). That drove real decisions here: the API key is compared in constant time, redacted before it ever reaches a log line, and every value passed to the SpotiFLAC subprocess is validated against a strict allowlist. None of that helps if the *arr stack itself is exposed to the internet — no download client can fix an exposed network.
 
-Harden your deployment the same way you would harden Lidarr itself:
-
-- **Never publish this proxy's port to the internet.** Keep it on the same internal Docker network as Lidarr; do not add a `ports:` mapping that exposes it beyond `localhost` unless a reverse proxy sits in front.
-- **Put a reverse proxy in front if you need remote access**, terminating TLS there (Caddy, Traefik, nginx). The API key travels in the query string on every request; over plain HTTP on an untrusted network that is readable by anyone on-path.
-- **Prefer a VPN over port-forwarding.** Tailscale or WireGuard into your home network, rather than opening a port on your router, removes an entire class of exposure. If you also want a kill switch for the underlying streaming traffic itself (in case of ISP-level blocking or to keep those connections off your home IP), run a VPN with kill-switch support (e.g. Gluetun) as a network sidecar for the SpotiFLAC-side traffic, the same pattern used by qBittorrent/Sonarr/Radarr stacks that route through NordVPN or PIA.
-- **Rotate `SPF_API_KEY`** if you ever suspect it leaked, and check `GET /api/sabnzbd?mode=warnings` and `/metrics` periodically for anything that looks wrong.
-- **Keep the image updated.** Renovate is configured on this repo to track dependency and base-image updates.
+- **Never publish this proxy's port to the internet.** Keep it on Lidarr's internal Docker network; no `ports:` mapping beyond `localhost` unless a reverse proxy sits in front.
+- **Reverse proxy for remote access**, terminating TLS there (Caddy/Traefik/nginx) — the API key travels in the query string, unreadable over TLS but plaintext-on-path over plain HTTP.
+- **VPN over port-forwarding.** Tailscale/WireGuard into your home network beats opening a router port. For a kill switch on the underlying streaming traffic itself, run something like Gluetun as a sidecar — the same pattern qBittorrent/Sonarr/Radarr stacks use with NordVPN/PIA.
+- **Rotate `SPF_API_KEY`** if it ever leaks; check `GET /api/sabnzbd?mode=warnings` and `/metrics` periodically.
+- **Keep the image updated** — Renovate tracks dependency and base-image updates on this repo.
 
 Example Caddy sidecar for TLS termination:
 
