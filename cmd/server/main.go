@@ -25,8 +25,14 @@ import (
 	sabnzbdstatus "github.com/fishingpvalues/spotiflac-lidarr-proxy/pkg/sabnzbd"
 )
 
-// version is set at build time via -ldflags "-X main.version=..."; see Dockerfile/release.yml.
-var version = "dev"
+// version is set at build time via -ldflags "-X main.version=..."; see
+// Dockerfile/release.yml. Falls back to "develop" (not e.g. "dev") for
+// local/CI builds without that ldflag - Lidarr's SABnzbd client requires
+// either a semver-shaped version or the literal string "develop", which
+// it special-cases to assume SABnzbd 3.0.0+ (see Sabnzbd.cs ParseVersion);
+// anything else fails with "Unknown Version: <value>" and Lidarr refuses
+// the download client entirely.
+var version = "develop"
 
 // verbose counts -v occurrences (-v, -vv, ...), like ssh/curl/ansible.
 // It only ever raises verbosity above SPF_LOG_LEVEL, never lowers it.
