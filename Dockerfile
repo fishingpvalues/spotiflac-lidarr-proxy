@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /out/s
 
 # Stage 2: Build spotiflac-cli from fork (requires Go 1.26)
 FROM golang:1.26-alpine AS cli-builder
-ARG SPOTIFLAC_COMMIT=289920c9755f9426175ba88ab2ac0ae45ab8f7d0
+ARG SPOTIFLAC_COMMIT=5118b8798dc2c9d21ccefda37e774a221f422c9e
 RUN apk add --no-cache git
 RUN git clone https://github.com/fishingpvalues/SpotiFLAC.git /spotiflac && \
     cd /spotiflac && git checkout ${SPOTIFLAC_COMMIT}
