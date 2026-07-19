@@ -72,21 +72,7 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 
 		var outputBuf bytes.Buffer
 		tee := io.TeeReader(stdout, &outputBuf)
-
-		innerEvents := make(chan ProgressEvent, 32)
-		innerErrs := make(chan error, 1)
-		parseProgress(tee, innerEvents, innerErrs)
-		close(innerEvents)
-		close(innerErrs)
-		for evt := range innerEvents {
-			events <- evt
-		}
-		for e := range innerErrs {
-			if de, ok := e.(*DownloadError); ok {
-				de.RawOutput = lastNBytes(outputBuf.Bytes(), 4096)
-			}
-			errs <- e
-		}
+		parseProgress(tee, events, errs, &outputBuf)
 
 		if err := cmd.Wait(); err != nil {
 			if ctx.Err() == context.DeadlineExceeded {

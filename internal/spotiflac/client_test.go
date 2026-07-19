@@ -119,6 +119,76 @@ func TestDownloadCapturesOutputOnFailure(t *testing.T) {
 	assert.Contains(t, de.RawOutput, "disk full")
 }
 
+// TestDownloadDoesNotDeadlockOnManyEvents is a regression test for a bug where
+// parseProgress wrote to an intermediate, buffered channel (capacity 32) that
+// was only drained after parseProgress returned. Any CLI output producing more
+// than 32 cumulative events would block the write inside parseProgress forever,
+// so parseProgress never returned, the outer channels were never closed, and
+// Download hung indefinitely. Here we emit well over 32 progress lines before
+// a final error line, and assert that Download's channels are fully drained
+// and closed within a short deadline. The drain runs in a goroutine so that if
+// the deadlock regresses, this test fails fast via time.After instead of
+// hanging the whole test suite.
+func TestDownloadDoesNotDeadlockOnManyEvents(t *testing.T) {
+	const numProgressLines = 100 // well over the 32-capacity channel buffer
+
+	responses := make([]string, 0, numProgressLines+1)
+	for i := 0; i < numProgressLines; i++ {
+		responses = append(responses, fmt.Sprintf(
+			`{"type":"progress","track":"01","title":"Song","percent":%d,"speed":"1.0MB/s"}`, i))
+	}
+	responses = append(responses, `{"type":"error","message":"too many events"}`)
+
+	client := spotiflac.NewClient(mockCli(t, responses), 5*time.Second, "tidal", "lossless")
+
+	events, errs := client.Download(context.Background(),
+		"https://open.spotify.com/album/test", "/tmp/test-output", "", "")
+
+	done := make(chan struct{})
+	var gotEvents []spotiflac.ProgressEvent
+	var gotErrs []error
+
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case evt, ok := <-events:
+				if !ok {
+					events = nil
+					if errs == nil {
+						return
+					}
+					continue
+				}
+				gotEvents = append(gotEvents, evt)
+			case err, ok := <-errs:
+				if !ok {
+					errs = nil
+					if events == nil {
+						return
+					}
+					continue
+				}
+				gotErrs = append(gotErrs, err)
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+		// good: Download's channels closed within the deadline.
+	case <-time.After(10 * time.Second):
+		t.Fatal("Download did not close its channels in time — deadlock regression")
+	}
+
+	assert.Len(t, gotEvents, numProgressLines)
+	require.Len(t, gotErrs, 1)
+
+	var de *spotiflac.DownloadError
+	require.ErrorAs(t, gotErrs[0], &de)
+	assert.Contains(t, de.RawOutput, "too many events")
+}
+
 func TestSearchMetadataArtistFallsBackToName(t *testing.T) {
 	responses := []string{
 		`{"type":"result","name":"Fallback Name","artist":"","album":"Some Album","spotify_url":"https://open.spotify.com/album/xyz","title":"Some Album"}`,
