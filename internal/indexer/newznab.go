@@ -3,6 +3,7 @@ package indexer
 import (
 	"encoding/xml"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
@@ -87,7 +88,7 @@ type Attr struct {
 	Value string `xml:"value,attr"`
 }
 
-func NewznabXML(results []spotiflac.MetadataResult, serverURL string) ([]byte, error) {
+func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey string) ([]byte, error) {
 	if results == nil {
 		results = []spotiflac.MetadataResult{}
 	}
@@ -133,16 +134,24 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL string) ([]byte, e
 			attrs = append(attrs, Attr{Name: "isrc", Value: r.ISRC})
 		}
 
+		// Lidarr fetches this URL itself and requires a well-formed NZB
+		// (root element "nzb") before it will even contact the download
+		// client - the raw Spotify page is HTML and fails that check
+		// outright. handleGet (t=get) generates a synthetic NZB carrying
+		// r.SpotifyURL as embedded metadata; see nzb.go.
+		downloadURL := fmt.Sprintf("%s/api/newznab?t=get&id=%s&apikey=%s",
+			serverURL, url.QueryEscape(r.SpotifyURL), url.QueryEscape(apiKey))
+
 		item := Item{
 			Title:       r.Artist + " - " + r.Album,
 			GUID:        GUID{Value: r.SpotifyURL, IsPermaLink: true},
-			Link:        r.SpotifyURL,
+			Link:        downloadURL,
 			PubDate:     time.Now().Format(time.RFC1123Z),
 			Category:    "Music > " + r.Genre,
 			Description: fmt.Sprintf("%s - %s (%d tracks)", r.Artist, r.Album, r.TrackCount),
 			Comments:    "",
 			Enclosure: Enclosure{
-				URL:    r.SpotifyURL,
+				URL:    downloadURL,
 				Length: estimatedSize,
 				Type:   "application/x-nzb",
 			},
