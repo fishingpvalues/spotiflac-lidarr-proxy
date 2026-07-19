@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"time"
 
@@ -18,14 +19,20 @@ type Client struct {
 	timeout        time.Duration
 	defaultService string
 	defaultQuality string
+	verifyRelayURL string
+	tidalAPIURL    string
+	qobuzAPIURL    string
 }
 
-func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality string) *Client {
+func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, verifyRelayURL, tidalAPIURL, qobuzAPIURL string) *Client {
 	return &Client{
 		cliPath:        cliPath,
 		timeout:        timeout,
 		defaultService: defaultService,
 		defaultQuality: defaultQuality,
+		verifyRelayURL: verifyRelayURL,
+		tidalAPIURL:    tidalAPIURL,
+		qobuzAPIURL:    qobuzAPIURL,
 	}
 }
 
@@ -52,12 +59,22 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 		// Map proxy quality names to SpotiFLAC CLI uppercase flags
 		cliQuality := config.SpotiflacQuality(quality)
 
-		cmd := exec.CommandContext(ctx, c.cliPath,
+		args := []string{
 			"--url", url,
 			"--output-dir", outputDir,
 			"--service", service,
 			"--quality", cliQuality,
-		)
+		}
+		if c.tidalAPIURL != "" {
+			args = append(args, "--tidal-api-url", c.tidalAPIURL)
+		}
+		if c.qobuzAPIURL != "" {
+			args = append(args, "--qobuz-api-url", c.qobuzAPIURL)
+		}
+		cmd := exec.CommandContext(ctx, c.cliPath, args...)
+		if c.verifyRelayURL != "" {
+			cmd.Env = append(os.Environ(), "SPOTIFLAC_VERIFY_RELAY_URL="+c.verifyRelayURL)
+		}
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {

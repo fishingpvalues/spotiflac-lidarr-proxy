@@ -24,6 +24,25 @@ type Config struct {
 	FallbackServices []string      `mapstructure:"-"`
 
 	HistoryRetentionCount int `mapstructure:"history_retention_count"`
+
+	// VerifyRelayURL, if set, must be this proxy's own externally reachable
+	// /verify/callback URL (e.g. https://spotiflac.example.com/verify/callback).
+	// Passed to spotiflac-cli so it can relay Tidal/Qobuz/Amazon's one-time
+	// community-verification challenge to a real person's real browser
+	// instead of failing outright on a headless host with no browser of its
+	// own. Optional: without it, that challenge simply can't complete
+	// headlessly, same as before this existed.
+	VerifyRelayURL string `mapstructure:"verify_relay_url"`
+
+	// TidalAPIURL / QobuzAPIURL point spotiflac-cli at a custom, self-hosted
+	// or known-public Tidal/Qobuz API instance. Both downloaders try this
+	// first and, if it works, skip the rate-limited, verification-gated
+	// community tier entirely - see backend/tidal.go and backend/qobuz.go's
+	// GetDownloadURL in the pinned spotiflac-cli fork. Falls back to the
+	// community tier if unset or the custom instance fails. Amazon has no
+	// equivalent - it always uses the community tier.
+	TidalAPIURL string `mapstructure:"tidal_api_url"`
+	QobuzAPIURL string `mapstructure:"qobuz_api_url"`
 }
 
 func Load() (*Config, error) {
@@ -37,7 +56,8 @@ func Load() (*Config, error) {
 		"api_key", "port", "output_dir", "spotiflac_cli_path",
 		"default_service", "default_quality", "max_concurrent",
 		"job_timeout", "db_path", "log_level", "fallback_services",
-		"history_retention_count",
+		"history_retention_count", "verify_relay_url",
+		"tidal_api_url", "qobuz_api_url",
 	} {
 		// BindEnv only errors when called with zero keys; never the case here.
 		_ = v.BindEnv(key)

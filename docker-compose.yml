@@ -19,9 +19,16 @@ services:
       # - SPF_JOB_TIMEOUT=30m
       # - SPF_HISTORY_RETENTION_COUNT=500
       # - SPF_SPOTIFLAC_CLI_PATH=/usr/local/bin/spotiflac-cli
+      # - SPF_VERIFY_RELAY_URL=https://spotiflac.example.com/verify/callback
+      # - SPF_TIDAL_API_URL=https://your-tidal-api-instance.example
+      # - SPF_QOBUZ_API_URL=https://your-qobuz-api-instance.example
     volumes:
       - downloads:/downloads
       - data:/data
+      # spotiflac-cli's own state (ISRC cache, community verification
+      # session) lives under its home directory. Without this, a completed
+      # Tidal/Qobuz/Amazon community verification is lost on every restart.
+      - spotiflac_state:/home/spotiflac/.spotiflac
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8484/health"]
@@ -46,4 +53,5 @@ services:
 volumes:
   downloads:
   data:
+  spotiflac_state:
   lidarr_config:
