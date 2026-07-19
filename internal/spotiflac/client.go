@@ -2,9 +2,11 @@ package spotiflac
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"time"
 
@@ -68,7 +70,23 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			return
 		}
 
-		parseProgress(stdout, events, errs)
+		var outputBuf bytes.Buffer
+		tee := io.TeeReader(stdout, &outputBuf)
+
+		innerEvents := make(chan ProgressEvent, 32)
+		innerErrs := make(chan error, 1)
+		parseProgress(tee, innerEvents, innerErrs)
+		close(innerEvents)
+		close(innerErrs)
+		for evt := range innerEvents {
+			events <- evt
+		}
+		for e := range innerErrs {
+			if de, ok := e.(*DownloadError); ok {
+				de.RawOutput = lastNBytes(outputBuf.Bytes(), 4096)
+			}
+			errs <- e
+		}
 
 		if err := cmd.Wait(); err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
@@ -80,6 +98,13 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 	}()
 
 	return events, errs
+}
+
+func lastNBytes(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[len(b)-n:])
 }
 
 func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataResult, error) {

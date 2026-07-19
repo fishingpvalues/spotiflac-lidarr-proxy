@@ -79,6 +79,20 @@ func TestUpdate(t *testing.T) {
 	assert.Equal(t, 50.0, got.Percentage)
 }
 
+func TestUpdatePersistsCLIOutput(t *testing.T) {
+	q := newTestQueue(t)
+	job := &queue.Job{NzoID: "SABnzbd_nzo_clioutput"}
+	require.NoError(t, q.Add(job))
+
+	job.CLIOutput = "some raw cli output for postmortem"
+	require.NoError(t, q.Update(job))
+
+	var got string
+	row := q.DB().QueryRow("SELECT cli_output FROM jobs WHERE nzo_id = ?", "SABnzbd_nzo_clioutput")
+	require.NoError(t, row.Scan(&got))
+	assert.Equal(t, "some raw cli output for postmortem", got)
+}
+
 func TestDelete(t *testing.T) {
 	q := newTestQueue(t)
 

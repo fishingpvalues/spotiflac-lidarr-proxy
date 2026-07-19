@@ -24,6 +24,7 @@ type Job struct {
 	Service      string             `json:"service"`
 	Quality      string             `json:"quality"`
 	TrackCount   int                `json:"track_count"`
+	CLIOutput    string             `json:"-"`
 }
 
 type ListParams struct {
