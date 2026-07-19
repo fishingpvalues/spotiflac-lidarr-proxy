@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -220,8 +221,19 @@ func TestQueue(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	// Regression guard: Lidarr's Sabnzbd.GetQueue() does a bare foreach
+	// over the deserialized slots list with no null check - "slots":null
+	// (Go's zero value for a nil slice) throws a NullReferenceException
+	// on every periodic poll, confirmed against a real production Lidarr
+	// this session; it kept re-tripping Lidarr's own download-client
+	// circuit breaker with an escalating backoff, forever.
+	assert.NotContains(t, string(body), `"slots":null`, "an empty queue must marshal slots as [], not null")
+
 	var q sabtypes.QueueResponse
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&q))
+	require.NoError(t, json.Unmarshal(body, &q))
 	assert.Equal(t, "0.1.0-test", q.Queue.Version)
 }
 
@@ -233,8 +245,15 @@ func TestHistory(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	// Same reasoning as TestQueue: Lidarr's Sabnzbd.GetHistory() also does
+	// a bare foreach with no null check.
+	assert.NotContains(t, string(body), `"slots":null`, "empty history must marshal slots as [], not null")
+
 	var h sabtypes.HistoryResponse
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&h))
+	require.NoError(t, json.Unmarshal(body, &h))
 	assert.Equal(t, "0.1.0-test", h.History.Version)
 }
 

@@ -28,6 +28,10 @@ func (h *Handler) handleHistory(c fiber.Ctx) error {
 	}
 
 	resp := sabnzbd.HistoryResponse{}
+	// Same as queue.go's Slots: Lidarr's Sabnzbd.GetHistory() also does a
+	// bare foreach with no null check, so an empty history must marshal
+	// as `[]`, never `null`.
+	resp.History.Slots = []sabnzbd.HistorySlot{}
 	resp.History.Noofslots = total
 	resp.History.Version = h.version
 	resp.History.MonthSize = "0"
