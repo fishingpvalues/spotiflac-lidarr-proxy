@@ -68,7 +68,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # 1.26, not go.mod's version: the standalone spotiflac-cli build
+          # clones the upstream fork, which requires 1.26. A newer toolchain
+          # still builds this repo's go.mod fine.
+          go-version: "1.26"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
