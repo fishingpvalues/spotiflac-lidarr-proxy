@@ -1,6 +1,9 @@
 package sabnzbd
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/pkg/sabnzbd"
@@ -108,7 +111,20 @@ func (h *Handler) handleRetry(c fiber.Ctx) error {
 }
 
 func (h *Handler) handleWarnings(c fiber.Ctx) error {
-	return c.JSON(sabnzbd.WarningsResponse{
-		Warnings: []sabnzbd.Warning{},
-	})
+	var warnings []sabnzbd.Warning
+	for service, state := range h.breaker.Status() {
+		if !state.Open {
+			continue
+		}
+		warnings = append(warnings, sabnzbd.Warning{
+			Time: state.OpenedAt.Unix(),
+			Type: "ERROR",
+			Text: fmt.Sprintf("service %s circuit open, retrying after %s", service, state.RetryAt.Format(time.RFC3339)),
+			ID:   "breaker_" + service,
+		})
+	}
+	if warnings == nil {
+		warnings = []sabnzbd.Warning{}
+	}
+	return c.JSON(sabnzbd.WarningsResponse{Warnings: warnings})
 }

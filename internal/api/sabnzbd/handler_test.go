@@ -622,3 +622,33 @@ func TestProcessDownloadShortCircuitsWhenBreakerOpen(t *testing.T) {
 	}
 	assert.True(t, found)
 }
+
+func TestWarningsSurfacesOpenBreaker(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{OutputDir: dir, MaxConcurrent: 1, JobTimeout: 2 * time.Second}
+	st := storage.New(dir)
+	q, err := queue.New(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+	client := apispotiflac.NewClient("false", 2*time.Second, "tidal", "lossless") // "false" always exits 1
+	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+
+	for i := 0; i < 5; i++ {
+		job := &queue.Job{NzoID: fmt.Sprintf("SABnzbd_nzo_warn%d", i), Service: "tidal", SpotifyURL: "https://open.spotify.com/album/x"}
+		require.NoError(t, q.Add(job))
+		handler.ProcessDownloadSync(job)
+	}
+
+	app := fiber.New()
+	app.Use(api.APIKeyAuthWithSkiplist("test-key", "version", "auth"))
+	handler.RegisterRoutes(app)
+
+	req, _ := http.NewRequest("GET", "/api/sabnzbd?mode=warnings&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+
+	var w sabtypes.WarningsResponse
+	json.NewDecoder(resp.Body).Decode(&w)
+	require.NotEmpty(t, w.Warnings)
+	assert.Contains(t, w.Warnings[0].Text, "tidal")
+}
