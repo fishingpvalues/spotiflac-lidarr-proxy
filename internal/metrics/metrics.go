@@ -13,7 +13,7 @@ import (
 var (
 	jobsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "spf_jobs_total",
-		Help: "Total number of jobs by terminal status and service.",
+		Help: "Total number of service-attempt outcomes by terminal status and service (a single job may increment multiple services' counters if it uses fallback).",
 	}, []string{"status", "service"})
 
 	downloadDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
