@@ -231,6 +231,26 @@ proxy.yourdomain.com {
 }
 ```
 
+## Troubleshooting
+
+### Repeated download failures for one service (Tidal/Qobuz/Amazon/Deezer)
+
+SpotiFLAC requires no account or credentials for any of the four backing
+services — it reverse-engineers public APIs, not user logins. The most
+common real-world failure mode instead is **IP-based rate limiting**: the
+upstream SpotiFLAC project's own FAQ confirms metadata/audio fetches can
+get rate-limited per IP, recommending a wait or a VPN.
+
+This proxy has a built-in per-service circuit breaker: after 5 consecutive
+failures for one service, it stops sending new jobs to that service for 10
+minutes and fails them immediately instead of waiting out a full timeout.
+Check `GET /api/sabnzbd?mode=warnings` — an open breaker shows up there
+with the service name and when it'll retry.
+
+If you see one service's breaker tripping repeatedly, that service is
+likely rate-limiting you; either wait it out, or set
+`SPF_FALLBACK_SERVICES` so jobs automatically try another service instead.
+
 ## Category System
 
 The proxy exposes 17 categories that Lidarr can use to select service and quality. Categories follow the pattern `music-[service][-quality]`, parsed at download time to set the correct `--service` and `--quality` flags for SpotiFLAC CLI.
