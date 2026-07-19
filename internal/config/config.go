@@ -43,6 +43,18 @@ type Config struct {
 	// equivalent - it always uses the community tier.
 	TidalAPIURL string `mapstructure:"tidal_api_url"`
 	QobuzAPIURL string `mapstructure:"qobuz_api_url"`
+
+	// VerifyNotifyURL, if set, gets an HTTP POST with a plain-text body
+	// (the verification link plus a short instruction) whenever community
+	// verification is needed, instead of relying on an operator to notice
+	// it in mode=warnings. Deliberately generic - this is just "POST text
+	// to a URL", which covers ntfy (its publish API is exactly this: POST
+	// the message as the raw body), Gotify, a custom webhook receiver, or
+	// anything else that accepts a plain POST. Not tied to any specific
+	// notification service. VerifyNotifyTitle is sent as a "Title" header
+	// (ntfy displays it; anything else can ignore an unrecognized header).
+	VerifyNotifyURL   string `mapstructure:"verify_notify_url"`
+	VerifyNotifyTitle string `mapstructure:"verify_notify_title"`
 }
 
 func Load() (*Config, error) {
@@ -58,6 +70,7 @@ func Load() (*Config, error) {
 		"job_timeout", "db_path", "log_level", "fallback_services",
 		"history_retention_count", "verify_relay_url",
 		"tidal_api_url", "qobuz_api_url",
+		"verify_notify_url", "verify_notify_title",
 	} {
 		// BindEnv only errors when called with zero keys; never the case here.
 		_ = v.BindEnv(key)
@@ -116,6 +129,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("db_path", "/data/queue.db")
 	v.SetDefault("log_level", "info")
 	v.SetDefault("history_retention_count", 500)
+	v.SetDefault("verify_notify_title", "SpotiFLAC verification needed")
 }
 
 // Service constants matching SpotiFLAC CLI

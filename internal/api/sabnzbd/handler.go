@@ -324,6 +324,12 @@ func (h *Handler) handleProgressEvent(job *queue.Job, evt spotiflac.ProgressEven
 		if h.verifyStore != nil {
 			h.verifyStore.Set(evt.URL, evt.CB)
 		}
+		if h.cfg.VerifyNotifyURL != "" {
+			message := "Tidal/Qobuz/Amazon verification needed, open to continue: " + evt.URL
+			if err := verify.Notify(h.cfg.VerifyNotifyURL, h.cfg.VerifyNotifyTitle, message); err != nil {
+				h.log.Warn().Err(err).Msg("verification notify failed")
+			}
+		}
 	}
 }
 
