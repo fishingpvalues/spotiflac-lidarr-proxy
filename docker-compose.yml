@@ -13,6 +13,12 @@ services:
       - SPF_DEFAULT_SERVICE=tidal
       - SPF_DEFAULT_QUALITY=lossless
       - SPF_MAX_CONCURRENT=3
+      # Optional settings, shown with their defaults:
+      # - SPF_PORT=8484
+      # - SPF_FALLBACK_SERVICES=qobuz,amazon,deezer
+      # - SPF_JOB_TIMEOUT=30m
+      # - SPF_HISTORY_RETENTION_COUNT=500
+      # - SPF_SPOTIFLAC_CLI_PATH=/usr/local/bin/spotiflac-cli
     volumes:
       - downloads:/downloads
       - data:/data
