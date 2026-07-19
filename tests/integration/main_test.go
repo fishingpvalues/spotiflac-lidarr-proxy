@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,6 +150,42 @@ func lidarrRequest(t *testing.T, lidarrAPIKey, path string, body map[string]any)
 	return resp, string(respBody)
 }
 
+type lidarrValidationFailure struct {
+	IsWarning    bool   `json:"isWarning"`
+	ErrorMessage string `json:"errorMessage"`
+}
+
+// assertLidarrTestOK verifies a Lidarr /test response succeeded. Lidarr
+// returns HTTP 400 for BOTH real errors and pure informational warnings
+// alike - e.g. "Sabnzbd develop version, assuming version 3.0.0 or
+// higher" is isWarning:true, not a real failure, yet still 400s. The
+// isWarning field, not the status code, is what actually distinguishes
+// them. toleratedMessages additionally allows specific known-benign
+// non-warning messages (e.g. Lidarr's indexer test sends a blank
+// connectivity search and treats zero results as an error even for a
+// fully working indexer - confirmed against production this session).
+func assertLidarrTestOK(t *testing.T, resp *http.Response, body string, toleratedMessages ...string) {
+	t.Helper()
+	if resp.StatusCode == 200 {
+		return
+	}
+	var failures []lidarrValidationFailure
+	require.NoError(t, json.Unmarshal([]byte(body), &failures), "unexpected non-200 response: %s", body)
+	for _, f := range failures {
+		if f.IsWarning {
+			continue
+		}
+		tolerated := false
+		for _, msg := range toleratedMessages {
+			if strings.Contains(f.ErrorMessage, msg) {
+				tolerated = true
+				break
+			}
+		}
+		assert.True(t, tolerated, "real (non-warning, untolerated) validation failure: %s", f.ErrorMessage)
+	}
+}
+
 // TestIntegration_LidarrConfiguresProxy exercises the exact setup steps from
 // the README: adding the proxy as a Lidarr SABnzbd download client and a
 // Newznab indexer, using the real DownloadClientResource/IndexerResource
@@ -178,7 +215,7 @@ func TestIntegration_LidarrConfiguresProxy(t *testing.T) {
 				{"name": "musicCategory", "value": "music"},
 			},
 		})
-		assert.Equal(t, 200, resp.StatusCode, "downloadclient/test response body: %v", body)
+		assertLidarrTestOK(t, resp, body)
 	})
 
 	t.Run("indexer", func(t *testing.T) {
@@ -197,16 +234,6 @@ func TestIntegration_LidarrConfiguresProxy(t *testing.T) {
 				{"name": "categories", "value": []int{3010, 3040}},
 			},
 		})
-		// Lidarr's indexer/test sends a blank connectivity search (no
-		// artist/album) and treats zero results as a failure even for a
-		// fully working indexer - verified against production this session:
-		// a real, parameterized search against this exact indexer returns
-		// results fine. So a 200 is success; a 400 is only acceptable if
-		// it's specifically this known false negative, not a real
-		// connectivity/config problem.
-		if resp.StatusCode != 200 {
-			assert.Contains(t, body, "no results in the configured categories",
-				"indexer/test failed for a reason other than Lidarr's known blank-query false negative")
-		}
+		assertLidarrTestOK(t, resp, body, "no results in the configured categories")
 	})
 }
