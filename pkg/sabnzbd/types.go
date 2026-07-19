@@ -105,10 +105,14 @@ type History struct {
 }
 
 type HistorySlot struct {
-	Status       string `json:"status"`
-	NzoID        string `json:"nzo_id"`
-	Name         string `json:"name"`
-	Size         int64  `json:"size"`
+	Status string `json:"status"`
+	NzoID  string `json:"nzo_id"`
+	Name   string `json:"name"`
+	// Lidarr's SabnzbdHistoryItem.Size maps to JSON "bytes", not "size" -
+	// verified against Lidarr's actual source. Getting this wrong doesn't
+	// crash anything, it just silently reports every completed download
+	// as 0 bytes to Lidarr.
+	Size         int64  `json:"bytes"`
 	Cat          string `json:"cat"`
 	Completed    int64  `json:"completed"`
 	DownloadTime int    `json:"download_time"`
@@ -120,8 +124,17 @@ type HistorySlot struct {
 }
 
 // FullStatusResponse is used by Lidarr v2.0+ to resolve relative complete_dir.
+// Lidarr's SabnzbdFullStatusResponse wraps the payload in a "status" object
+// whose CompleteDir field maps to JSON "completedir" (no underscore, unlike
+// SabnzbdConfigMisc's "complete_dir") - verified against Lidarr's actual
+// source. The unwrapped, underscored version this used to send meant
+// Lidarr's GetFullStatus() always saw an empty completedir.
 type FullStatusResponse struct {
-	CompleteDir string `json:"complete_dir"`
+	Status FullStatus `json:"status"`
+}
+
+type FullStatus struct {
+	CompleteDir string `json:"completedir"`
 }
 
 // StatusResponse is a generic status response for queue/history operations.
