@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"testing"
 	"time"
@@ -96,25 +96,25 @@ func TestIntegration_SABnzbdAddURLAndQueue(t *testing.T) {
 	assert.Equal(t, nzoID, q.Queue.Slots[0].NzoID)
 }
 
-// lidarrAPIKeyPattern extracts Lidarr's auto-generated API key from its
-// unauthenticated bootstrap script - the same trick TRaSH Guides/Recyclarr
-// use, since there's no other way to obtain it without a UI login.
-var lidarrAPIKeyPattern = regexp.MustCompile(`apiKey:\s*'([^']+)'`)
+// lidarrConfigAPIKeyPattern extracts Lidarr's auto-generated API key from
+// its own config.xml. The unauthenticated /initialize.js bootstrap trick
+// other *arr automation uses doesn't work here: Lidarr 401s that endpoint
+// once AuthenticationMethod is Forms (confirmed against a real production
+// instance - and a fresh container logs "UI/initialize.js not found"
+// regardless of auth, since this image doesn't ship the web UI bundle
+// config.xml is always readable directly, auth or not.
+var lidarrConfigAPIKeyPattern = regexp.MustCompile(`<ApiKey>([^<]+)</ApiKey>`)
 
 // fetchLidarrAPIKey reads Lidarr's own API key. This is NOT the proxy's
 // SPF_API_KEY - Lidarr generates its own, separate key on first boot, and
 // every /api/v1/* call must authenticate with that one, not the proxy's.
 func fetchLidarrAPIKey(t *testing.T) string {
 	t.Helper()
-	resp, err := http.Get(lidarrBase + "/initialize.js")
-	require.NoError(t, err)
-	defer resp.Body.Close()
+	out, err := exec.Command("docker", "compose", "exec", "-T", "lidarr", "cat", "/config/config.xml").Output()
+	require.NoError(t, err, "reading Lidarr's config.xml via docker compose exec")
 
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-
-	match := lidarrAPIKeyPattern.FindSubmatch(body)
-	require.NotNil(t, match, "could not find apiKey in Lidarr's initialize.js")
+	match := lidarrConfigAPIKeyPattern.FindSubmatch(out)
+	require.NotNil(t, match, "could not find ApiKey in Lidarr's config.xml")
 	return string(match[1])
 }
 
