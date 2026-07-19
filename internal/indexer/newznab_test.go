@@ -10,6 +10,13 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
 )
 
+func TestCapsXMLDeclaresSupportedSearchParams(t *testing.T) {
+	caps := string(indexer.CapsXML("http://localhost:8484"))
+	assert.Contains(t, caps, `<music-search available="yes" supported="yes" supportedParams="q,artist,album" />`,
+		"Lidarr only sends artist/album search params an indexer explicitly advertises via supportedParams")
+	assert.Contains(t, caps, `<audio-search available="yes" supported="yes" supportedParams="q,artist,album" />`)
+}
+
 func TestEstimateSizeBytes(t *testing.T) {
 	assert.Equal(t, int64(0), indexer.EstimateSizeBytes(0, "lossless"))
 	assert.Greater(t, indexer.EstimateSizeBytes(10, "lossless"), int64(0))
