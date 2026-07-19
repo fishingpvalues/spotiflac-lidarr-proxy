@@ -56,6 +56,18 @@ func Load() (*Config, error) {
 		}
 	}
 
+	validServices := map[string]bool{
+		ServiceTidal:  true,
+		ServiceQobuz:  true,
+		ServiceAmazon: true,
+		ServiceDeezer: true,
+	}
+	for _, s := range cfg.FallbackServices {
+		if !validServices[s] {
+			return nil, fmt.Errorf("invalid SPF_FALLBACK_SERVICES entry %q: must be one of tidal, qobuz, amazon, deezer", s)
+		}
+	}
+
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("SPF_API_KEY is required")
 	}
