@@ -16,6 +16,7 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/newznab"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/sabnzbd"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/verify"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/health"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/metrics"
@@ -98,6 +99,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.JobTimeout,
 		cfg.DefaultService,
 		cfg.DefaultQuality,
+		cfg.VerifyRelayURL,
+		cfg.TidalAPIURL,
+		cfg.QobuzAPIURL,
 	)
 
 	app := fiber.New(fiber.Config{
@@ -136,10 +140,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 	sabHandler := sabnzbd.NewHandler(q, client, st, cfg, version)
 	sabHandler.SetLogger(log)
 
+	verifyStore := verify.NewStore()
+	sabHandler.SetVerifyStore(verifyStore)
+
 	nznbHandler := newznab.NewHandler(client, version, cfg.APIKey, cfg.DefaultQuality)
 	nznbHandler.SetLogger(log)
 
 	app.Use(api.RequestLogger(log))
+
+	// Deliberately outside "/api": the remote verification service's
+	// redirect here carries no API key, and the /api groups' auth
+	// middleware below matches by path prefix, so this must not start with
+	// "/api" or it would need yet another skiplist exemption. See
+	// internal/api/verify.
+	verifyHandler := verify.NewHandler(verifyStore)
+	verifyHandler.SetLogger(log)
+	verifyHandler.RegisterRoutes(app)
 
 	// SABnzbd routes: require auth except version, auth modes
 	sabGroup := app.Group("/api/sabnzbd")

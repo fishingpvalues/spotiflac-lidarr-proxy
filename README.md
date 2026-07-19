@@ -106,6 +106,9 @@ Environment variables, all prefixed `SPF_`. Full reference: [`docs/API.md`](docs
 | `SPF_DB_PATH` | /data/queue.db | SQLite database path |
 | `SPF_LOG_LEVEL` | info | Log verbosity: trace, debug, info, warn, error |
 | `SPF_HISTORY_RETENTION_COUNT` | 500 | Completed/failed jobs to keep in history |
+| `SPF_VERIFY_RELAY_URL` | (none) | This proxy's own reachable `/verify/callback` URL, e.g. `https://spotiflac.example.com/verify/callback`. Lets Tidal/Qobuz/Amazon's one-time community verification be completed from a browser on a different machine; see [Troubleshooting](#troubleshooting). |
+| `SPF_TIDAL_API_URL` | (none) | Custom Tidal API instance; skips the community verification tier entirely if set |
+| `SPF_QOBUZ_API_URL` | (none) | Custom Qobuz API instance; skips the community verification tier entirely if set |
 
 ## Security
 
@@ -120,6 +123,14 @@ This proxy authenticates with a single static API key, the same trust model SABn
 ## Troubleshooting
 
 Repeated failures for one service (Tidal/Qobuz/Amazon/Deezer) are usually IP-based rate limiting, not an auth problem. The built-in circuit breaker stops sending jobs to a service after 5 consecutive failures for 10 minutes; check `GET /api/sabnzbd?mode=warnings` for open breakers, or set `SPF_FALLBACK_SERVICES` so jobs try another service automatically.
+
+### "browser integration is not ready" / one-time community verification
+
+By default, Tidal, Qobuz, and Amazon downloads go through a shared community API that needs a one-time interactive browser verification. On a headless server there is no browser to complete it. Three options, roughly in order of how little manual effort they need:
+
+1. Set `SPF_TIDAL_API_URL` and/or `SPF_QOBUZ_API_URL` to a custom Tidal/Qobuz API instance (self-hosted or a known public one). Both are tried before the community tier and, if reachable, skip it (and its verification requirement) entirely. Amazon has no equivalent; it always uses the community tier.
+2. Set `SPF_VERIFY_RELAY_URL` to this proxy's own reachable `/verify/callback` URL. When verification is needed, `GET /api/sabnzbd?mode=warnings` shows a link; open it in any browser to complete verification, and it relays back automatically. The resulting session lasts until the remote service expires it, then repeats.
+3. Run the SpotiFLAC desktop app once on a machine with a browser, complete verification there, and copy the resulting session file into this proxy's persistent app-data volume (`/home/spotiflac/.spotiflac` in the container).
 
 ## API reference
 

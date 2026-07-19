@@ -19,6 +19,8 @@ type ProgressEvent struct {
 	Size         int64   `json:"size,omitempty"`
 	ISRC         string  `json:"isrc,omitempty"`
 	ErrorMessage string  `json:"message,omitempty"`
+	URL          string  `json:"url,omitempty"`
+	CB           string  `json:"cb,omitempty"`
 }
 
 type MetadataResult struct {

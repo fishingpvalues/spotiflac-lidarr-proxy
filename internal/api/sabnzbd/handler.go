@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
 
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/verify"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/breaker"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/metrics"
@@ -22,14 +23,15 @@ import (
 const maxConcurrent = 3
 
 type Handler struct {
-	queue   *queue.SQLiteQueue
-	client  *spotiflac.Client
-	storage *storage.Storage
-	cfg     *config.Config
-	version string
-	log     zerolog.Logger
-	sem     chan struct{}
-	breaker *breaker.Breaker
+	queue       *queue.SQLiteQueue
+	client      *spotiflac.Client
+	storage     *storage.Storage
+	cfg         *config.Config
+	version     string
+	log         zerolog.Logger
+	sem         chan struct{}
+	breaker     *breaker.Breaker
+	verifyStore *verify.Store
 }
 
 func NewHandler(q *queue.SQLiteQueue, client *spotiflac.Client, s *storage.Storage, cfg *config.Config, version string) *Handler {
@@ -47,6 +49,14 @@ func NewHandler(q *queue.SQLiteQueue, client *spotiflac.Client, s *storage.Stora
 		h.sem = make(chan struct{}, cfg.MaxConcurrent)
 	}
 	return h
+}
+
+// SetVerifyStore wires the pending-community-verification store so
+// attemptDownload can record a link for mode=warnings to surface. Optional:
+// nil is fine and just means verification links never get recorded (the
+// download still fails the same way once its CLI-side timeout elapses).
+func (h *Handler) SetVerifyStore(store *verify.Store) {
+	h.verifyStore = store
 }
 
 func (h *Handler) SetLogger(log zerolog.Logger) {
@@ -270,22 +280,10 @@ func (h *Handler) attemptDownload(job *queue.Job, jobDir string) (bool, string) 
 				// reaching a closed channel here means we never saw one.
 				return false, "cli exited without completion signal"
 			}
-			if evt.Type == "progress" {
-				job.Percentage = evt.Percent
-				job.Sizeleft = int64(float64(job.Size) * (100 - evt.Percent) / 100)
-				if err := h.queue.Update(job); err != nil {
-					h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("progress update failed")
-				}
-			}
 			if evt.Type == "complete" {
 				return h.handleCompleteEvent(job, evt)
 			}
-			if evt.Type == "metadata" {
-				job.Filename = evt.Artist + " - " + evt.Album
-				if err := h.queue.Update(job); err != nil {
-					h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("metadata update failed")
-				}
-			}
+			h.handleProgressEvent(job, evt)
 		case e, ok := <-errs:
 			if !ok {
 				continue
@@ -297,6 +295,34 @@ func (h *Handler) attemptDownload(job *queue.Job, jobDir string) (bool, string) 
 				}
 				return false, e.Error()
 			}
+		}
+	}
+}
+
+// handleProgressEvent applies every non-terminal CLI event to the in-memory
+// job (persisting where relevant). "complete" is terminal and handled by the
+// caller directly; everything else - progress, metadata, and a pending
+// community-verification link - just updates state along the way.
+func (h *Handler) handleProgressEvent(job *queue.Job, evt spotiflac.ProgressEvent) {
+	switch evt.Type {
+	case "progress":
+		job.Percentage = evt.Percent
+		job.Sizeleft = int64(float64(job.Size) * (100 - evt.Percent) / 100)
+		if err := h.queue.Update(job); err != nil {
+			h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("progress update failed")
+		}
+	case "metadata":
+		job.Filename = evt.Artist + " - " + evt.Album
+		if err := h.queue.Update(job); err != nil {
+			h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("metadata update failed")
+		}
+	case "verification_required":
+		if evt.URL == "" || evt.CB == "" {
+			return
+		}
+		h.log.Warn().Str("nzo_id", job.NzoID).Str("url", evt.URL).Msg("community verification required, see mode=warnings for the link")
+		if h.verifyStore != nil {
+			h.verifyStore.Set(evt.URL, evt.CB)
 		}
 	}
 }

@@ -125,6 +125,17 @@ func (h *Handler) handleWarnings(c fiber.Ctx) error {
 		})
 	}
 
+	if h.verifyStore != nil {
+		if link, at, pending := h.verifyStore.Pending(); pending {
+			warnings = append(warnings, sabnzbd.Warning{
+				Time: at.Unix(),
+				Type: "WARNING",
+				Text: fmt.Sprintf("Tidal/Qobuz/Amazon one-time verification needed, open this URL in a browser to continue: %s", link),
+				ID:   "verification_required",
+			})
+		}
+	}
+
 	stuck, _, err := h.queue.List(queue.ListParams{Status: string(sabnzbd.StatusDownloading), Limit: 1000})
 	if err == nil {
 		for _, job := range stuck {

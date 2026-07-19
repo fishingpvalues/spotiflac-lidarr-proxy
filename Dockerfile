@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /out/s
 
 # Stage 2: Build spotiflac-cli from fork (requires Go 1.26)
 FROM golang:1.26-alpine AS cli-builder
-ARG SPOTIFLAC_COMMIT=5118b8798dc2c9d21ccefda37e774a221f422c9e
+ARG SPOTIFLAC_COMMIT=326bbfaf03d9c49bfec9f3565136728d1fdd95fd
 RUN apk add --no-cache git
 RUN git clone https://github.com/fishingpvalues/SpotiFLAC.git /spotiflac && \
     cd /spotiflac && git checkout ${SPOTIFLAC_COMMIT}
@@ -27,7 +27,8 @@ RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S spotiflac && adduser -S spotiflac -G spotiflac
 COPY --from=builder /out/server /usr/local/bin/server
 COPY --from=cli-builder /out/spotiflac-cli /usr/local/bin/spotiflac-cli
-RUN mkdir -p /downloads /data && chown -R spotiflac:spotiflac /downloads /data
+RUN mkdir -p /downloads /data /home/spotiflac/.spotiflac && \
+    chown -R spotiflac:spotiflac /downloads /data /home/spotiflac
 USER spotiflac
 EXPOSE 8484
 ENTRYPOINT ["server", "serve"]
