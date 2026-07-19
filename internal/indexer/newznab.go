@@ -55,8 +55,8 @@ type Image struct {
 }
 
 type Response struct {
-	Offset int    `xml:"offset,attr"`
-	Total  int    `xml:"total,attr"`
+	Offset int `xml:"offset,attr"`
+	Total  int `xml:"total,attr"`
 }
 
 type Item struct {

@@ -60,7 +60,7 @@ func TestVersion(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 
 	var v sabtypes.VersionResponse
-	json.NewDecoder(resp.Body).Decode(&v)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&v))
 	assert.Equal(t, "0.1.0-test", v.Version)
 }
 
@@ -73,7 +73,7 @@ func TestAuth(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 
 	var a sabtypes.AuthResponse
-	json.NewDecoder(resp.Body).Decode(&a)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&a))
 	assert.True(t, a.Auth)
 }
 
@@ -86,7 +86,7 @@ func TestGetCats(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 
 	var c sabtypes.CategoriesResponse
-	json.NewDecoder(resp.Body).Decode(&c)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&c))
 	assert.Len(t, c.Categories, 17)
 }
 
@@ -123,7 +123,7 @@ func TestAddURL(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 
 	var r sabtypes.AddURLResponse
-	json.NewDecoder(resp.Body).Decode(&r)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&r))
 	assert.True(t, r.Status)
 	assert.Len(t, r.NzoIDs, 1)
 	assert.Contains(t, r.NzoIDs[0], "SABnzbd_nzo_")
@@ -141,13 +141,13 @@ func TestAddURLDedupReturnsExistingNzoID(t *testing.T) {
 	resp1, err := app.Test(req1)
 	require.NoError(t, err)
 	var r1 sabtypes.AddURLResponse
-	json.NewDecoder(resp1.Body).Decode(&r1)
+	require.NoError(t, json.NewDecoder(resp1.Body).Decode(&r1))
 
 	req2, _ := http.NewRequest("POST", "/api/sabnzbd?mode=addurl&name=https://open.spotify.com/album/duptest&apikey=test-key", nil)
 	resp2, err := app.Test(req2)
 	require.NoError(t, err)
 	var r2 sabtypes.AddURLResponse
-	json.NewDecoder(resp2.Body).Decode(&r2)
+	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&r2))
 
 	assert.Equal(t, r1.NzoIDs[0], r2.NzoIDs[0], "re-adding the same URL should return the same nzo_id, not create a new job")
 
@@ -166,7 +166,7 @@ func TestAddURLRejectsInvalidSpotifyURL(t *testing.T) {
 	assert.Equal(t, 400, resp.StatusCode)
 
 	var r sabtypes.StatusResponse
-	json.NewDecoder(resp.Body).Decode(&r)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&r))
 	assert.False(t, r.Status)
 }
 
@@ -179,7 +179,7 @@ func TestQueue(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 
 	var q sabtypes.QueueResponse
-	json.NewDecoder(resp.Body).Decode(&q)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&q))
 	assert.Equal(t, "0.1.0-test", q.Queue.Version)
 }
 
@@ -192,7 +192,7 @@ func TestHistory(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 
 	var h sabtypes.HistoryResponse
-	json.NewDecoder(resp.Body).Decode(&h)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&h))
 	assert.Equal(t, "0.1.0-test", h.History.Version)
 }
 
@@ -727,7 +727,7 @@ func TestWarningsSurfacesOpenBreaker(t *testing.T) {
 	require.NoError(t, err)
 
 	var w sabtypes.WarningsResponse
-	json.NewDecoder(resp.Body).Decode(&w)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&w))
 	require.NotEmpty(t, w.Warnings)
 	assert.Contains(t, w.Warnings[0].Text, "tidal")
 }
@@ -774,7 +774,7 @@ func TestWarningsSurfacesStuckJob(t *testing.T) {
 	require.NoError(t, err)
 
 	var w sabtypes.WarningsResponse
-	json.NewDecoder(resp.Body).Decode(&w)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&w))
 	require.NotEmpty(t, w.Warnings)
 
 	var found bool
