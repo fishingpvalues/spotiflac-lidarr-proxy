@@ -158,6 +158,50 @@ services:
    - API Key: your `SPF_API_KEY` value
    - Categories: 3010, 3040
 
+## Running the binary directly
+
+The Docker image is the recommended way to run this in production - it bundles
+a matching `spotiflac-cli` build alongside the server. If you'd rather run the
+server binary directly on the host (no container), grab a prebuilt release:
+
+```bash
+# Linux/macOS
+curl -L -o spotiflac-lidarr-proxy.tar.gz \
+  https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases/latest/download/spotiflac-lidarr-proxy_<tag>_<os>_<arch>.tar.gz
+tar xzf spotiflac-lidarr-proxy.tar.gz
+
+# verify against the published checksums
+curl -L -o checksums.txt \
+  https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases/latest/download/checksums.txt
+sha256sum --ignore-missing -c checksums.txt
+```
+
+Every [GitHub Release](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases)
+is built straight from the pushed git tag (`vX.Y.Z`) and ships binaries for
+`linux`, `darwin` and `windows` on `amd64`/`arm64`, plus a `checksums.txt` and
+an auto-generated changelog grouped by commit type. Pick the archive matching
+your OS/arch (e.g. `spotiflac-lidarr-proxy_v1.3.2_linux_amd64.tar.gz`,
+`..._windows_amd64.zip`).
+
+The binary alone only runs the proxy server - it still shells out to a
+separate `spotiflac-cli` for the actual SpotiFLAC/Tidal/Qobuz downloading.
+Build it from the pinned fork commit (see the [Dockerfile](Dockerfile) for the
+exact commit and flags), then point the proxy at it:
+
+```bash
+git clone https://github.com/fishingpvalues/SpotiFLAC.git
+cd SpotiFLAC && git checkout <commit-from-Dockerfile>
+go build -tags headless -o spotiflac-cli .
+
+SPF_API_KEY=your-secret-key \
+SPF_OUTPUT_DIR=/path/to/downloads \
+SPF_SPOTIFLAC_CLI_PATH=/path/to/spotiflac-cli \
+./spotiflac-lidarr-proxy serve
+```
+
+`serve --help` lists all flags; every flag has a matching `SPF_*` environment
+variable (see [Configuration](#configuration) below).
+
 ## Build from source
 
 Requires Go 1.25+ and a SpotiFLAC CLI build (see the [Dockerfile](Dockerfile) for the exact pinned commit and build flags).
@@ -170,6 +214,8 @@ go build ./cmd/server
 ```
 
 Run the test suite with `go test ./... -count=1`. `INTEGRATION=1 go test ./tests/integration/... -v` runs the docker-compose-backed integration test.
+
+Cross-compiling for a release build (matches what CI publishes): `goreleaser release --snapshot --clean --skip=publish` (requires [GoReleaser](https://goreleaser.com/)).
 
 ## Configuration
 

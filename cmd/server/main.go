@@ -25,7 +25,8 @@ import (
 	sabnzbdstatus "github.com/fishingpvalues/spotiflac-lidarr-proxy/pkg/sabnzbd"
 )
 
-const version = "1.3.2"
+// version is set at build time via -ldflags "-X main.version=..."; see Dockerfile/release.yml.
+var version = "dev"
 
 func main() {
 	rootCmd := &cobra.Command{
@@ -97,7 +98,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	sabHandler := sabnzbd.NewHandler(q, client, st, cfg, version)
 	sabHandler.SetLogger(log)
 
-	nznbHandler := newznab.NewHandler(client, fmt.Sprintf("http://localhost:%d", cfg.Port))
+	nznbHandler := newznab.NewHandler(client, fmt.Sprintf("http://localhost:%d", cfg.Port), version)
 	nznbHandler.SetLogger(log)
 
 	app.Use(api.RequestLogger(log))

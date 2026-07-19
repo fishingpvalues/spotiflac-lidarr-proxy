@@ -11,7 +11,7 @@ import (
 )
 
 func TestCapsXMLDeclaresSupportedSearchParams(t *testing.T) {
-	caps := string(indexer.CapsXML("http://localhost:8484"))
+	caps := string(indexer.CapsXML("http://localhost:8484", "1.3.2"))
 	assert.Contains(t, caps, `<music-search available="yes" supported="yes" supportedParams="q,artist,album" />`,
 		"Lidarr only sends artist/album search params an indexer explicitly advertises via supportedParams")
 	assert.Contains(t, caps, `<audio-search available="yes" supported="yes" supportedParams="q,artist,album" />`)

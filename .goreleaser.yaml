@@ -1,0 +1,66 @@
+version: 2
+
+project_name: spotiflac-lidarr-proxy
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: server
+    main: ./cmd/server
+    binary: spotiflac-lidarr-proxy
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+
+archives:
+  - id: server
+    ids: [server]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  groups:
+    - title: "Features"
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: "Bug fixes"
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: "Refactors"
+      regexp: '^.*?refactor(\(.+\))??!?:.+$'
+      order: 2
+    - title: "Documentation"
+      regexp: '^.*?docs(\(.+\))??!?:.+$'
+      order: 3
+    - title: "Other"
+      order: 999
+  filters:
+    exclude:
+      - "^test:"
+      - "^ci:"
+      - "^chore\\(deps\\):"
+
+release:
+  footer: |
+    This release ships the proxy server binary only. It shells out to a
+    separate `spotiflac-cli` binary (see SPF_SPOTIFLAC_CLI_PATH / config) -
+    the Docker image at ghcr.io/fishingpvalues/spotiflac-lidarr-proxy bundles
+    both and is the recommended way to run this in production.
