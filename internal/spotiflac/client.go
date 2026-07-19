@@ -114,17 +114,17 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		var raw struct {
-			Type        string `json:"type"`
-			Name        string `json:"name"`
-			Artist      string `json:"artist"`
-			Album       string `json:"album"`
-			SpotifyURL  string `json:"spotify_url"`
-			CoverURL    string `json:"cover_url"`
-			Year        string `json:"year"`
-			TrackCount  int    `json:"track_count"`
-			Title string `json:"title"`
-			ISRC  string `json:"isrc"`
-			Genre string `json:"genre"`
+			Type       string `json:"type"`
+			Name       string `json:"name"`
+			Artist     string `json:"artist"`
+			Album      string `json:"album"`
+			SpotifyURL string `json:"spotify_url"`
+			CoverURL   string `json:"cover_url"`
+			Year       string `json:"year"`
+			TrackCount int    `json:"track_count"`
+			Title      string `json:"title"`
+			ISRC       string `json:"isrc"`
+			Genre      string `json:"genre"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			continue

@@ -28,10 +28,10 @@ func TestIsValidSpotifyURL(t *testing.T) {
 		"https://open.spotify.com/artist/4aawyAB9vmqN3uQ7FjRGTy", // artist URLs not albums/tracks/playlists
 		"https://open.spotify.com/album/../../etc/passwd",
 		// Attack vector regression coverage:
-		"https://open.spotify.com@evil.com/album/x",                         // userinfo host-confusion
-		"https://open.spotify.com.evil.com/album/x",                         // subdomain-suffix confusion
-		"https://open.spotify.com/album/abc123 --output-dir /etc",           // trailing garbage space-then-flag smuggling
-		"https://open.spotify.com/album/abc\n--output-dir",                  // newline-anchor bypass
+		"https://open.spotify.com@evil.com/album/x",               // userinfo host-confusion
+		"https://open.spotify.com.evil.com/album/x",               // subdomain-suffix confusion
+		"https://open.spotify.com/album/abc123 --output-dir /etc", // trailing garbage space-then-flag smuggling
+		"https://open.spotify.com/album/abc\n--output-dir",        // newline-anchor bypass
 	}
 	for _, u := range invalid {
 		assert.False(t, config.IsValidSpotifyURL(u), u)

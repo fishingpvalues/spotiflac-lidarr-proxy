@@ -1,10 +1,10 @@
 package config
 
 import (
-	"strings"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -39,7 +39,8 @@ func Load() (*Config, error) {
 		"job_timeout", "db_path", "log_level", "fallback_services",
 		"history_retention_count",
 	} {
-		v.BindEnv(key)
+		// BindEnv only errors when called with zero keys; never the case here.
+		_ = v.BindEnv(key)
 	}
 
 	cfg := &Config{}

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"testing"
 	"time"
 
@@ -36,7 +38,7 @@ func TestIntegration_ProxyHealth(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 
 	var body map[string]string
-	json.NewDecoder(resp.Body).Decode(&body)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Equal(t, "ok", body["status"])
 }
 
@@ -51,7 +53,7 @@ func TestIntegration_SABnzbdVersion(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 
 	var v map[string]string
-	json.NewDecoder(resp.Body).Decode(&v)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&v))
 	assert.Contains(t, v, "version")
 }
 
@@ -68,7 +70,7 @@ func TestIntegration_SABnzbdAddURLAndQueue(t *testing.T) {
 		Status bool     `json:"status"`
 		NzoIDs []string `json:"nzo_ids"`
 	}
-	json.NewDecoder(resp.Body).Decode(&addResp)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&addResp))
 	assert.True(t, addResp.Status)
 	require.NotEmpty(t, addResp.NzoIDs)
 	nzoID := addResp.NzoIDs[0]
@@ -89,33 +91,103 @@ func TestIntegration_SABnzbdAddURLAndQueue(t *testing.T) {
 			} `json:"slots"`
 		} `json:"queue"`
 	}
-	json.NewDecoder(resp2.Body).Decode(&q)
+	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&q))
 	assert.NotEmpty(t, q.Queue.Slots)
 	assert.Equal(t, nzoID, q.Queue.Slots[0].NzoID)
 }
 
-func TestIntegration_LidarrConfiguresProxy(t *testing.T) {
-	skipIfNoDocker(t)
+// lidarrAPIKeyPattern extracts Lidarr's auto-generated API key from its
+// unauthenticated bootstrap script - the same trick TRaSH Guides/Recyclarr
+// use, since there's no other way to obtain it without a UI login.
+var lidarrAPIKeyPattern = regexp.MustCompile(`apiKey:\s*'([^']+)'`)
 
-	url := fmt.Sprintf("%s/api/v1/downloadclient/test", lidarrBase)
-	body := map[string]interface{}{
-		"enable":   true,
-		"protocol": "usenet",
-		"name":     "Spotiflac Proxy",
-		"host":     "proxy",
-		"port":     8484,
-		"apiKey":   apiKey,
-		"urlBase":  "/api/sabnzbd",
-	}
-	bodyJSON, _ := json.Marshal(body)
+// fetchLidarrAPIKey reads Lidarr's own API key. This is NOT the proxy's
+// SPF_API_KEY - Lidarr generates its own, separate key on first boot, and
+// every /api/v1/* call must authenticate with that one, not the proxy's.
+func fetchLidarrAPIKey(t *testing.T) string {
+	t.Helper()
+	resp, err := http.Get(lidarrBase + "/initialize.js")
+	require.NoError(t, err)
+	defer resp.Body.Close()
 
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(bodyJSON))
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	match := lidarrAPIKeyPattern.FindSubmatch(body)
+	require.NotNil(t, match, "could not find apiKey in Lidarr's initialize.js")
+	return string(match[1])
+}
+
+// lidarrRequest posts a JSON body to a Lidarr v1 API endpoint, authenticated
+// with Lidarr's own key (see fetchLidarrAPIKey), and returns the response
+// alongside its parsed body.
+func lidarrRequest(t *testing.T, lidarrAPIKey, path string, body map[string]any) (*http.Response, map[string]any) {
+	t.Helper()
+	bodyJSON, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest("POST", lidarrBase+path, bytes.NewReader(bodyJSON))
+	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Api-Key", apiKey)
+	req.Header.Set("X-Api-Key", lidarrAPIKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	t.Logf("Lidarr test connection status: %d", resp.StatusCode)
+	var parsed map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&parsed) // best-effort; some responses are `{}` or `[]`
+	return resp, parsed
+}
+
+// TestIntegration_LidarrConfiguresProxy exercises the exact setup steps from
+// the README: adding the proxy as a Lidarr SABnzbd download client and a
+// Newznab indexer, using the real DownloadClientResource/IndexerResource
+// shape (a flat {host,port,apiKey} body 400s - Lidarr expects a `fields`
+// array). Verified against a real production Lidarr instance before writing
+// this: /api/v1/downloadclient/test and /api/v1/indexer/test return `{}` on
+// success.
+func TestIntegration_LidarrConfiguresProxy(t *testing.T) {
+	skipIfNoDocker(t)
+
+	lidarrKey := fetchLidarrAPIKey(t)
+
+	t.Run("download client", func(t *testing.T) {
+		resp, body := lidarrRequest(t, lidarrKey, "/api/v1/downloadclient/test", map[string]any{
+			"enable":             true,
+			"protocol":           "usenet",
+			"priority":           1,
+			"name":               "SpotiFLAC Proxy",
+			"implementation":     "Sabnzbd",
+			"implementationName": "SABnzbd",
+			"configContract":     "SabnzbdSettings",
+			"fields": []map[string]any{
+				{"name": "host", "value": "proxy"},
+				{"name": "port", "value": 8484},
+				{"name": "apiKey", "value": apiKey},
+				{"name": "urlBase", "value": ""},
+				{"name": "musicCategory", "value": "music"},
+			},
+		})
+		assert.Equal(t, 200, resp.StatusCode, "downloadclient/test response body: %v", body)
+	})
+
+	t.Run("indexer", func(t *testing.T) {
+		resp, body := lidarrRequest(t, lidarrKey, "/api/v1/indexer/test", map[string]any{
+			"enable":             true,
+			"protocol":           "usenet",
+			"priority":           25,
+			"name":               "SpotiFLAC Proxy",
+			"implementation":     "Newznab",
+			"implementationName": "Newznab",
+			"configContract":     "NewznabSettings",
+			"fields": []map[string]any{
+				{"name": "baseUrl", "value": proxyBase},
+				{"name": "apiPath", "value": "/api/newznab"},
+				{"name": "apiKey", "value": apiKey},
+				{"name": "categories", "value": []int{3010, 3040}},
+			},
+		})
+		assert.Equal(t, 200, resp.StatusCode, "indexer/test response body: %v", body)
+	})
 }
