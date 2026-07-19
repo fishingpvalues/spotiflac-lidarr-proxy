@@ -20,6 +20,12 @@ const (
 	proxyBase  = "http://localhost:8484"
 	lidarrBase = "http://localhost:8686"
 	apiKey     = "test-integration-key"
+
+	// proxyBaseFromLidarr is how Lidarr's own container reaches the proxy -
+	// by docker-compose service name, not localhost (that's only valid from
+	// this test process's own host-side view, not from inside another
+	// container's network namespace).
+	proxyBaseFromLidarr = "http://proxy:8484"
 )
 
 func skipIfNoDocker(t *testing.T) {
@@ -185,7 +191,7 @@ func TestIntegration_LidarrConfiguresProxy(t *testing.T) {
 			"implementationName": "Newznab",
 			"configContract":     "NewznabSettings",
 			"fields": []map[string]any{
-				{"name": "baseUrl", "value": proxyBase},
+				{"name": "baseUrl", "value": proxyBaseFromLidarr},
 				{"name": "apiPath", "value": "/api/newznab"},
 				{"name": "apiKey", "value": apiKey},
 				{"name": "categories", "value": []int{3010, 3040}},
