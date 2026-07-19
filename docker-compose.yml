@@ -6,7 +6,7 @@ services:
     ports:
       - "8484:8484"
     environment:
-      - SPF_API_KEY=your-secret-api-key
+      - SPF_API_KEY=test-integration-key
       - SPF_OUTPUT_DIR=/downloads
       - SPF_DB_PATH=/data/queue.db
       - SPF_LOG_LEVEL=info
