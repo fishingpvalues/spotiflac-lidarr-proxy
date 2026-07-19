@@ -305,7 +305,7 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
 		        output_path, size, sizeleft, percentage, time_added, completed_at,
 		        error_message, service, quality, track_count
-		 FROM jobs %s ORDER BY completed_at DESC LIMIT ? OFFSET ?`, whereClause)
+		 FROM jobs %s ORDER BY completed_at DESC, id DESC LIMIT ? OFFSET ?`, whereClause)
 
 	allArgs := append(args, params.Limit, params.Start)
 	rows, err := q.db.Query(query, allArgs...)
@@ -365,7 +365,7 @@ func (q *SQLiteQueue) PruneHistory(keep int) error {
 	}
 	_, err := q.db.Exec(
 		`DELETE FROM jobs WHERE is_history = 1 AND id NOT IN (
-			SELECT id FROM jobs WHERE is_history = 1 ORDER BY completed_at DESC LIMIT ?
+			SELECT id FROM jobs WHERE is_history = 1 ORDER BY completed_at DESC, id DESC LIMIT ?
 		)`, keep,
 	)
 	if err != nil {

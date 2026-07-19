@@ -280,6 +280,45 @@ func TestMigrateAddsColumnsToPreExistingDatabase(t *testing.T) {
 	assert.Equal(t, "postmortem output", cliOutput)
 }
 
+// TestPruneHistoryDeterministicWithNullCompletedAt guards against
+// non-deterministic pruning when multiple history rows share a NULL
+// completed_at (as happens for jobs moved to history by RecoverStuckJobs,
+// which never sets completed_at). Without a secondary sort key, "ORDER BY
+// completed_at DESC" gives SQLite no tiebreak among NULL rows, so which N
+// rows survive a prune is not guaranteed. The fix adds "id DESC" as a
+// tiebreak so the most-recently-added rows are always the ones kept.
+func TestPruneHistoryDeterministicWithNullCompletedAt(t *testing.T) {
+	q := newTestQueue(t)
+
+	var ids []string
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("SABnzbd_nzo_nullprune%d", i)
+		require.NoError(t, q.Add(&queue.Job{NzoID: id}))
+		// MoveToHistory never sets completed_at, so every row here has a
+		// NULL completed_at -- exactly the tie the fix must break
+		// deterministically via id.
+		require.NoError(t, q.MoveToHistory(id))
+		ids = append(ids, id)
+	}
+
+	require.NoError(t, q.PruneHistory(2))
+
+	hist, total, err := q.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	require.Equal(t, 2, total)
+	require.Len(t, hist, 2)
+
+	var survivors []string
+	for _, j := range hist {
+		survivors = append(survivors, j.NzoID)
+	}
+	// The two most-recently-added rows (highest id) must be the survivors,
+	// deterministically -- not an arbitrary pair chosen by SQLite's
+	// unspecified tie-breaking among equal (NULL) completed_at values.
+	assert.ElementsMatch(t, []string{ids[3], ids[4]}, survivors,
+		"prune should deterministically keep the most recently added rows when completed_at ties (NULL)")
+}
+
 func TestPruneHistoryZeroMeansUnlimited(t *testing.T) {
 	q := newTestQueue(t)
 	for i := 0; i < 3; i++ {
