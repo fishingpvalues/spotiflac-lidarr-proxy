@@ -22,6 +22,8 @@ services:
       # - SPF_VERIFY_RELAY_URL=https://spotiflac.example.com/verify/callback
       # - SPF_TIDAL_API_URL=https://your-tidal-api-instance.example
       # - SPF_QOBUZ_API_URL=https://your-qobuz-api-instance.example
+      # - SPF_VERIFY_NOTIFY_URL=https://ntfy.sh/your-topic
+      # - SPF_VERIFY_NOTIFY_TITLE=SpotiFLAC verification needed
     volumes:
       - downloads:/downloads
       - data:/data

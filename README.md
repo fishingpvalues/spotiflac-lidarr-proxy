@@ -109,6 +109,8 @@ Environment variables, all prefixed `SPF_`. Full reference: [`docs/API.md`](docs
 | `SPF_VERIFY_RELAY_URL` | (none) | This proxy's own reachable `/verify/callback` URL, e.g. `https://spotiflac.example.com/verify/callback`. Lets Tidal/Qobuz/Amazon's one-time community verification be completed from a browser on a different machine; see [Troubleshooting](#troubleshooting). |
 | `SPF_TIDAL_API_URL` | (none) | Custom Tidal API instance; skips the community verification tier entirely if set |
 | `SPF_QOBUZ_API_URL` | (none) | Custom Qobuz API instance; skips the community verification tier entirely if set |
+| `SPF_VERIFY_NOTIFY_URL` | (none) | POSTs a message with the verification link here when needed. Works with [ntfy](https://ntfy.sh), Gotify, or any URL that accepts a plain POST body. |
+| `SPF_VERIFY_NOTIFY_TITLE` | SpotiFLAC verification needed | Sent as a `Title` header alongside `SPF_VERIFY_NOTIFY_URL` (ntfy displays it; others can ignore it) |
 
 ## Security
 
