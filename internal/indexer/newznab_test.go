@@ -28,7 +28,7 @@ func TestNewznabXMLPopulatesNonZeroSize(t *testing.T) {
 	results := []spotiflac.MetadataResult{
 		{Artist: "A", Album: "B", SpotifyURL: "https://open.spotify.com/album/x", TrackCount: 12},
 	}
-	xml, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key")
+	xml, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key", "lossless")
 	assert.NoError(t, err)
 	assert.NotContains(t, string(xml), `name="size" value="0"`)
 }
@@ -37,7 +37,7 @@ func TestNewznabXMLIncludesISRCAttrWhenPresent(t *testing.T) {
 	results := []spotiflac.MetadataResult{
 		{Artist: "A", Album: "B", SpotifyURL: "https://open.spotify.com/album/x", ISRC: "USABC1234567"},
 	}
-	xml, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key")
+	xml, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key", "lossless")
 	require.NoError(t, err)
 	assert.Contains(t, string(xml), `name="isrc" value="USABC1234567"`)
 }
@@ -46,7 +46,7 @@ func TestNewznabXMLOmitsISRCAttrWhenAbsent(t *testing.T) {
 	results := []spotiflac.MetadataResult{
 		{Artist: "A", Album: "B", SpotifyURL: "https://open.spotify.com/album/x"},
 	}
-	xml, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key")
+	xml, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key", "lossless")
 	require.NoError(t, err)
 	assert.NotContains(t, string(xml), `name="isrc"`)
 }
@@ -69,10 +69,29 @@ func TestNewznabXMLEnclosureDownloadsFromOurOwnServer(t *testing.T) {
 		{Artist: "A", Album: "B", SpotifyURL: "https://open.spotify.com/album/x"},
 	}
 	const exampleHost = "http://some-example-host:8484"
-	out, err := indexer.NewznabXML(results, exampleHost, "test-key")
+	out, err := indexer.NewznabXML(results, exampleHost, "test-key", "lossless")
 	require.NoError(t, err)
 	xml := string(out)
 	assert.NotContains(t, xml, `link>https://open.spotify.com`, "link must not point directly at Spotify")
 	assert.Contains(t, xml, exampleHost+"/api/newznab?t=get&amp;id=", "download URL must echo back whatever host/base URL it was given, unchanged")
 	assert.Contains(t, xml, "apikey=test-key")
+}
+
+func TestNewznabXMLTagsTitleWithRecognizableQuality(t *testing.T) {
+	// Regression guard: confirmed against a real production Lidarr this
+	// session - a release title with no codec/bit-depth token parses as
+	// Quality.Unknown (Lidarr's QualityParser), and most quality profiles
+	// reject Unknown outright ("Unknown is not wanted in profile"), even
+	// after the release is otherwise perfectly valid and grabbable.
+	results := []spotiflac.MetadataResult{
+		{Artist: "A", Album: "B", SpotifyURL: "https://open.spotify.com/album/x"},
+	}
+
+	lossless, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key", "lossless")
+	require.NoError(t, err)
+	assert.Contains(t, string(lossless), "A - B [FLAC]</title>")
+
+	hires, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key", "hires")
+	require.NoError(t, err)
+	assert.Contains(t, string(hires), "A - B [FLAC 24-bit]</title>")
 }
