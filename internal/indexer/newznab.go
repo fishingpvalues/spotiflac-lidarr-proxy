@@ -88,7 +88,22 @@ type Attr struct {
 	Value string `xml:"value,attr"`
 }
 
-func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey string) ([]byte, error) {
+// qualityTag returns a release-title suffix Lidarr's QualityParser will
+// recognize (verified against its actual regexes: CodecRegex matches
+// "flac" case-insensitively, SampleSizeRegex matches "24-bit" /
+// "24bit"). Without any recognizable token in the title, Lidarr parses
+// the release as Quality.Unknown and most quality profiles reject it
+// outright ("Unknown is not wanted in profile") - confirmed against a
+// real production Lidarr this session: a real grab attempt succeeded
+// past NZB validation but was rejected for exactly this reason.
+func qualityTag(quality string) string {
+	if quality == "hires" {
+		return " [FLAC 24-bit]"
+	}
+	return " [FLAC]"
+}
+
+func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality string) ([]byte, error) {
 	if results == nil {
 		results = []spotiflac.MetadataResult{}
 	}
@@ -117,14 +132,17 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey string) ([
 		},
 	}
 
+	titleSuffix := qualityTag(quality)
+
 	for _, r := range results {
 		estimatedSize := EstimateSizeBytes(r.TrackCount, "lossless")
+		title := r.Artist + " - " + r.Album + titleSuffix
 		attrs := []Attr{
 			{Name: "artist", Value: r.Artist},
 			{Name: "album", Value: r.Album},
 			{Name: "genre", Value: r.Genre},
 			{Name: "year", Value: fmt.Sprintf("%d", r.Year)},
-			{Name: "title", Value: r.Artist + " - " + r.Album},
+			{Name: "title", Value: title},
 			{Name: "size", Value: fmt.Sprintf("%d", estimatedSize)},
 			{Name: "grabs", Value: "0"},
 			{Name: "files", Value: fmt.Sprintf("%d", r.TrackCount)},
@@ -143,7 +161,7 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey string) ([
 			serverURL, url.QueryEscape(r.SpotifyURL), url.QueryEscape(apiKey))
 
 		item := Item{
-			Title:       r.Artist + " - " + r.Album,
+			Title:       title,
 			GUID:        GUID{Value: r.SpotifyURL, IsPermaLink: true},
 			Link:        downloadURL,
 			PubDate:     time.Now().Format(time.RFC1123Z),

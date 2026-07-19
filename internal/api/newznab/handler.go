@@ -12,18 +12,20 @@ import (
 )
 
 type Handler struct {
-	client  *spotiflac.Client
-	log     zerolog.Logger
-	version string
-	apiKey  string
+	client         *spotiflac.Client
+	log            zerolog.Logger
+	version        string
+	apiKey         string
+	defaultQuality string
 }
 
-func NewHandler(client *spotiflac.Client, version, apiKey string) *Handler {
+func NewHandler(client *spotiflac.Client, version, apiKey, defaultQuality string) *Handler {
 	return &Handler{
-		client:  client,
-		log:     zerolog.Nop(),
-		version: version,
-		apiKey:  apiKey,
+		client:         client,
+		log:            zerolog.Nop(),
+		version:        version,
+		apiKey:         apiKey,
+		defaultQuality: defaultQuality,
 	}
 }
 
@@ -98,7 +100,7 @@ func (h *Handler) handleSearch(c fiber.Ctx) error {
 		}
 	}
 
-	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey)
+	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey, h.defaultQuality)
 	if err != nil {
 		h.log.Error().Err(err).Msg("newznab xml generation failed")
 		return h.handleEmptyResults(c)
@@ -123,7 +125,7 @@ func (h *Handler) handleMusic(c fiber.Ctx) error {
 		return h.handleEmptyResults(c)
 	}
 
-	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey)
+	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey, h.defaultQuality)
 	if err != nil {
 		h.log.Error().Err(err).Msg("newznab xml generation failed")
 		return h.handleEmptyResults(c)
@@ -140,7 +142,7 @@ func (h *Handler) handleDetails(c fiber.Ctx) error {
 		return h.handleEmptyResults(c)
 	}
 
-	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey)
+	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey, h.defaultQuality)
 	if err != nil {
 		return h.handleEmptyResults(c)
 	}
@@ -173,7 +175,7 @@ func (h *Handler) handleGet(c fiber.Ctx) error {
 }
 
 func (h *Handler) handleEmptyResults(c fiber.Ctx) error {
-	xml, err := indexer.NewznabXML(nil, c.BaseURL(), h.apiKey)
+	xml, err := indexer.NewznabXML(nil, c.BaseURL(), h.apiKey, h.defaultQuality)
 	if err != nil {
 		return c.SendString("")
 	}
