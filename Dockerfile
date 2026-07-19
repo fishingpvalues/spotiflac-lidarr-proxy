@@ -1,6 +1,10 @@
 # Stage 1: Build proxy server
 FROM golang:1.25-alpine AS builder
-ARG VERSION=dev
+# "develop" (not e.g. "dev"), unless overridden by --build-arg VERSION=vX.Y.Z
+# (as release.yml/beta.yml do): Lidarr's SABnzbd client special-cases the
+# literal string "develop" to assume SABnzbd 3.0.0+, and rejects anything
+# else that isn't a strict semver-shaped X.Y.Z. See cmd/server/main.go.
+ARG VERSION=develop
 WORKDIR /build
 RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum ./
