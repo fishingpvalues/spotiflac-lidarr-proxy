@@ -56,7 +56,7 @@ func (h *Handler) handleGetConfig(c fiber.Ctx) error {
 
 func (h *Handler) handleFullStatus(c fiber.Ctx) error {
 	return c.JSON(sabnzbd.FullStatusResponse{
-		CompleteDir: h.cfg.OutputDir,
+		Status: sabnzbd.FullStatus{CompleteDir: h.cfg.OutputDir},
 	})
 }
 
