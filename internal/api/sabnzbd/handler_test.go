@@ -48,7 +48,11 @@ func setupTestApp(t *testing.T) (*fiber.App, *queue.SQLiteQueue) {
 
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
-	app := fiber.New()
+	// Immutable must match main.go's app config: fiber/fasthttp otherwise
+	// hands back query/form strings that alias the connection's read buffer,
+	// which addurl.go stores in a Job handed to a background goroutine that
+	// outlives the request. See TestAddURLCategorySurvivesConcurrentRequest.
+	app := fiber.New(fiber.Config{Immutable: true})
 	app.Use(api.APIKeyAuthWithSkiplist("test-key", "version", "auth"))
 	handler.RegisterRoutes(app)
 
@@ -136,6 +140,55 @@ func TestAddURL(t *testing.T) {
 	// will fail against the fake "echo" CLI after retries) so it doesn't
 	// race t.TempDir()'s cleanup after this test function returns.
 	waitForHistory(t, q, r.NzoIDs[0])
+}
+
+// TestAddURLCategorySurvivesConcurrentRequest is a regression guard for a
+// real data-corruption bug found against production this session: a job's
+// stored category came back as "jsonc-flac-16" instead of the "music-flac-16"
+// that was actually sent. Root cause: fiber/fasthttp's Query()/FormValue()
+// return strings that alias the connection's read buffer by default, valid
+// only until the handler returns. addurl.go stores that string in a Job
+// handed to a `go h.ProcessDownloadSync(job)` goroutine, which re-persists
+// job.Category on every later queue.Update() call as the download
+// progresses - if a later, unrelated request reuses the same buffer before
+// that happens, the in-memory field (and everything written from it
+// afterward) silently reflects the newer request's bytes instead. Fixed by
+// setting Immutable: true on the app (see setupTestApp and main.go); this
+// test fires a second, differently-shaped request immediately after the
+// first to exercise exactly that reuse window.
+func TestAddURLCategorySurvivesConcurrentRequest(t *testing.T) {
+	app, q := setupTestApp(t)
+
+	req1, _ := http.NewRequest("POST", "/api/sabnzbd?mode=addurl&name=https://open.spotify.com/album/buffertest&cat=music-flac-16&apikey=test-key", nil)
+	resp1, err := app.Test(req1)
+	require.NoError(t, err)
+	var r1 sabtypes.AddURLResponse
+	require.NoError(t, json.NewDecoder(resp1.Body).Decode(&r1))
+	require.Len(t, r1.NzoIDs, 1)
+
+	// Immediately fire a differently-shaped request on the same app so any
+	// buffer the first request's query string aliased is likely reused
+	// before ProcessDownloadSync's later Update() calls run.
+	req2, _ := http.NewRequest("GET", "/api/sabnzbd?mode=version&apikey=test-key&filler=this-is-a-much-longer-and-differently-shaped-query-string-than-the-first-one", nil)
+	resp2, err := app.Test(req2)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp2.StatusCode)
+
+	waitForHistory(t, q, r1.NzoIDs[0])
+
+	job, err := q.Get(r1.NzoIDs[0])
+	if err != nil {
+		hist, _, histErr := q.History(queue.ListParams{Limit: 50})
+		require.NoError(t, histErr)
+		for _, j := range hist {
+			if j.NzoID == r1.NzoIDs[0] {
+				job = j
+				break
+			}
+		}
+	}
+	require.NotNil(t, job, "job must be findable in either the active queue or history")
+	assert.Equal(t, "music-flac-16", job.Category, "category must not be corrupted by a later, unrelated request reusing the same connection buffer")
 }
 
 // TestAddFileExtractsSpotifyURLFromUploadedNZB covers the mode=addfile path
