@@ -54,3 +54,18 @@ func TestFilterResultsPassesThroughWhenNoArtistOrAlbumGiven(t *testing.T) {
 
 	assert.Equal(t, results, got)
 }
+
+func TestFilterResultsDropsResultsWithNoAlbum(t *testing.T) {
+	// Reproduces "Bob Sinclar - " showing up in production: a track hit with
+	// no resolvable containing album renders as an unparseable newznab
+	// title and can never be grabbed as an album release by Lidarr.
+	results := []spotiflac.MetadataResult{
+		{Artist: "Bob Sinclar", Album: "", Title: "I Feel for You"},
+		{Artist: "Bob Sinclar", Album: "My Love", Title: "My Love"},
+	}
+
+	got := filterResults(results, "Bob Sinclar", "")
+
+	assert.Len(t, got, 1)
+	assert.Equal(t, "My Love", got[0].Album)
+}
