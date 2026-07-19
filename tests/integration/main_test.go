@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -120,8 +121,10 @@ func fetchLidarrAPIKey(t *testing.T) string {
 
 // lidarrRequest posts a JSON body to a Lidarr v1 API endpoint, authenticated
 // with Lidarr's own key (see fetchLidarrAPIKey), and returns the response
-// alongside its parsed body.
-func lidarrRequest(t *testing.T, lidarrAPIKey, path string, body map[string]any) (*http.Response, map[string]any) {
+// alongside its raw response body (a string, not a parsed type - success
+// responses are `{}`, validation failures are a `[{...}]` array; forcing
+// either shape into a fixed Go type would hide the real error on failure).
+func lidarrRequest(t *testing.T, lidarrAPIKey, path string, body map[string]any) (*http.Response, string) {
 	t.Helper()
 	bodyJSON, err := json.Marshal(body)
 	require.NoError(t, err)
@@ -135,9 +138,9 @@ func lidarrRequest(t *testing.T, lidarrAPIKey, path string, body map[string]any)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	var parsed map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&parsed) // best-effort; some responses are `{}` or `[]`
-	return resp, parsed
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp, string(respBody)
 }
 
 // TestIntegration_LidarrConfiguresProxy exercises the exact setup steps from
