@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22c55e"/>
+      <stop offset="100%" stop-color="#16a34a"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#facc15"/>
+      <stop offset="100%" stop-color="#eab308"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="128" height="128" rx="24" fill="#0f172a"/>
+
+  <!-- left node: source (SpotiFLAC) -->
+  <circle cx="38" cy="64" r="22" fill="url(#g1)"/>
+  <path d="M30 58 q8 -6 16 0 M30 64 q8 -6 16 0 M30 70 q8 -6 16 0"
+        stroke="#0f172a" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+
+  <!-- right node: destination (Lidarr) -->
+  <circle cx="90" cy="64" r="22" fill="url(#g2)"/>
+  <path d="M90 54 v14 l9 5" stroke="#0f172a" stroke-width="3" fill="none"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="90" cy="64" r="12" fill="none" stroke="#0f172a" stroke-width="2.5"/>
+
+  <!-- bridge connecting the two -->
+  <path d="M56 64 h16" stroke="#e2e8f0" stroke-width="4" stroke-linecap="round"/>
+  <path d="M60 58 l-4 6 4 6 M64 58 l4 6 -4 6" stroke="#e2e8f0" stroke-width="3"
+        fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
