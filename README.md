@@ -78,6 +78,12 @@ services:
 - Prometheus `/metrics` (`spf_jobs_total`, `spf_queue_depth`, `spf_download_duration_seconds`), a real `/health` check, and a `warnings` endpoint for open breakers or stuck jobs.
 - SQLite-backed job queue that survives restarts.
 
+## Why not a Lidarr plugin?
+
+Lidarr does support plugins, but they are compiled .NET assemblies loaded into Lidarr's own process, only available on Lidarr's separate "plugins" build rather than the mainline release most people run, and require a Lidarr restart to install or update. A bug in a plugin runs with the same access as Lidarr itself, including its database.
+
+This proxy runs as its own process instead, speaking the SABnzbd and Newznab protocols Lidarr has supported for years across every build and version. That means no dependency on Lidarr's internal, less stable plugin API, no recompiling against Lidarr internals when Lidarr changes them, and a crash in the proxy stays contained to its own container instead of taking Lidarr down with it. It also runs behind gluetun like any other download client, something a plugin loaded inside Lidarr's own process cannot do.
+
 ## Standalone spotiflac-cli
 
 Every [release](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases) also ships `spotiflac-cli` on its own, for `linux`/`darwin`/`windows` on `amd64`/`arm64`, built from the exact upstream commit that release was tested against. Use it if you just want SpotiFLAC downloads from the command line, with no Lidarr or proxy involved:
