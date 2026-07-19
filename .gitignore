@@ -22,3 +22,6 @@ Thumbs.db
 # Go
 vendor/
 server
+
+# GoReleaser
+/dist/

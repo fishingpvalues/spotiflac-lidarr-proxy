@@ -14,13 +14,15 @@ type Handler struct {
 	client    *spotiflac.Client
 	log       zerolog.Logger
 	serverURL string
+	version   string
 }
 
-func NewHandler(client *spotiflac.Client, serverURL string) *Handler {
+func NewHandler(client *spotiflac.Client, serverURL, version string) *Handler {
 	return &Handler{
 		client:    client,
 		log:       zerolog.Nop(),
 		serverURL: serverURL,
+		version:   version,
 	}
 }
 
@@ -62,7 +64,7 @@ func (h *Handler) dispatch(c fiber.Ctx) error {
 
 func (h *Handler) handleCaps(c fiber.Ctx) error {
 	c.Set("Content-Type", "application/xml")
-	return c.Send(indexer.CapsXML(h.serverURL))
+	return c.Send(indexer.CapsXML(h.serverURL, h.version))
 }
 
 func (h *Handler) handleSearch(c fiber.Ctx) error {

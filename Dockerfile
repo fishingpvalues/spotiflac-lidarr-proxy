@@ -1,11 +1,12 @@
 # Stage 1: Build proxy server
 FROM golang:1.25-alpine AS builder
+ARG VERSION=dev
 WORKDIR /build
 RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/server ./cmd/server
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /out/server ./cmd/server
 
 # Stage 2: Build spotiflac-cli from fork (requires Go 1.26)
 FROM golang:1.26-alpine AS cli-builder

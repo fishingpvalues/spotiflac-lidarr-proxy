@@ -18,7 +18,7 @@ func setupNewznabApp(t *testing.T) *fiber.App {
 	t.Helper()
 
 	client := spotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless")
-	handler := newznab.NewHandler(client, "http://localhost:8484")
+	handler := newznab.NewHandler(client, "http://localhost:8484", "test")
 
 	app := fiber.New()
 	app.Use(api.APIKeyAuthWithSkiplist("test-key", "caps"))
