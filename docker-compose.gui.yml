@@ -1,0 +1,34 @@
+# Optional add-on: the actual SpotiFLAC desktop app, running headless behind
+# noVNC, for completing Tidal/Qobuz/Amazon's one-time community verification
+# through the real first-party client instead of a relayed browser (see
+# SPF_VERIFY_RELAY_URL in the main README - that path works mechanically but
+# the verification challenge itself didn't reliably complete through it in
+# our own testing).
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.gui.yml up -d
+#
+# Then open http://<host>:6901/vnc.html in a browser. The container logs a
+# random VNC password on first start (docker compose logs spotiflac-gui) -
+# set VNC_PASSWORD yourself for a stable one instead. Never expose 6901 to
+# the internet or an untrusted network: this is an interactive remote
+# desktop holding a real Spotify login session.
+#
+# Shares the same app-data volume as the main proxy service, so completing
+# verification here is immediately usable there - no manual file copying.
+services:
+  spotiflac-gui:
+    image: ghcr.io/fishingpvalues/spotiflac-lidarr-proxy:gui
+    ports:
+      - "6901:6901"
+    environment:
+      - VNC_PASSWORD=${SPOTIFLAC_GUI_VNC_PASSWORD:-}
+    volumes:
+      - spotiflac_state:/home/spotiflac/.spotiflac
+    restart: unless-stopped
+
+volumes:
+  # Declared the same way as in docker-compose.yml (not external): when both
+  # files are combined via -f, compose merges same-named top-level volumes
+  # into one, so this shares that file's actual spotiflac_state volume
+  # automatically - no manual wiring needed.
+  spotiflac_state:

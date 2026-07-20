@@ -1,0 +1,60 @@
+# Builds a browser-reachable (noVNC) instance of SpotiFLAC's actual desktop
+# app, for completing Tidal/Qobuz/Amazon's one-time community verification
+# the way it was actually designed: a real browser opened by the real app on
+# the same machine as its own session state, not a relayed browser on a
+# different device (see internal/api/verify - that approach works
+# mechanically but the verification challenge itself doesn't seem to
+# complete through it). The resulting session file lands in the same
+# ~/.spotiflac state directory the headless CLI already uses (mount the
+# same volume into both), so verifying here is immediately usable there.
+
+# Stage 1: the Wails desktop binary. Needs Go, Node/pnpm (for the frontend),
+# and the wails CLI itself - `wails build` is what actually generates the
+# frontend/wailsjs/* Go<->JS bindings before running the frontend build; the
+# frontend can't build correctly outside of that, since those bindings
+# aren't checked into the repo (they're generated, not source).
+FROM golang:1.26-bookworm AS gui-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates curl pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev && \
+    rm -rf /var/lib/apt/lists/*
+# Wails v2's Linux build hardcodes a pkg-config lookup for webkit2gtk-4.0,
+# which Debian bookworm no longer ships (only the API-compatible 4.1). This
+# symlink is the standard workaround for building Wails v2 apps on any
+# distro that only has 4.1 - the .0 name is what's missing, not the library.
+RUN pc_dir=$(pkg-config --variable=pcfiledir webkit2gtk-4.1) && \
+    ln -s "$pc_dir/webkit2gtk-4.1.pc" "$pc_dir/webkit2gtk-4.0.pc" && \
+    ln -s "$pc_dir/javascriptcoregtk-4.1.pc" "$pc_dir/javascriptcoregtk-4.0.pc"
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/* && \
+    corepack enable && corepack prepare pnpm@latest --activate
+RUN go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+ARG SPOTIFLAC_COMMIT
+RUN git clone https://github.com/fishingpvalues/SpotiFLAC.git /spotiflac && \
+    cd /spotiflac && git checkout ${SPOTIFLAC_COMMIT}
+WORKDIR /spotiflac
+RUN wails build -clean
+
+# Stage 2: runtime - Xvfb + a minimal WM + x11vnc + noVNC, so the app's
+# window is reachable from a plain web browser with no VNC client needed.
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb x11vnc fluxbox novnc websockify \
+    libgtk-3-0 libwebkit2gtk-4.1-0 libnss3 libasound2 \
+    ca-certificates tzdata && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=gui-builder /spotiflac/build/bin/SpotiFLAC /usr/local/bin/spotiflac-gui
+COPY docker/gui-entrypoint.sh /entrypoint.sh
+# uid/gid 100/101 to match the main proxy image's spotiflac user (Alpine),
+# so both containers see the same file ownership on the state volume they
+# share. Debian's own base already reserves uid 100 for a system account, so
+# this can't go through useradd/groupadd here (name collision) - the numeric
+# ID is what the shared volume's permissions actually care about, not the
+# passwd entry, so running as a bare uid:gid with no matching name works
+# fine as long as HOME is set explicitly.
+RUN mkdir -p /home/spotiflac && chmod +x /entrypoint.sh && chown -R 100:101 /home/spotiflac
+USER 100:101
+ENV HOME=/home/spotiflac
+ENV DISPLAY=:99
+EXPOSE 6901
+ENTRYPOINT ["/entrypoint.sh"]
