@@ -17,7 +17,7 @@
 # verification here is immediately usable there - no manual file copying.
 services:
   spotiflac-gui:
-    image: ghcr.io/fishingpvalues/spotiflac-lidarr-proxy:gui
+    image: ghcr.io/fishingpvalues/spotiflac-lidarr-proxy:latest-gui
     ports:
       - "6901:6901"
     environment:
