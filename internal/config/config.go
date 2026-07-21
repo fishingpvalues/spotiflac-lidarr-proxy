@@ -44,6 +44,13 @@ type Config struct {
 	TidalAPIURL string `mapstructure:"tidal_api_url"`
 	QobuzAPIURL string `mapstructure:"qobuz_api_url"`
 
+	// TidalAPIFallbackURLs is a comma-separated list of additional Tidal API
+	// proxy URLs tried in order when the primary TidalAPIURL fails. Each URL
+	// must implement the SpotiFLAC-compatible /track/?id=X&quality=Y endpoint.
+	// Health-checked at startup; only working URLs are used. All requests
+	// through these proxies respect HTTP_PROXY/HTTPS_PROXY.
+	TidalAPIFallbackURLs []string `mapstructure:"-"`
+
 	// VerifyNotifyURL, if set, gets an HTTP POST with a plain-text body
 	// (the verification link plus a short instruction) whenever community
 	// verification is needed, instead of relying on an operator to notice
@@ -69,7 +76,7 @@ func Load() (*Config, error) {
 		"default_service", "default_quality", "max_concurrent",
 		"job_timeout", "db_path", "log_level", "fallback_services",
 		"history_retention_count", "verify_relay_url",
-		"tidal_api_url", "qobuz_api_url",
+		"tidal_api_url", "qobuz_api_url", "tidal_api_fallback_urls",
 		"verify_notify_url", "verify_notify_title",
 	} {
 		// BindEnv only errors when called with zero keys; never the case here.
@@ -86,6 +93,15 @@ func Load() (*Config, error) {
 			s = strings.TrimSpace(s)
 			if s != "" {
 				cfg.FallbackServices = append(cfg.FallbackServices, s)
+			}
+		}
+	}
+
+	if raw := v.GetString("tidal_api_fallback_urls"); raw != "" {
+		for _, u := range strings.Split(raw, ",") {
+			u = strings.TrimSpace(u)
+			if u != "" {
+				cfg.TidalAPIFallbackURLs = append(cfg.TidalAPIFallbackURLs, u)
 			}
 		}
 	}

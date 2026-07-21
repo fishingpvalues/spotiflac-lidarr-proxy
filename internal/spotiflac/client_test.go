@@ -41,7 +41,7 @@ func TestDownloadProgress(t *testing.T) {
 		`{"type":"metadata","artist":"Test Artist","album":"Test Album","isrc":"US-ABC-12-34567"}`,
 		`{"type":"complete","path":"/tmp/Test Artist/Test Album/01 - First Song.flac","size":28765432}`,
 	}
-	client := spotiflac.NewClient(mockCli(t, responses), 10*time.Second, "tidal", "lossless", "", "", "")
+	client := spotiflac.NewClient(mockCli(t, responses), 10*time.Second, "tidal", "lossless", "", "", "", nil)
 
 	events, errs := client.Download(context.Background(),
 		"https://open.spotify.com/album/test",
@@ -80,7 +80,7 @@ loop:
 
 func TestDownloadTimeout(t *testing.T) {
 	responses := []string{} // exits immediately, but timeout is 1 nanosecond
-	client := spotiflac.NewClient(mockCli(t, responses), 1*time.Nanosecond, "tidal", "lossless", "", "", "")
+	client := spotiflac.NewClient(mockCli(t, responses), 1*time.Nanosecond, "tidal", "lossless", "", "", "", nil)
 
 	events, errs := client.Download(context.Background(),
 		"https://open.spotify.com/album/test",
@@ -101,7 +101,7 @@ func TestDownloadCapturesOutputOnFailure(t *testing.T) {
 	responses := []string{
 		`{"type":"error","message":"disk full"}`,
 	}
-	client := spotiflac.NewClient(mockCli(t, responses), 5*time.Second, "tidal", "lossless", "", "", "")
+	client := spotiflac.NewClient(mockCli(t, responses), 5*time.Second, "tidal", "lossless", "", "", "", nil)
 
 	events, errs := client.Download(context.Background(),
 		"https://open.spotify.com/album/test", "/tmp/test-output", "", "")
@@ -139,7 +139,7 @@ func TestDownloadDoesNotDeadlockOnManyEvents(t *testing.T) {
 	}
 	responses = append(responses, `{"type":"error","message":"too many events"}`)
 
-	client := spotiflac.NewClient(mockCli(t, responses), 5*time.Second, "tidal", "lossless", "", "", "")
+	client := spotiflac.NewClient(mockCli(t, responses), 5*time.Second, "tidal", "lossless", "", "", "", nil)
 
 	events, errs := client.Download(context.Background(),
 		"https://open.spotify.com/album/test", "/tmp/test-output", "", "")
@@ -193,7 +193,7 @@ func TestSearchMetadataArtistFallsBackToName(t *testing.T) {
 	responses := []string{
 		`{"type":"result","name":"Fallback Name","artist":"","album":"Some Album","spotify_url":"https://open.spotify.com/album/xyz","title":"Some Album"}`,
 	}
-	client := spotiflac.NewClient(mockCli(t, responses), 10*time.Second, "tidal", "lossless", "", "", "")
+	client := spotiflac.NewClient(mockCli(t, responses), 10*time.Second, "tidal", "lossless", "", "", "", nil)
 
 	results, err := client.SearchMetadata(context.Background(), "query")
 	require.NoError(t, err)
