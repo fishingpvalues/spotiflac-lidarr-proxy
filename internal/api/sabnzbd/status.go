@@ -1,8 +1,12 @@
 package sabnzbd
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/pkg/sabnzbd"
 )
 
@@ -52,7 +56,7 @@ func (h *Handler) handleGetConfig(c fiber.Ctx) error {
 
 func (h *Handler) handleFullStatus(c fiber.Ctx) error {
 	return c.JSON(sabnzbd.FullStatusResponse{
-		CompleteDir: h.cfg.OutputDir,
+		Status: sabnzbd.FullStatus{CompleteDir: h.cfg.OutputDir},
 	})
 }
 
@@ -99,7 +103,7 @@ func (h *Handler) handleRetry(c fiber.Ctx) error {
 	}
 
 	// Restart the download
-	go h.processDownload(job)
+	go h.ProcessDownloadSync(job)
 
 	return c.JSON(sabnzbd.RetryResponse{
 		Status: true,
@@ -108,7 +112,47 @@ func (h *Handler) handleRetry(c fiber.Ctx) error {
 }
 
 func (h *Handler) handleWarnings(c fiber.Ctx) error {
-	return c.JSON(sabnzbd.WarningsResponse{
-		Warnings: []sabnzbd.Warning{},
-	})
+	var warnings []sabnzbd.Warning
+	for service, state := range h.breaker.Status() {
+		if !state.Open {
+			continue
+		}
+		warnings = append(warnings, sabnzbd.Warning{
+			Time: state.OpenedAt.Unix(),
+			Type: "ERROR",
+			Text: fmt.Sprintf("service %s circuit open, retrying after %s", service, state.RetryAt.Format(time.RFC3339)),
+			ID:   "breaker_" + service,
+		})
+	}
+
+	if h.verifyStore != nil {
+		if link, at, pending := h.verifyStore.Pending(); pending {
+			warnings = append(warnings, sabnzbd.Warning{
+				Time: at.Unix(),
+				Type: "WARNING",
+				Text: fmt.Sprintf("Tidal/Qobuz/Amazon one-time verification needed, open this URL in a browser to continue: %s", link),
+				ID:   "verification_required",
+			})
+		}
+	}
+
+	stuck, _, err := h.queue.List(queue.ListParams{Status: string(sabnzbd.StatusDownloading), Limit: 1000})
+	if err == nil {
+		for _, job := range stuck {
+			age := time.Since(job.TimeAdded)
+			if age > 2*h.cfg.JobTimeout {
+				warnings = append(warnings, sabnzbd.Warning{
+					Time: job.TimeAdded.Unix(),
+					Type: "WARNING",
+					Text: fmt.Sprintf("job %s (%s) has been downloading for %s, more than 2x the configured timeout", job.NzoID, job.Filename, age.Round(time.Second)),
+					ID:   "stuck_" + job.NzoID,
+				})
+			}
+		}
+	}
+
+	if warnings == nil {
+		warnings = []sabnzbd.Warning{}
+	}
+	return c.JSON(sabnzbd.WarningsResponse{Warnings: warnings})
 }

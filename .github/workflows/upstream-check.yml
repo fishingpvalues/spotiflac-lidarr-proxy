@@ -1,9 +1,13 @@
-name: Upstream Dependency Check
+name: Upstream Sync
 
 on:
   schedule:
-    - cron: "13 7 * * 1"  # Monday 7:13am UTC
+    - cron: "13 7 * * *"  # daily 7:13am UTC
   workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   check-lidarr-sabnzbd-api:
@@ -20,70 +24,119 @@ jobs:
       - name: Check required API endpoints
         run: |
           echo "=== Checking Lidarr SABnzbd API requirements ==="
-
-          # Check which API modes Lidarr uses
           echo "--- API modes used ---"
           grep -oP 'mode=\w+' /tmp/Sabnzbd.cs | sort -u || true
           grep -oP '"mode",\s*"\w+"' /tmp/Sabnzbd.cs | sort -u || true
-
-          # Check queue fields Lidarr accesses
-          echo "--- Queue item fields accessed ---"
-          grep -oP 'sabQueueItem\.\w+|sabHistoryItem\.\w+|sabQueue\.\w+' /tmp/Sabnzbd.cs | sort -u || true
-
-          # Verify our handler dispatches all required modes
           echo "--- Our handler supports these modes ---"
-          grep -oP 'case mode == "\w+"' internal/api/sabnzbd/handler.go | sort -u || true
+          grep -oP '"\w+":\s*h\.handle' internal/api/sabnzbd/handler.go | sort -u || true
+          echo "Review output above for any new/removed API modes Lidarr's client uses."
 
-          echo "--- Summary ---"
-          echo "Lidarr SABnzbd.cs checked. Review output above for any new/removed API modes."
-          echo "If new modes found, update internal/api/sabnzbd/handler.go dispatch switch."
-
-      - name: Check for new Lidarr SABnzbd fields
-        run: |
-          echo "=== Field comparison ==="
-          echo "Lidarr queue fields:"
-          grep -oP 'queue\.Slots\[\d+\]\.\w+' /tmp/Sabnzbd.cs 2>/dev/null | sed 's/.*\.//' | sort -u || echo "(none found — may use property names)"
-          echo ""
-          echo "Our Slot struct fields:"
-          grep 'json:' pkg/sabnzbd/types.go | grep -oP 'json:"\w+' | sed 's/json:"//' | sort -u
-
-  check-spotiflac-upstream:
+  sync-spotiflac-fork:
     runs-on: ubuntu-latest
-    steps:
-      - name: Check SpotiFLAC upstream releases
-        run: |
-          LATEST=$(curl -sL https://api.github.com/repos/spotbye/SpotiFLAC/releases/latest | jq -r '.tag_name // "unknown"')
-          echo "Upstream SpotiFLAC latest: $LATEST"
-
-          FORK_LATEST=$(curl -sL https://api.github.com/repos/fishingpvalues/SpotiFLAC/releases/latest | jq -r '.tag_name // "none"')
-          echo "Fork SpotiFLAC latest: $FORK_LATEST"
-
-          if [ "$LATEST" != "unknown" ] && [ "$LATEST" != "$FORK_LATEST" ]; then
-            echo "::warning::Upstream SpotiFLAC $LATEST is ahead of fork $FORK_LATEST — consider rebasing"
-          fi
-
-      - name: Check CLI build tag compatibility
-        run: |
-          echo "Checking if upstream SpotiFLAC structure changed..."
-          curl -sL -o /tmp/upstream-main.go \
-            https://raw.githubusercontent.com/spotbye/SpotiFLAC/main/main.go 2>/dev/null || true
-          if grep -q "package main" /tmp/upstream-main.go 2>/dev/null; then
-            echo "Upstream main.go structure check: OK (still package main)"
-          else
-            echo "::warning::Upstream main.go structure may have changed — verify fork compatibility"
-          fi
-
-  rebuild-if-needed:
-    needs: [check-lidarr-sabnzbd-api, check-spotiflac-upstream]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
-      - name: Rebuild and test against upstream
+          fetch-depth: 0
+
+      - name: Compare pinned commit against fork HEAD
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          PINNED=$(grep -oP 'SPOTIFLAC_COMMIT=\K[0-9a-f]{40}' Dockerfile)
+          UPSTREAM_LATEST=$(gh api /repos/spotbye/SpotiFLAC/releases/latest -q '.tag_name // "unknown"' 2>/dev/null || echo unknown)
+          FORK_DEFAULT_BRANCH=$(gh api /repos/fishingpvalues/SpotiFLAC -q '.default_branch')
+          FORK_HEAD=$(gh api "/repos/fishingpvalues/SpotiFLAC/commits/${FORK_DEFAULT_BRANCH}" -q '.sha')
+
+          {
+            echo "pinned=$PINNED"
+            echo "fork_head=$FORK_HEAD"
+            echo "upstream_latest=$UPSTREAM_LATEST"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$PINNED" = "$FORK_HEAD" ]; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+            echo "Already pinned to fork HEAD ($PINNED). Nothing to sync."
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+            echo "Fork HEAD ($FORK_HEAD) is ahead of pinned commit ($PINNED)."
+          fi
+
+      - name: Check for an already-open sync PR
+        if: steps.check.outputs.up_to_date == 'false'
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COUNT=$(gh pr list --head upstream-sync/spotiflac --state open --json number --jq 'length')
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        if: steps.check.outputs.up_to_date == 'false' && steps.existing_pr.outputs.count == '0'
+        with:
+          go-version-file: go.mod
+
+      - name: Bump pinned SpotiFLAC commit
+        if: steps.check.outputs.up_to_date == 'false' && steps.existing_pr.outputs.count == '0'
+        run: |
+          sed -i "s/SPOTIFLAC_COMMIT=[0-9a-f]\{40\}/SPOTIFLAC_COMMIT=${{ steps.check.outputs.fork_head }}/" Dockerfile
+          grep SPOTIFLAC_COMMIT Dockerfile
+
+      - name: Build and unit test against the new pin
+        if: steps.check.outputs.up_to_date == 'false' && steps.existing_pr.outputs.count == '0'
+        run: |
+          go build ./...
           go test ./... -count=1
-          go build ./cmd/server
-          echo "Build and tests pass against current upstream state."
+
+      - name: Integration test against the new pin (real Lidarr + rebuilt image)
+        if: steps.check.outputs.up_to_date == 'false' && steps.existing_pr.outputs.count == '0'
+        run: |
+          docker compose up -d --build
+          for url in http://localhost:8484/health http://localhost:8686/ping; do
+            for i in $(seq 1 60); do
+              curl -sf "$url" >/dev/null && break
+              if [ "$i" -eq 60 ]; then echo "::error::$url never became ready"; docker compose logs; exit 1; fi
+              sleep 2
+            done
+          done
+          INTEGRATION=1 go test ./tests/integration/... -v -count=1
+          docker compose down -v
+
+      - name: Open PR for review
+        if: steps.check.outputs.up_to_date == 'false' && steps.existing_pr.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PINNED: ${{ steps.check.outputs.pinned }}
+          FORK_HEAD: ${{ steps.check.outputs.fork_head }}
+          UPSTREAM_LATEST: ${{ steps.check.outputs.upstream_latest }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          BRANCH="upstream-sync/spotiflac-${FORK_HEAD}"
+          git checkout -b "$BRANCH"
+          git add Dockerfile
+
+          cat <<EOF > /tmp/commit-msg.txt
+          chore(deps): sync pinned SpotiFLAC commit
+
+          Fork HEAD moved from ${PINNED} to ${FORK_HEAD}.
+          Build, unit tests, and the full docker-compose integration suite (real
+          Lidarr :latest + the rebuilt proxy image) all passed against this commit
+          before this PR was opened - see the workflow run for details.
+          EOF
+          git commit -F /tmp/commit-msg.txt
+          git push origin "$BRANCH"
+
+          cat <<EOF > /tmp/pr-body.md
+          Automated sync: [fishingpvalues/SpotiFLAC](https://github.com/fishingpvalues/SpotiFLAC) fork HEAD moved from \`${PINNED}\` to \`${FORK_HEAD}\`.
+
+          **All checks passed before this PR was opened:** \`go build\`, \`go test ./...\`, and the full docker-compose integration suite (real Lidarr \`:latest\` + the rebuilt proxy image, real download-client/indexer round-trip).
+
+          Upstream (spotbye/SpotiFLAC) latest release tag: \`${UPSTREAM_LATEST}\`.
+
+          Review the fork's commit range, then merge and cut the next version tag when ready - this PR does not do that automatically.
+          EOF
+          gh pr create \
+            --title "chore(deps): sync pinned SpotiFLAC commit to ${FORK_HEAD}" \
+            --body-file /tmp/pr-body.md \
+            --label "automated,dependencies"

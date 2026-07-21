@@ -1,25 +1,32 @@
 package sabnzbd
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
-	"strings"
+	"io"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/indexer"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/pkg/sabnzbd"
 )
 
 func (h *Handler) handleAddURL(c fiber.Ctx) error {
-	spotifyURL := c.Query("name")
-	if spotifyURL == "" {
-		spotifyURL = c.FormValue("name")
-	}
+	spotifyURL := resolveSpotifyURL(c)
 	if spotifyURL == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(sabnzbd.StatusResponse{
 			Status: false,
-			Error:  "missing 'name' parameter (spotify URL)",
+			Error:  "missing 'name' parameter (spotify URL) and no uploaded NZB with an embedded one",
+		})
+	}
+	if !config.IsValidSpotifyURL(spotifyURL) {
+		return c.Status(fiber.StatusBadRequest).JSON(sabnzbd.StatusResponse{
+			Status: false,
+			Error:  "invalid Spotify URL: must be a https://open.spotify.com/(track|album|playlist)/... link",
 		})
 	}
 
@@ -36,10 +43,27 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		priority = "Normal"
 	}
 
+	existing, err := h.queue.FindActiveBySpotifyURL(spotifyURL)
+	if err == nil {
+		return c.JSON(sabnzbd.AddURLResponse{
+			Status: true,
+			NzoIDs: []string{existing.NzoID},
+		})
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		h.log.Warn().Err(err).Str("spotify_url", spotifyURL).Msg("dedup lookup failed, proceeding to create new job")
+	}
+
+	if h.cfg.HistoryRetentionCount > 0 {
+		if err := h.queue.PruneHistory(h.cfg.HistoryRetentionCount); err != nil {
+			h.log.Warn().Err(err).Msg("history prune failed")
+		}
+	}
+
 	nzoID := "SABnzbd_nzo_" + uuid.New().String()[:12]
 
 	// Extract service and quality from category
-	svc, qual := parseCategory(cat)
+	svc, qual := config.ParseCategory(cat)
 	if svc == "" {
 		svc = h.cfg.DefaultService
 	}
@@ -55,6 +79,10 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		Filename:   nzbName,
 		Service:    svc,
 		Quality:    qual,
+		// TrackCount left at 0: the CLI's --search flag takes free-text
+		// queries, not a Spotify URL, so no reliable per-URL track count
+		// is available at addurl time. Completion verification in
+		// processDownload only runs when TrackCount > 0.
 	}
 
 	if err := h.queue.Add(job); err != nil {
@@ -64,7 +92,7 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		})
 	}
 
-	go h.processDownload(job)
+	go h.ProcessDownloadSync(job)
 
 	return c.JSON(sabnzbd.AddURLResponse{
 		Status: true,
@@ -72,33 +100,47 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 	})
 }
 
-// parseCategory extracts service and quality from a SABnzbd category name.
-// Category naming: music-[service][-quality]
-// Examples:
-//
-//	music-tidal         → service=tidal, quality=default
-//	music-qobuz-flac-24 → service=qobuz, quality=hires
-//	music-flac-16       → service=default, quality=lossless
-//	music-amazon-flac-24 → service=amazon, quality=hires
-func parseCategory(cat string) (service, quality string) {
-	catLower := strings.ToLower(cat)
+// resolveSpotifyURL covers both SABnzbd add modes: mode=addurl passes the
+// Spotify URL directly as "name"; mode=addfile (what Lidarr's real grab
+// flow uses) uploads our synthetic NZB's bytes instead, so the URL has to
+// be recovered from its embedded metadata.
+func resolveSpotifyURL(c fiber.Ctx) string {
+	if name := c.Query("name"); name != "" {
+		return name
+	}
+	if name := c.FormValue("name"); name != "" {
+		return name
+	}
+	if extracted, ok := extractSpotifyURLFromUpload(c); ok {
+		return extracted
+	}
+	return ""
+}
 
-	// Detect service
-	for _, svc := range []string{"tidal", "qobuz", "amazon", "deezer"} {
-		if strings.Contains(catLower, svc) {
-			service = svc
-			break
+// extractSpotifyURLFromUpload looks for an uploaded file in a mode=addfile
+// request (SABnzbd clients vary in which multipart field name they use for
+// the .nzb, so this checks all of them) and, if found, extracts the
+// spotify_url meta our own synthetic NZB embeds (see indexer.GenerateNZB).
+func extractSpotifyURLFromUpload(c fiber.Ctx) (string, bool) {
+	form, err := c.Req().MultipartForm()
+	if err != nil {
+		return "", false
+	}
+	for _, files := range form.File {
+		for _, fh := range files {
+			f, err := fh.Open()
+			if err != nil {
+				continue
+			}
+			data, err := io.ReadAll(f)
+			f.Close()
+			if err != nil {
+				continue
+			}
+			if spotifyURL, err := indexer.ExtractSpotifyURLFromNZB(data); err == nil {
+				return spotifyURL, true
+			}
 		}
 	}
-
-	// Detect quality
-	if strings.Contains(catLower, "flac-24") || strings.Contains(catLower, "hires") || strings.Contains(catLower, "24-bit") {
-		quality = "hires"
-	} else if strings.Contains(catLower, "flac-16") || strings.Contains(catLower, "lossless") || strings.Contains(catLower, "16-bit") {
-		quality = "lossless"
-	} else if strings.Contains(catLower, "mp3") {
-		quality = "lossless"
-	}
-
-	return
+	return "", false
 }

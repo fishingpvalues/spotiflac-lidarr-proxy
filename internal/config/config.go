@@ -1,10 +1,10 @@
 package config
 
 import (
-	"strings"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -21,8 +21,40 @@ type Config struct {
 	JobTimeout       time.Duration `mapstructure:"job_timeout"`
 	DBPath           string        `mapstructure:"db_path"`
 	LogLevel         string        `mapstructure:"log_level"`
-	TidalAPIURL      string        `mapstructure:"tidal_api_url"`
-	QobuzAPIURL      string        `mapstructure:"qobuz_api_url"`
+	FallbackServices []string      `mapstructure:"-"`
+
+	HistoryRetentionCount int `mapstructure:"history_retention_count"`
+
+	// VerifyRelayURL, if set, must be this proxy's own externally reachable
+	// /verify/callback URL (e.g. https://spotiflac.example.com/verify/callback).
+	// Passed to spotiflac-cli so it can relay Tidal/Qobuz/Amazon's one-time
+	// community-verification challenge to a real person's real browser
+	// instead of failing outright on a headless host with no browser of its
+	// own. Optional: without it, that challenge simply can't complete
+	// headlessly, same as before this existed.
+	VerifyRelayURL string `mapstructure:"verify_relay_url"`
+
+	// TidalAPIURL / QobuzAPIURL point spotiflac-cli at a custom, self-hosted
+	// or known-public Tidal/Qobuz API instance. Both downloaders try this
+	// first and, if it works, skip the rate-limited, verification-gated
+	// community tier entirely - see backend/tidal.go and backend/qobuz.go's
+	// GetDownloadURL in the pinned spotiflac-cli fork. Falls back to the
+	// community tier if unset or the custom instance fails. Amazon has no
+	// equivalent - it always uses the community tier.
+	TidalAPIURL string `mapstructure:"tidal_api_url"`
+	QobuzAPIURL string `mapstructure:"qobuz_api_url"`
+
+	// VerifyNotifyURL, if set, gets an HTTP POST with a plain-text body
+	// (the verification link plus a short instruction) whenever community
+	// verification is needed, instead of relying on an operator to notice
+	// it in mode=warnings. Deliberately generic - this is just "POST text
+	// to a URL", which covers ntfy (its publish API is exactly this: POST
+	// the message as the raw body), Gotify, a custom webhook receiver, or
+	// anything else that accepts a plain POST. Not tied to any specific
+	// notification service. VerifyNotifyTitle is sent as a "Title" header
+	// (ntfy displays it; anything else can ignore an unrecognized header).
+	VerifyNotifyURL   string `mapstructure:"verify_notify_url"`
+	VerifyNotifyTitle string `mapstructure:"verify_notify_title"`
 }
 
 func Load() (*Config, error) {
@@ -35,15 +67,39 @@ func Load() (*Config, error) {
 	for _, key := range []string{
 		"api_key", "port", "output_dir", "spotiflac_cli_path",
 		"default_service", "default_quality", "max_concurrent",
-		"job_timeout", "db_path", "log_level",
+		"job_timeout", "db_path", "log_level", "fallback_services",
+		"history_retention_count", "verify_relay_url",
 		"tidal_api_url", "qobuz_api_url",
+		"verify_notify_url", "verify_notify_title",
 	} {
-		v.BindEnv(key)
+		// BindEnv only errors when called with zero keys; never the case here.
+		_ = v.BindEnv(key)
 	}
 
 	cfg := &Config{}
 	if err := v.Unmarshal(cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
+	}
+
+	if raw := v.GetString("fallback_services"); raw != "" {
+		for _, s := range strings.Split(raw, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				cfg.FallbackServices = append(cfg.FallbackServices, s)
+			}
+		}
+	}
+
+	validServices := map[string]bool{
+		ServiceTidal:  true,
+		ServiceQobuz:  true,
+		ServiceAmazon: true,
+		ServiceDeezer: true,
+	}
+	for _, s := range cfg.FallbackServices {
+		if !validServices[s] {
+			return nil, fmt.Errorf("invalid SPF_FALLBACK_SERVICES entry %q: must be one of tidal, qobuz, amazon, deezer", s)
+		}
 	}
 
 	if cfg.APIKey == "" {
@@ -72,6 +128,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("job_timeout", "30m")
 	v.SetDefault("db_path", "/data/queue.db")
 	v.SetDefault("log_level", "info")
+	v.SetDefault("history_retention_count", 500)
+	v.SetDefault("verify_notify_title", "SpotiFLAC verification needed")
 }
 
 // Service constants matching SpotiFLAC CLI
@@ -101,20 +159,20 @@ func SpotiflacQuality(proxyQuality string) string {
 // Categories follow the pattern: music-[service][-quality]
 // Examples: music-tidal, music-flac-16, music-qobuz-flac-24
 func ParseCategory(cat string) (service, quality string) {
-	cat = strings.ToLower(cat)
+	catLower := strings.ToLower(cat)
 
-	// Detect service
-	for _, svc := range []string{"tidal", "qobuz", "amazon", "deezer"} {
-		if strings.Contains(cat, svc) {
+	for _, svc := range []string{ServiceTidal, ServiceQobuz, ServiceAmazon, ServiceDeezer} {
+		if strings.Contains(catLower, svc) {
 			service = svc
 			break
 		}
 	}
 
-	// Detect quality
-	if strings.Contains(cat, "flac-24") || strings.Contains(cat, "hires") || strings.Contains(cat, "24") {
+	if strings.Contains(catLower, "flac-24") || strings.Contains(catLower, "hires") || strings.Contains(catLower, "24-bit") {
 		quality = "hires"
-	} else if strings.Contains(cat, "flac-16") || strings.Contains(cat, "lossless") || strings.Contains(cat, "16") {
+	} else if strings.Contains(catLower, "flac-16") || strings.Contains(catLower, "lossless") || strings.Contains(catLower, "16-bit") {
+		quality = "lossless"
+	} else if strings.Contains(catLower, "mp3") {
 		quality = "lossless"
 	}
 

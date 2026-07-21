@@ -23,6 +23,7 @@ type Client struct {
 	timeout        time.Duration
 	defaultService string
 	defaultQuality string
+	verifyRelayURL string
 	tidalAPIURL    string
 	qobuzAPIURL    string
 	fslURL         string
@@ -30,11 +31,11 @@ type Client struct {
 	relayPort      int
 
 	// verificationStates maps state param → upstream_cb URL for
-	// community verification relay forwarding.
+	// community verification relay forwarding (FSL/Byparr path).
 	verificationStates sync.Map
 }
 
-func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, tidalAPIURL, qobuzAPIURL string) *Client {
+func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, verifyRelayURL, tidalAPIURL, qobuzAPIURL string) *Client {
 	fslURL := os.Getenv("SPOTIFLAC_FSL_URL")
 	relayAddress := os.Getenv("SPOTIFLAC_ADDRESS")
 
@@ -43,6 +44,7 @@ func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQua
 		timeout:        timeout,
 		defaultService: defaultService,
 		defaultQuality: defaultQuality,
+		verifyRelayURL: verifyRelayURL,
 		tidalAPIURL:    tidalAPIURL,
 		qobuzAPIURL:    qobuzAPIURL,
 		fslURL:         fslURL,
@@ -51,13 +53,14 @@ func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQua
 }
 
 // SetRelayPort sets the port the proxy server listens on, used to construct
-// the SPOTIFLAC_VERIFY_RELAY_URL passed to SpotiFLAC CLI.
+// the SPOTIFLAC_VERIFY_RELAY_URL passed to SpotiFLAC CLI when FSL is configured
+// but no explicit verify_relay_url is set.
 func (c *Client) SetRelayPort(port int) {
 	c.relayPort = port
 }
 
 // LookupUpstreamCB returns the upstream_cb URL stored for the given
-// verification state parameter. Used by the verify-relay HTTP handler
+// verification state parameter. Used by the verify callback handler
 // to forward grants back to SpotiFLAC's local callback server.
 func (c *Client) LookupUpstreamCB(state string) (string, bool) {
 	v, ok := c.verificationStates.Load(state)
@@ -103,21 +106,23 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 		if c.qobuzAPIURL != "" {
 			args = append(args, "--qobuz-api-url", c.qobuzAPIURL)
 		}
-
 		cmd := exec.CommandContext(ctx, c.cliPath, args...)
 
-		// If FSL (Byparr/FlareSolverr) is configured, set the verify relay URL
-		// so SpotiFLAC rewrites the challenge URL's cb= parameter to point at
-		// our /api/verify-relay endpoint instead of opening a local browser.
-		if c.fslURL != "" && c.relayPort > 0 {
+		// Determine SPOTIFLAC_VERIFY_RELAY_URL:
+		// 1. Explicit verify_relay_url config takes priority (user-set)
+		// 2. FSL (Byparr/FlareSolverr) auto-construction as fallback
+		relayURL := c.verifyRelayURL
+		if relayURL == "" && c.fslURL != "" && c.relayPort > 0 {
 			addr := c.relayAddress
 			if addr == "" {
 				addr = autoDetectIP()
 			}
 			if addr != "" {
-				relayURL := fmt.Sprintf("http://%s:%d/api/verify-relay", addr, c.relayPort)
-				cmd.Env = append(os.Environ(), "SPOTIFLAC_VERIFY_RELAY_URL="+relayURL)
+				relayURL = fmt.Sprintf("http://%s:%d/api/verify-relay", addr, c.relayPort)
 			}
+		}
+		if relayURL != "" {
+			cmd.Env = append(os.Environ(), "SPOTIFLAC_VERIFY_RELAY_URL="+relayURL)
 		}
 
 		stdout, err := cmd.StdoutPipe()
@@ -131,9 +136,14 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			return
 		}
 
-		parseProgress(stdout, events, errs, func(ev ProgressEvent) {
-			if c.fslURL != "" && ev.VerificationURL != "" {
-				c.solveVerification(ev.VerificationURL)
+		var outputBuf bytes.Buffer
+		tee := io.TeeReader(stdout, &outputBuf)
+		parseProgress(tee, events, errs, &outputBuf, func(ev ProgressEvent) {
+			// FSL auto-solving: when Byparr/FlareSolverr is configured and a
+			// verification_required event arrives, send the challenge URL to
+			// Byparr's headless browser for Turnstile solving.
+			if c.fslURL != "" && ev.URL != "" {
+				c.solveVerification(ev.URL)
 			}
 		})
 
@@ -170,17 +180,17 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		var raw struct {
-			Type        string `json:"type"`
-			Name        string `json:"name"`
-			Artist      string `json:"artist"`
-			Album       string `json:"album"`
-			SpotifyURL  string `json:"spotify_url"`
-			CoverURL    string `json:"cover_url"`
-			Year        string `json:"year"`
-			TrackCount  int    `json:"track_count"`
-			Title string `json:"title"`
-			ISRC  string `json:"isrc"`
-			Genre string `json:"genre"`
+			Type       string `json:"type"`
+			Name       string `json:"name"`
+			Artist     string `json:"artist"`
+			Album      string `json:"album"`
+			SpotifyURL string `json:"spotify_url"`
+			CoverURL   string `json:"cover_url"`
+			Year       string `json:"year"`
+			TrackCount int    `json:"track_count"`
+			Title      string `json:"title"`
+			ISRC       string `json:"isrc"`
+			Genre      string `json:"genre"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			continue
@@ -195,7 +205,7 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 		}
 		artist := raw.Artist
 		if artist == "" {
-			artist = raw.Artist
+			artist = raw.Name
 		}
 		results = append(results, MetadataResult{
 			Artist:     artist,
@@ -219,7 +229,7 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 // solveVerification sends a community verification challenge URL to Byparr/FlareSolverr.
 // It extracts the upstream_cb and state parameters from the URL, stores the mapping,
 // then sends the URL to Byparr's headless browser. Byparr solves the Turnstile and
-// the resulting grant callback hits our /api/verify-relay endpoint, which forwards
+// the resulting grant callback hits our /verify/callback endpoint, which forwards
 // to SpotiFLAC's local callback server via the stored upstream_cb mapping.
 func (c *Client) solveVerification(challengeURL string) {
 	parsed, err := url.Parse(challengeURL)
@@ -236,7 +246,7 @@ func (c *Client) solveVerification(challengeURL string) {
 
 	// Send to Byparr/FlareSolverr asynchronously — the browser
 	// loads the challenge URL, solves Turnstile, and the redirect
-	// hits our verify-relay endpoint.
+	// hits our verify callback endpoint.
 	go func() {
 		if err := fslRequest(c.fslURL, challengeURL, c.timeout); err != nil {
 			// Verification failed; SpotiFLAC will time out waiting
@@ -249,14 +259,10 @@ func (c *Client) solveVerification(challengeURL string) {
 // autoDetectIP returns the IP of the default route interface.
 // Used when SPOTIFLAC_ADDRESS is not explicitly set.
 func autoDetectIP() string {
-	// Try common Docker network interface first
 	addrs, err := os.ReadFile("/proc/net/fib_trie")
 	if err != nil {
 		return ""
 	}
-	// Simple heuristic: look for 172.x.x.x (typical Docker network)
-	// This is a best-effort fallback; setting SPOTIFLAC_ADDRESS explicitly
-	// is more reliable.
 	for _, prefix := range []string{"172.", "10.", "192.168."} {
 		if idx := strings.Index(string(addrs), prefix); idx >= 0 {
 			end := idx

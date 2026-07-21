@@ -35,3 +35,16 @@ func TestGetDiskSpace(t *testing.T) {
 	assert.NotEmpty(t, free)
 	assert.NotEmpty(t, total)
 }
+
+func TestCountAudioFiles(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "01.flac"), []byte("x"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "02.flac"), []byte("x"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cover.jpg"), []byte("x"), 0644))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "Disc 2"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "Disc 2", "03.flac"), []byte("x"), 0644))
+
+	count, err := storage.CountAudioFiles(dir)
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+}

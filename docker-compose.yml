@@ -6,31 +6,43 @@ services:
     ports:
       - "8484:8484"
     environment:
-      - SPF_API_KEY=your-secret-api-key
+      - SPF_API_KEY=test-integration-key
       - SPF_OUTPUT_DIR=/downloads
       - SPF_DB_PATH=/data/queue.db
       - SPF_LOG_LEVEL=info
       - SPF_DEFAULT_SERVICE=tidal
       - SPF_DEFAULT_QUALITY=lossless
       - SPF_MAX_CONCURRENT=3
-      # FlareSolverr/Byparr for auto-solving Cloudflare Turnstile
-      # Point at byparr's FlareSolverr API (e.g. http://gluetun:8191 on the shared network)
+      # Optional settings, shown with their defaults:
+      # - SPF_PORT=8484
+      # - SPF_FALLBACK_SERVICES=qobuz,amazon,deezer
+      # - SPF_JOB_TIMEOUT=30m
+      # - SPF_HISTORY_RETENTION_COUNT=500
+      # - SPF_SPOTIFLAC_CLI_PATH=/usr/local/bin/spotiflac-cli
+      # - SPF_VERIFY_RELAY_URL=https://spotiflac.example.com/verify/callback
+      # - SPF_TIDAL_API_URL=https://your-tidal-api-instance.example
+      # - SPF_QOBUZ_API_URL=https://your-qobuz-api-instance.example
+      # - SPF_VERIFY_NOTIFY_URL=https://ntfy.sh/your-topic
+      # - SPF_VERIFY_NOTIFY_TITLE=SpotiFLAC verification needed
+      # --- Captcha auto-solving via Byparr/FlareSolverr ---
+      # Point at byparr's FlareSolverr API for headless Turnstile solving.
+      # When set, community verification challenges are auto-solved without
+      # human intervention.
       - SPOTIFLAC_FSL_URL=${SPOTIFLAC_FSL_URL:-}
       # This container's routable IP on the shared Docker network (used for
       # the Turnstile callback that byparr's browser redirects to).
-      # Auto-detected from the default route interface if left empty,
-      # but it's more reliable to set it explicitly.
+      # Auto-detected from the default route interface if left empty.
       - SPOTIFLAC_ADDRESS=${SPOTIFLAC_ADDRESS:-}
-      # Custom Tidal/Qobuz API instances (bypass community tier & Turnstile)
-      - SPF_TIDAL_API_URL=${SPF_TIDAL_API_URL:-}
-      - SPF_QOBUZ_API_URL=${SPF_QOBUZ_API_URL:-}
-      # HTTP/HTTPS forward proxy for SpotiFLAC CLI (auto-respected by Go HTTP client)
+      # HTTP/HTTPS forward proxy (Go's http.Client auto-respects these)
       - HTTP_PROXY=${HTTP_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}
-
     volumes:
       - downloads:/downloads
       - data:/data
+      # spotiflac-cli's own state (ISRC cache, community verification
+      # session) lives under its home directory. Without this, a completed
+      # Tidal/Qobuz/Amazon community verification is lost on every restart.
+      - spotiflac_state:/home/spotiflac/.spotiflac
     restart: unless-stopped
     networks:
       - default
@@ -58,6 +70,7 @@ services:
 volumes:
   downloads:
   data:
+  spotiflac_state:
   lidarr_config:
 
 networks:
