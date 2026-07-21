@@ -142,7 +142,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// grant callbacks from Byparr's headless browser and forwards to
 	// SpotiFLAC's local callback server. No auth required (called by
 	// Byparr's browser, not by an authenticated client).
-	verifyRelay := api.NewVerifyRelayHandler(client)
+	verifyRelay := api.NewVerifyRelayHandler()
 	app.Get("/api/verify-relay", verifyRelay.Handle)
 
 	sabHandler := sabnzbd.NewHandler(q, client, st, cfg, version)

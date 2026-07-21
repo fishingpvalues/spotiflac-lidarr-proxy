@@ -227,21 +227,43 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 }
 
 // solveVerification sends a community verification challenge URL to Byparr/FlareSolverr.
-// It extracts the upstream_cb and state parameters from the URL, stores the mapping,
-// then sends the URL to Byparr's headless browser. Byparr solves the Turnstile and
-// the resulting grant callback hits our /verify/callback endpoint, which forwards
-// to SpotiFLAC's local callback server via the stored upstream_cb mapping.
+// SpotiFLAC's relay mechanism embeds upstream_cb inside the cb= query parameter:
+//
+//	challenge URL:  https://verify.xx/challenge?cb=<relay-cb-url-with-upstream_cb>&id=...
+//	cb value:       http://relay:port/api/verify-relay?upstream_cb=http://127.0.0.1:PORT/session-grant?state=...
+//
+// Byparr's browser loads the challenge, solves Turnstile, and the page redirects to
+// cb?upstream_cb=...&grant=... — the upstream_cb is already in the redirect URL,
+// so our /api/verify-relay handler reads it directly from query params.
 func (c *Client) solveVerification(challengeURL string) {
 	parsed, err := url.Parse(challengeURL)
 	if err != nil {
 		return
 	}
 
-	upstreamCB := parsed.Query().Get("upstream_cb")
-	state := parsed.Query().Get("state")
+	// upstream_cb is nested inside the cb= query parameter value.
+	// Parse cb to extract it for state mapping (used by LookupUpstreamCB
+	// if needed, though the callback URL carries upstream_cb directly).
+	cbStr := parsed.Query().Get("cb")
+	if cbStr == "" {
+		return
+	}
+	cbURL, err := url.Parse(cbStr)
+	if err != nil {
+		return
+	}
+	upstreamCB := cbURL.Query().Get("upstream_cb")
 
-	if upstreamCB != "" && state != "" {
-		c.verificationStates.Store(state, upstreamCB)
+	// Track state→upstream_cb for observability (callback carries upstream_cb
+	// directly, so the handler doesn't strictly need this lookup).
+	var verifyState string
+	if upstreamCB != "" {
+		if upURL, err := url.Parse(upstreamCB); err == nil {
+			verifyState = upURL.Query().Get("state")
+			if verifyState != "" {
+				c.verificationStates.Store(verifyState, upstreamCB)
+			}
+		}
 	}
 
 	// Send to Byparr/FlareSolverr asynchronously — the browser
@@ -249,9 +271,9 @@ func (c *Client) solveVerification(challengeURL string) {
 	// hits our verify callback endpoint.
 	go func() {
 		if err := fslRequest(c.fslURL, challengeURL, c.timeout); err != nil {
-			// Verification failed; SpotiFLAC will time out waiting
-			// for the grant and emit an error.
-			c.verificationStates.Delete(state)
+			if verifyState != "" {
+				c.verificationStates.Delete(verifyState)
+			}
 		}
 	}()
 }
