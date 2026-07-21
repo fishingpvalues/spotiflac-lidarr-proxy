@@ -3,10 +3,30 @@ package indexer
 import (
 	"encoding/xml"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
 )
+
+const (
+	avgBytesPerTrackLossless = 35 * 1024 * 1024 // ~35MB/track, 16-bit FLAC estimate
+	avgBytesPerTrackHires    = 90 * 1024 * 1024 // ~90MB/track, 24-bit hi-res FLAC estimate
+)
+
+// EstimateSizeBytes gives a rough, clearly-approximate release size so
+// Lidarr's size-based checks don't see a hard 0. Not exact — SpotiFLAC's
+// search output doesn't expose real payload size ahead of download.
+func EstimateSizeBytes(trackCount int, quality string) int64 {
+	if trackCount <= 0 {
+		return 0
+	}
+	perTrack := int64(avgBytesPerTrackLossless)
+	if quality == "hires" {
+		perTrack = avgBytesPerTrackHires
+	}
+	return int64(trackCount) * perTrack
+}
 
 type RSS struct {
 	XMLName xml.Name `xml:"rss"`
@@ -36,8 +56,8 @@ type Image struct {
 }
 
 type Response struct {
-	Offset int    `xml:"offset,attr"`
-	Total  int    `xml:"total,attr"`
+	Offset int `xml:"offset,attr"`
+	Total  int `xml:"total,attr"`
 }
 
 type Item struct {
@@ -68,7 +88,22 @@ type Attr struct {
 	Value string `xml:"value,attr"`
 }
 
-func NewznabXML(results []spotiflac.MetadataResult, serverURL string) ([]byte, error) {
+// qualityTag returns a release-title suffix Lidarr's QualityParser will
+// recognize (verified against its actual regexes: CodecRegex matches
+// "flac" case-insensitively, SampleSizeRegex matches "24-bit" /
+// "24bit"). Without any recognizable token in the title, Lidarr parses
+// the release as Quality.Unknown and most quality profiles reject it
+// outright ("Unknown is not wanted in profile") - confirmed against a
+// real production Lidarr this session: a real grab attempt succeeded
+// past NZB validation but was rejected for exactly this reason.
+func qualityTag(quality string) string {
+	if quality == "hires" {
+		return " [FLAC 24-bit]"
+	}
+	return " [FLAC]"
+}
+
+func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality string) ([]byte, error) {
 	if results == nil {
 		results = []spotiflac.MetadataResult{}
 	}
@@ -97,30 +132,45 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL string) ([]byte, e
 		},
 	}
 
+	titleSuffix := qualityTag(quality)
+
 	for _, r := range results {
+		estimatedSize := EstimateSizeBytes(r.TrackCount, "lossless")
+		title := r.Artist + " - " + r.Album + titleSuffix
 		attrs := []Attr{
 			{Name: "artist", Value: r.Artist},
 			{Name: "album", Value: r.Album},
 			{Name: "genre", Value: r.Genre},
 			{Name: "year", Value: fmt.Sprintf("%d", r.Year)},
-			{Name: "title", Value: r.Artist + " - " + r.Album},
-			{Name: "size", Value: "0"},
+			{Name: "title", Value: title},
+			{Name: "size", Value: fmt.Sprintf("%d", estimatedSize)},
 			{Name: "grabs", Value: "0"},
 			{Name: "files", Value: fmt.Sprintf("%d", r.TrackCount)},
 			{Name: "poster", Value: r.CoverURL},
 		}
+		if r.ISRC != "" {
+			attrs = append(attrs, Attr{Name: "isrc", Value: r.ISRC})
+		}
+
+		// Lidarr fetches this URL itself and requires a well-formed NZB
+		// (root element "nzb") before it will even contact the download
+		// client - the raw Spotify page is HTML and fails that check
+		// outright. handleGet (t=get) generates a synthetic NZB carrying
+		// r.SpotifyURL as embedded metadata; see nzb.go.
+		downloadURL := fmt.Sprintf("%s/api/newznab?t=get&id=%s&apikey=%s",
+			serverURL, url.QueryEscape(r.SpotifyURL), url.QueryEscape(apiKey))
 
 		item := Item{
-			Title:       r.Artist + " - " + r.Album,
+			Title:       title,
 			GUID:        GUID{Value: r.SpotifyURL, IsPermaLink: true},
-			Link:        r.SpotifyURL,
+			Link:        downloadURL,
 			PubDate:     time.Now().Format(time.RFC1123Z),
 			Category:    "Music > " + r.Genre,
 			Description: fmt.Sprintf("%s - %s (%d tracks)", r.Artist, r.Album, r.TrackCount),
 			Comments:    "",
 			Enclosure: Enclosure{
-				URL:    r.SpotifyURL,
-				Length: 0,
+				URL:    downloadURL,
+				Length: estimatedSize,
 				Type:   "application/x-nzb",
 			},
 			Attrs: attrs,
@@ -138,14 +188,14 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL string) ([]byte, e
 	return []byte(result), nil
 }
 
-func CapsXML(serverURL string) []byte {
+func CapsXML(serverURL, version string) []byte {
 	xmlStr := `<?xml version="1.0" encoding="UTF-8"?>
 <caps>
-  <server title="Spotiflac-Lidarr Proxy" version="1.0.0" url="` + serverURL + `" />
+  <server title="Spotiflac-Lidarr Proxy" version="` + version + `" url="` + serverURL + `" />
   <searching>
     <search available="yes" supported="yes" />
-    <music-search available="yes" supported="yes" />
-    <audio-search available="yes" supported="yes" />
+    <music-search available="yes" supported="yes" supportedParams="q,artist,album" />
+    <audio-search available="yes" supported="yes" supportedParams="q,artist,album" />
   </searching>
   <categories>
     <category id="3000" name="Audio">

@@ -2,23 +2,25 @@ package spotiflac
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 )
 
 type ProgressEvent struct {
-	Type             string  `json:"type"`
-	Track            string  `json:"track,omitempty"`
-	Title            string  `json:"title,omitempty"`
-	Artist           string  `json:"artist,omitempty"`
-	Album            string  `json:"album,omitempty"`
-	Percent          float64 `json:"percent,omitempty"`
-	Speed            string  `json:"speed,omitempty"`
-	OutputPath       string  `json:"path,omitempty"`
-	Size             int64   `json:"size,omitempty"`
-	ISRC             string  `json:"isrc,omitempty"`
-	ErrorMessage     string  `json:"message,omitempty"`
-	VerificationURL  string  `json:"url,omitempty"`
+	Type         string  `json:"type"`
+	Track        string  `json:"track,omitempty"`
+	Title        string  `json:"title,omitempty"`
+	Artist       string  `json:"artist,omitempty"`
+	Album        string  `json:"album,omitempty"`
+	Percent      float64 `json:"percent,omitempty"`
+	Speed        string  `json:"speed,omitempty"`
+	OutputPath   string  `json:"path,omitempty"`
+	Size         int64   `json:"size,omitempty"`
+	ISRC         string  `json:"isrc,omitempty"`
+	ErrorMessage string  `json:"message,omitempty"`
+	URL          string  `json:"url,omitempty"`
+	CB           string  `json:"cb,omitempty"`
 }
 
 type MetadataResult struct {
@@ -33,7 +35,7 @@ type MetadataResult struct {
 	TrackCount int    `json:"track_count"`
 }
 
-func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- error, onVerify func(ProgressEvent)) {
+func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- error, output *bytes.Buffer, onVerify func(ProgressEvent)) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -43,7 +45,10 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 		}
 		switch event.Type {
 		case "error":
-			errors <- &DownloadError{Message: event.ErrorMessage}
+			errors <- &DownloadError{
+				Message:   event.ErrorMessage,
+				RawOutput: lastNBytes(output.Bytes(), 4096),
+			}
 		case "complete":
 			events <- event
 		case "track_done":
@@ -53,7 +58,7 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 			events <- event
 		case "verification_required":
 			// SpotiFLAC headless build emits this when community verification
-			// is needed. The URL is pre-rewritten with SPOTIFLAC_VERIFY_RELAY_URL
+			// is needed. The URL is pre-rewritten with verify_relay_url
 			// as the cb= parameter and upstream_cb= pointing at the local
 			// callback server.
 			if onVerify != nil {
@@ -71,8 +76,16 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 	}
 }
 
+func lastNBytes(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[len(b)-n:])
+}
+
 type DownloadError struct {
-	Message string
+	Message   string
+	RawOutput string
 }
 
 func (e *DownloadError) Error() string {

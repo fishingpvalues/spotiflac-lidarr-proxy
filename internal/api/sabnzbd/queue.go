@@ -36,6 +36,14 @@ func (h *Handler) handleQueue(c fiber.Ctx) error {
 	}
 
 	resp := sabnzbd.QueueResponse{}
+	// Lidarr's Sabnzbd.GetQueue() does a bare `foreach (var item in
+	// sabQueue.Items)` with no null check - if this list marshals as JSON
+	// `null` (Go's zero value for a nil slice) instead of `[]`, that
+	// foreach throws a NullReferenceException. Confirmed against a real
+	// production Lidarr this session: it crashed on every periodic queue
+	// poll whenever the queue was empty, repeatedly re-tripping Lidarr's
+	// own download-client circuit breaker with an escalating backoff.
+	resp.Queue.Slots = []sabnzbd.Slot{}
 	resp.Queue.Status = "Idle"
 	resp.Queue.Speedlimit = "100"
 	resp.Queue.SpeedlimitAbs = "0"
@@ -171,7 +179,7 @@ func (h *Handler) handleResume(c fiber.Ctx) error {
 			Status: false, Error: err.Error(),
 		})
 	}
-	go h.processDownload(job)
+	go h.ProcessDownloadSync(job)
 	return c.JSON(sabnzbd.StatusResponse{Status: true, NzoIDs: []string{nzoID}})
 }
 

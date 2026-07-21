@@ -21,4 +21,8 @@ Thumbs.db
 
 # Go
 vendor/
-server
+/server
+
+# GoReleaser
+/dist/
+/.spotiflac-cli-src/

@@ -20,13 +20,25 @@ func New(dbPath string) (*SQLiteQueue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	// modernc.org/sqlite gives each pooled connection its own private
+	// database for a ":memory:" DSN (and serializes writes for file DSNs
+	// anyway) — a single connection avoids both concurrent connections
+	// silently not seeing each other's tables/rows and SQLITE_BUSY
+	// contention between connections.
+	db.SetMaxOpenConns(1)
 
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
-	return &SQLiteQueue{db: db}, nil
+	q := &SQLiteQueue{db: db}
+	if _, err := q.RecoverStuckJobs(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("recover stuck jobs: %w", err)
+	}
+
+	return q, nil
 }
 
 func migrate(db *sql.DB) error {
@@ -48,22 +60,82 @@ func migrate(db *sql.DB) error {
 			error_message TEXT DEFAULT '',
 			service TEXT NOT NULL DEFAULT '',
 			quality TEXT NOT NULL DEFAULT '',
+			track_count INTEGER NOT NULL DEFAULT 0,
+			cli_output TEXT NOT NULL DEFAULT '',
 			is_history INTEGER NOT NULL DEFAULT 0
 		);
+		CREATE INDEX IF NOT EXISTS idx_jobs_spotify_url ON jobs(spotify_url, is_history, status);
 		`
-	_, err := db.Exec(query)
-	return err
+	if _, err := db.Exec(query); err != nil {
+		return err
+	}
+	return addMissingColumns(db)
+}
+
+// addMissingColumns adds any columns to the jobs table that don't yet exist,
+// for databases created before those columns were introduced (e.g. a
+// production /data/queue.db from a version of this schema that predates
+// track_count/cli_output). CREATE TABLE IF NOT EXISTS is a no-op against an
+// already-existing table, so without this step an old database would keep
+// missing these columns forever and every subsequent query referencing them
+// would fail at runtime with "no such column". Safe to run on every startup:
+// each ALTER is skipped if the column is already present (which is always
+// the case on a freshly created database, since CREATE TABLE above already
+// includes these columns).
+func addMissingColumns(db *sql.DB) error {
+	existing, err := existingColumns(db)
+	if err != nil {
+		return fmt.Errorf("read table info: %w", err)
+	}
+
+	additions := []struct {
+		name string
+		ddl  string
+	}{
+		{"track_count", "ALTER TABLE jobs ADD COLUMN track_count INTEGER NOT NULL DEFAULT 0"},
+		{"cli_output", "ALTER TABLE jobs ADD COLUMN cli_output TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, a := range additions {
+		if existing[a.name] {
+			continue
+		}
+		if _, err := db.Exec(a.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", a.name, err)
+		}
+	}
+	return nil
+}
+
+func existingColumns(db *sql.DB) (map[string]bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols[name] = true
+	}
+	return cols, rows.Err()
 }
 
 func (q *SQLiteQueue) Add(job *Job) error {
 	job.TimeAdded = time.Now()
 	job.Status = sabnzbd.StatusQueued
 	_, err := q.db.Exec(
-		`INSERT INTO jobs (nzo_id, spotify_url, status, category, priority, filename, output_path, size, sizeleft, percentage, time_added, service, quality)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO jobs (nzo_id, spotify_url, status, category, priority, filename, output_path, size, sizeleft, percentage, time_added, service, quality, track_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.NzoID, job.SpotifyURL, job.Status, job.Category, job.Priority,
 		job.Filename, job.OutputPath, job.Size, job.Sizeleft, job.Percentage,
-		job.TimeAdded, job.Service, job.Quality,
+		job.TimeAdded, job.Service, job.Quality, job.TrackCount,
 	)
 	return err
 }
@@ -74,12 +146,38 @@ func (q *SQLiteQueue) Get(nzoID string) (*Job, error) {
 	err := q.db.QueryRow(
 		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
 		        output_path, size, sizeleft, percentage, time_added, completed_at,
-		        error_message, service, quality
+		        error_message, service, quality, track_count
 		 FROM jobs WHERE nzo_id = ? AND is_history = 0`, nzoID,
 	).Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status, &job.Category,
 		&job.Priority, &job.Filename, &job.OutputPath, &job.Size, &job.Sizeleft,
 		&job.Percentage, &job.TimeAdded, &completedAt, &job.ErrorMessage,
-		&job.Service, &job.Quality)
+		&job.Service, &job.Quality, &job.TrackCount)
+	if err != nil {
+		return nil, err
+	}
+	if completedAt.Valid {
+		job.CompletedAt = &completedAt.Time
+	}
+	return job, nil
+}
+
+// FindActiveBySpotifyURL returns the first non-terminal (Queued or
+// Downloading), non-history job matching the given Spotify URL, if any.
+func (q *SQLiteQueue) FindActiveBySpotifyURL(url string) (*Job, error) {
+	job := &Job{}
+	var completedAt sql.NullTime
+	err := q.db.QueryRow(
+		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
+		        output_path, size, sizeleft, percentage, time_added, completed_at,
+		        error_message, service, quality, track_count
+		 FROM jobs
+		 WHERE spotify_url = ? AND is_history = 0 AND status IN (?, ?)
+		 ORDER BY time_added ASC LIMIT 1`,
+		url, sabnzbd.StatusQueued, sabnzbd.StatusDownloading,
+	).Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status, &job.Category,
+		&job.Priority, &job.Filename, &job.OutputPath, &job.Size, &job.Sizeleft,
+		&job.Percentage, &job.TimeAdded, &completedAt, &job.ErrorMessage,
+		&job.Service, &job.Quality, &job.TrackCount)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +226,7 @@ func (q *SQLiteQueue) List(params ListParams) ([]*Job, int, error) {
 	query := fmt.Sprintf(
 		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
 		        output_path, size, sizeleft, percentage, time_added, completed_at,
-		        error_message, service, quality
+		        error_message, service, quality, track_count
 		 FROM jobs %s ORDER BY time_added ASC LIMIT ? OFFSET ?`, whereClause)
 
 	allArgs := append(args, params.Limit, params.Start)
@@ -145,7 +243,7 @@ func (q *SQLiteQueue) List(params ListParams) ([]*Job, int, error) {
 		if err := rows.Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status,
 			&job.Category, &job.Priority, &job.Filename, &job.OutputPath,
 			&job.Size, &job.Sizeleft, &job.Percentage, &job.TimeAdded,
-			&completedAt, &job.ErrorMessage, &job.Service, &job.Quality); err != nil {
+			&completedAt, &job.ErrorMessage, &job.Service, &job.Quality, &job.TrackCount); err != nil {
 			return nil, 0, err
 		}
 		if completedAt.Valid {
@@ -163,11 +261,11 @@ func (q *SQLiteQueue) Update(job *Job) error {
 	_, err := q.db.Exec(
 		`UPDATE jobs SET status=?, category=?, priority=?, filename=?, output_path=?,
 		        size=?, sizeleft=?, percentage=?, completed_at=?, error_message=?,
-		        service=?, quality=?
+		        service=?, quality=?, track_count=?, cli_output=?
 		 WHERE nzo_id=?`,
 		job.Status, job.Category, job.Priority, job.Filename, job.OutputPath,
 		job.Size, job.Sizeleft, job.Percentage, job.CompletedAt, job.ErrorMessage,
-		job.Service, job.Quality, job.NzoID,
+		job.Service, job.Quality, job.TrackCount, job.CLIOutput, job.NzoID,
 	)
 	return err
 }
@@ -206,8 +304,8 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 	query := fmt.Sprintf(
 		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
 		        output_path, size, sizeleft, percentage, time_added, completed_at,
-		        error_message, service, quality
-		 FROM jobs %s ORDER BY completed_at DESC LIMIT ? OFFSET ?`, whereClause)
+		        error_message, service, quality, track_count
+		 FROM jobs %s ORDER BY completed_at DESC, id DESC LIMIT ? OFFSET ?`, whereClause)
 
 	allArgs := append(args, params.Limit, params.Start)
 	rows, err := q.db.Query(query, allArgs...)
@@ -223,7 +321,7 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 		if err := rows.Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status,
 			&job.Category, &job.Priority, &job.Filename, &job.OutputPath,
 			&job.Size, &job.Sizeleft, &job.Percentage, &job.TimeAdded,
-			&completedAt, &job.ErrorMessage, &job.Service, &job.Quality); err != nil {
+			&completedAt, &job.ErrorMessage, &job.Service, &job.Quality, &job.TrackCount); err != nil {
 			return nil, 0, err
 		}
 		if completedAt.Valid {
@@ -237,6 +335,50 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 	return jobs, total, nil
 }
 
+// RecoverStuckJobs marks any job left in Downloading status (from a prior
+// crash or unclean restart) as Failed and moves it to history. Called once
+// at startup — partial on-disk state from a killed subprocess is never
+// trusted or auto-resumed. Runs as a single atomic UPDATE so a mid-sweep
+// failure can't leave some jobs recovered and others not, and can't strand
+// a job between "marked Failed" and "moved to history".
+func (q *SQLiteQueue) RecoverStuckJobs() (int, error) {
+	result, err := q.db.Exec(
+		`UPDATE jobs SET status = ?, error_message = ?, is_history = 1
+		 WHERE status = ? AND is_history = 0`,
+		sabnzbd.StatusFailed, "interrupted by restart", sabnzbd.StatusDownloading,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("recover stuck jobs: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count recovered jobs: %w", err)
+	}
+	return int(affected), nil
+}
+
+// PruneHistory deletes history rows beyond the `keep` most recent
+// (by completed_at). keep <= 0 disables pruning (unlimited retention).
+func (q *SQLiteQueue) PruneHistory(keep int) error {
+	if keep <= 0 {
+		return nil
+	}
+	_, err := q.db.Exec(
+		`DELETE FROM jobs WHERE is_history = 1 AND id NOT IN (
+			SELECT id FROM jobs WHERE is_history = 1 ORDER BY completed_at DESC, id DESC LIMIT ?
+		)`, keep,
+	)
+	if err != nil {
+		return fmt.Errorf("prune history: %w", err)
+	}
+	return nil
+}
+
 func (q *SQLiteQueue) Close() error {
 	return q.db.Close()
+}
+
+// DB exposes the underlying *sql.DB for health checks only.
+func (q *SQLiteQueue) DB() *sql.DB {
+	return q.db
 }

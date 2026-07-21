@@ -1,27 +1,38 @@
+version: "2"
+run:
+  tests: true
 linters:
   enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
+    - dupl
+    - gocyclo
     - misspell
     - unconvert
+  settings:
+    gocyclo:
+      min-complexity: 15
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
     - gofmt
     - goimports
-    - gocyclo
-    - dupl
-  disable-all: false
-
-linters-settings:
-  gocyclo:
-    min-complexity: 15
-  gofmt:
-    simplify: true
-  misspell:
-    locale: US
-
-run:
-  timeout: 5m
-  tests: true
+  settings:
+    gofmt:
+      simplify: true
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

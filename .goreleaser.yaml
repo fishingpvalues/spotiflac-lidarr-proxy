@@ -1,0 +1,98 @@
+version: 2
+
+project_name: spotiflac-lidarr-proxy
+
+before:
+  hooks:
+    - go mod tidy
+    # spotiflac-cli lives in a separate upstream repo. Clone the exact commit
+    # the Dockerfile pins so the standalone CLI release matches what ships in
+    # the Docker image.
+    - sh -c 'set -e; commit=$(grep "ARG SPOTIFLAC_COMMIT=" Dockerfile | cut -d= -f2); rm -rf .spotiflac-cli-src; git clone https://github.com/fishingpvalues/SpotiFLAC.git .spotiflac-cli-src; cd .spotiflac-cli-src && git checkout "$commit"'
+
+builds:
+  - id: server
+    main: ./cmd/server
+    binary: spotiflac-lidarr-proxy
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+  - id: spotiflac-cli
+    dir: .spotiflac-cli-src
+    main: .
+    binary: spotiflac-cli
+    tags:
+      - headless
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: server
+    ids: [server]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}
+  - id: spotiflac-cli
+    ids: [spotiflac-cli]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      spotiflac-cli_{{ .Tag }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  groups:
+    - title: "Features"
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: "Bug fixes"
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: "Refactors"
+      regexp: '^.*?refactor(\(.+\))??!?:.+$'
+      order: 2
+    - title: "Documentation"
+      regexp: '^.*?docs(\(.+\))??!?:.+$'
+      order: 3
+    - title: "Other"
+      order: 999
+  filters:
+    exclude:
+      - "^test:"
+      - "^ci:"
+      - "^chore\\(deps\\):"
+
+release:
+  footer: |
+    This release ships two sets of binaries: the proxy server
+    (`spotiflac-lidarr-proxy_*`) and a standalone `spotiflac-cli_*`, built
+    from the exact upstream commit this version was tested against. Running
+    the proxy still requires both (see SPF_SPOTIFLAC_CLI_PATH), but the CLI
+    is also usable on its own if you just want SpotiFLAC without Lidarr. The
+    Docker image at ghcr.io/fishingpvalues/spotiflac-lidarr-proxy bundles
+    both and is the recommended way to run the proxy in production.

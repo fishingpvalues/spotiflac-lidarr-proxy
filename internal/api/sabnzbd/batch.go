@@ -17,7 +17,9 @@ func (h *Handler) handlePauseAll(c fiber.Ctx) error {
 	for _, job := range jobs {
 		if job.Status == sabnzbd.StatusDownloading || job.Status == sabnzbd.StatusQueued {
 			job.Status = sabnzbd.StatusPaused
-			h.queue.Update(job)
+			if err := h.queue.Update(job); err != nil {
+				h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("pause_all: update job failed")
+			}
 		}
 	}
 	return c.JSON(sabnzbd.StatusResponse{Status: true})
@@ -33,8 +35,11 @@ func (h *Handler) handleResumeAll(c fiber.Ctx) error {
 	for _, job := range jobs {
 		if job.Status == sabnzbd.StatusPaused {
 			job.Status = sabnzbd.StatusQueued
-			h.queue.Update(job)
-			go h.processDownload(job)
+			if err := h.queue.Update(job); err != nil {
+				h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("resume_all: update job failed")
+				continue
+			}
+			go h.ProcessDownloadSync(job)
 		}
 	}
 	return c.JSON(sabnzbd.StatusResponse{Status: true})

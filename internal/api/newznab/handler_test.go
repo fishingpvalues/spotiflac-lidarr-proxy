@@ -17,8 +17,8 @@ import (
 func setupNewznabApp(t *testing.T) *fiber.App {
 	t.Helper()
 
-	client := spotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "")
-	handler := newznab.NewHandler(client, "http://localhost:8484")
+	client := spotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "")
+	handler := newznab.NewHandler(client, "test", "test-key", "lossless")
 
 	app := fiber.New()
 	app.Use(api.APIKeyAuthWithSkiplist("test-key", "caps"))
@@ -63,4 +63,27 @@ func TestMusic(t *testing.T) {
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestGetReturnsWellFormedNZB(t *testing.T) {
+	// Lidarr fetches this URL itself and requires a real NZB (root element
+	// "nzb") before it will even contact the download client - confirmed
+	// against a real production Lidarr this session.
+	app := setupNewznabApp(t)
+
+	id := "https://open.spotify.com/album/x"
+	req, _ := http.NewRequest("GET", "/api/newznab?t=get&id="+id+"&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "nzb")
+}
+
+func TestGetMissingIDReturnsBadRequest(t *testing.T) {
+	app := setupNewznabApp(t)
+
+	req, _ := http.NewRequest("GET", "/api/newznab?t=get&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 400, resp.StatusCode)
 }
