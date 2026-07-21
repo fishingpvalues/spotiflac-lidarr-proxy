@@ -146,6 +146,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("log_level", "info")
 	v.SetDefault("history_retention_count", 500)
 	v.SetDefault("verify_notify_title", "SpotiFLAC verification needed")
+	v.SetDefault("tidal_api_fallback_urls",
+		"https://api.monochrome.tf,"+
+			"https://lossless.wtf,"+
+			"https://wolf.qqdl.site,"+
+			"https://hifi.geeked.wtf,"+
+			"https://tidal.kinoplus.online,"+
+			"https://hifi-one.spotisaver.net")
 }
 
 // Service constants matching SpotiFLAC CLI
