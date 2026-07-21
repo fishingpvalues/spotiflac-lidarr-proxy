@@ -230,6 +230,14 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 		}
 		cmd := exec.CommandContext(ctx, c.cliPath, args...)
 
+		// Strip proxy env vars from SpotiFLAC subprocess — Go's HTTP client
+		// handles HTTP_PROXY differently than curl, causing "server gave HTTP
+		// response to HTTPS client" errors through gluetun's proxy.
+		// SpotiFLAC connects to public Spotify/Tidal APIs directly.
+		cmd.Env = filterOut(os.Environ(),
+			"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+			"NO_PROXY", "no_proxy")
+
 		// Determine SPOTIFLAC_VERIFY_RELAY_URL:
 		// 1. Explicit verify_relay_url config takes priority (user-set)
 		// 2. FSL (Byparr/FlareSolverr) auto-construction as fallback
@@ -244,7 +252,7 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			}
 		}
 		if relayURL != "" {
-			cmd.Env = append(os.Environ(), "SPOTIFLAC_VERIFY_RELAY_URL="+relayURL)
+			cmd.Env = append(cmd.Env, "SPOTIFLAC_VERIFY_RELAY_URL="+relayURL)
 		}
 
 		stdout, err := cmd.StdoutPipe()
@@ -420,6 +428,23 @@ func autoDetectIP() string {
 		}
 	}
 	return ""
+}
+
+// filterOut returns a copy of env without entries whose key (before '=')
+// matches any of the given names (case-insensitive).
+func filterOut(env []string, names ...string) []string {
+	drop := make(map[string]bool, len(names))
+	for _, n := range names {
+		drop[strings.ToUpper(n)] = true
+	}
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		key := strings.ToUpper(e[:strings.IndexByte(e, '=')])
+		if !drop[key] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // fslRequest sends a URL to a Byparr/FlareSolverr-compatible API for
