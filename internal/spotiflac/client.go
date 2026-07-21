@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -59,6 +60,65 @@ func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQua
 		relayAddress:       relayAddress,
 		tidalAPIFallbacks:  tidalAPIFallbacks,
 	}
+}
+
+// isHiFiAPI checks whether a URL hosts a hifi-api instance (manifest-based
+// format) rather than a SpotiFLAC-compatible API (direct URL format).
+// hifi-api root responds with {"version":"2.X","Repo":"..."}
+func isHiFiAPI(baseURL string) bool {
+	req, _ := http.NewRequest("GET", baseURL+"/", nil)
+	req.Header.Set("User-Agent", "spotiflac-lidarr-proxy/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	var check struct {
+		Version string `json:"version"`
+		Repo    string `json:"Repo"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 512)).Decode(&check); err != nil {
+		return false
+	}
+	return check.Version != "" && check.Repo != ""
+}
+
+// startHiFiAdapter starts a local HTTP server that translates between
+// hifi-api manifest format and SpotiFLAC-compatible direct URL format.
+// Returns the address (host:port) to pass as --tidal-api-url.
+func (c *Client) startHiFiAdapter(upstream string) (string, error) {
+	adapter := NewHiFiAdapter(upstream)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		trackID := r.URL.Query().Get("id")
+		quality := r.URL.Query().Get("quality")
+		if trackID == "" {
+			http.Error(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		if quality == "" {
+			quality = "LOSSLESS"
+		}
+
+		result, err := adapter.ResolveTrackURL(trackID, quality)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", fmt.Errorf("start hifi adapter: %w", err)
+	}
+
+	go http.Serve(listener, mux)
+
+	addr := fmt.Sprintf("http://127.0.0.1:%d", listener.Addr().(*net.TCPAddr).Port)
+	return addr, nil
 }
 
 // resolveTidalAPIURL returns the first working Tidal API URL from the
@@ -153,7 +213,16 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			"--service", service,
 			"--quality", cliQuality,
 		}
-		if tidalURL := c.resolveTidalAPIURL(); tidalURL != "" {
+		tidalURL := c.resolveTidalAPIURL()
+		if tidalURL != "" {
+			// If the resolved URL is a hifi-api instance (manifest format),
+			// start a local adapter that translates to SpotiFLAC format.
+			if isHiFiAPI(tidalURL) {
+				adapterAddr, err := c.startHiFiAdapter(tidalURL)
+				if err == nil {
+					tidalURL = adapterAddr
+				}
+			}
 			args = append(args, "--tidal-api-url", tidalURL)
 		}
 		if c.qobuzAPIURL != "" {
