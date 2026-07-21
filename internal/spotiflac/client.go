@@ -31,6 +31,12 @@ type Client struct {
 	relayAddress   string
 	relayPort      int
 
+	// pythonPath is the path to the SpotiFLAC Python wrapper script.
+	// When set, downloads use the Python module (multi-service fallback,
+	// no browser verification) instead of the Go CLI.
+	pythonPath string
+	pythonVenv string
+
 	// tidalAPIFallbacks is a list of additional Tidal API proxy URLs
 	// tried in order when the primary tidalAPIURL fails.
 	tidalAPIFallbacks []string
@@ -44,7 +50,7 @@ type Client struct {
 	verificationStates sync.Map
 }
 
-func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, verifyRelayURL, tidalAPIURL, qobuzAPIURL string, tidalAPIFallbacks []string) *Client {
+func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, verifyRelayURL, tidalAPIURL, qobuzAPIURL string, tidalAPIFallbacks []string, pythonPath, pythonVenv string) *Client {
 	fslURL := os.Getenv("SPOTIFLAC_FSL_URL")
 	relayAddress := os.Getenv("SPOTIFLAC_ADDRESS")
 
@@ -59,6 +65,8 @@ func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQua
 		fslURL:             fslURL,
 		relayAddress:       relayAddress,
 		tidalAPIFallbacks:  tidalAPIFallbacks,
+		pythonPath:         pythonPath,
+		pythonVenv:         pythonVenv,
 	}
 }
 
@@ -204,6 +212,13 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 		ctx, cancel := context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 
+		// If Python wrapper is configured, use it instead of CLI.
+		// Python module has multi-service fallback and no browser verification.
+		if c.pythonPath != "" {
+			c.downloadWithPython(ctx, url, outputDir, service, quality, events, errs)
+			return
+		}
+
 		// Map proxy quality names to SpotiFLAC CLI uppercase flags
 		cliQuality := config.SpotiflacQuality(quality)
 
@@ -287,6 +302,54 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 	}()
 
 	return events, errs
+}
+
+// downloadWithPython runs the SpotiFLAC Python wrapper which uses the
+// Python module's multi-service fallback chain (tidal→qobuz→deezer→amazon).
+// Progress is read from stdout as JSON lines (same format as CLI).
+// HTTP_PROXY/HTTPS_PROXY from the proxy's environment are passed through
+// so downloads go through gluetun VPN.
+func (c *Client) downloadWithPython(ctx context.Context, url, outputDir, service, quality string, events chan<- ProgressEvent, errs chan<- error) {
+	pythonBin := "python3"
+	if c.pythonVenv != "" {
+		pythonBin = c.pythonVenv
+	}
+
+	args := []string{
+		c.pythonPath,
+		"--url", url,
+		"--output-dir", outputDir,
+		"--service", service + ",qobuz,deezer,amazon", // multi-service fallback
+		"--quality", quality,
+	}
+
+	cmd := exec.CommandContext(ctx, pythonBin, args...)
+
+	// Pass proxy env vars through so Python module uses gluetun.
+	cmd.Env = os.Environ()
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		errs <- fmt.Errorf("python stdout pipe: %w", err)
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		errs <- fmt.Errorf("start python wrapper: %w", err)
+		return
+	}
+
+	var outputBuf bytes.Buffer
+	tee := io.TeeReader(stdout, &outputBuf)
+	parseProgress(tee, events, errs, &outputBuf, nil)
+
+	if err := cmd.Wait(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			errs <- fmt.Errorf("python download timed out after %s", c.timeout)
+		} else {
+			errs <- fmt.Errorf("python wrapper exited: %w", err)
+		}
+	}
 }
 
 func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataResult, error) {
