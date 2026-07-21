@@ -73,52 +73,51 @@ services:
 
 Lidarr plugins are compiled .NET assemblies loaded into Lidarr's own process, only available on Lidarr's separate "plugins" build, and a bug in one runs with the same access as Lidarr itself. This proxy runs as its own process instead, speaking a protocol Lidarr has supported for years across every build. It survives Lidarr internals changing, can sit behind whatever VPN sidecar you already use (Gluetun or otherwise, entirely your call), and a crash in it never takes Lidarr down too.
 
-## SpotiFLAC Python module (recommended)
+## Downloa backend priority
 
-The **SpotiFLAC Python module** (`pip install SpotiFLAC`) is the easiest way to get fully automated, captcha-free FLAC downloads. It has a built-in multi-service fallback chain across 12+ providers (tidal, qobuz, deezer, amazon, soundcloud, youtube, apple, pandora, joox, netease, migu, kuwo) and handles authentication internally — **no account, no login, no browser verification required**. The proxy ships a wrapper script ([`scripts/spotiflac-py-wrapper.py`](scripts/spotiflac-py-wrapper.py)) that calls the Python module and emits the same JSON progress format as the CLI.
+The proxy tries backends in order, first success wins:
 
-### Setup
+| Priority | Backend | Needs | Captcha? |
+|----------|---------|-------|----------|
+| 1 | **Python wrapper** (embedded) | Python venv with `SpotiFLAC` pip module | No |
+| 2 | CLI + custom Tidal API + hifi-adapter | `SPF_TIDAL_API_URL` or fallback URLs | No |
+| 3 | CLI + FSL/Byparr auto-solve | `SPOTIFLAC_FSL_URL` + Byparr container | Auto-solved |
+| 4 | CLI community tier | Nothing | Manual browser |
+
+### Backend 1: SpotiFLAC Python module (built-in)
+
+The Python wrapper script is **embedded in the Go binary** — no external files needed. If a Python venv with the SpotiFLAC module is detected, it's used automatically. Falls through to CLI if Python is unavailable or the wrapper fails.
+
+**What it does:** Multi-service fallback across 12+ providers (tidal, qobuz, deezer, amazon, soundcloud, youtube, apple, pandora...), internal auth handling — **no account, no browser verification, no captcha**.
 
 ```dockerfile
-# In your Dockerfile (add to the existing multi-stage build):
-RUN apk add --no-cache python3 py3-pip && \
-    python3 -m venv /venv && \
-    /venv/bin/pip install --no-cache-dir SpotiFLAC requests
-COPY scripts/spotiflac-py-wrapper.py /app/scripts/
+# Dockerfile addition (before the runtime stage):
+FROM python:3.12-alpine AS python-deps
+RUN python3 -m venv /venv && /venv/bin/pip install --no-cache-dir SpotiFLAC requests
+
+# In runtime stage, copy the venv:
+COPY --from=python-deps /venv /venv
 ```
 
 ```bash
-# Env vars:
-SPF_SPOTIFLAC_PYTHON_PATH=/app/scripts/spotiflac-py-wrapper.py
+# Env var (optional — auto-detected):
 SPF_SPOTIFLAC_PYTHON_VENV=/venv/bin/python3
 ```
 
-When both are set, the proxy uses the Python module instead of the Go CLI. The Python subprocess inherits `HTTP_PROXY`/`HTTPS_PROXY` from the proxy — **always set these to route through VPN** (see below).
-
-### How it works
-
-1. Lidarr sends Spotify URL to proxy (SABnzbd addurl)
-2. Proxy spawns Python wrapper with `--service tidal,qobuz,deezer,amazon`
-3. Python module fetches track metadata from Spotify's public API (ISRC, title, artist)
-4. Matches ISRC against Tidal → Qobuz → Deezer → Amazon (in order, first working wins)
-5. Downloads FLAC directly from the matching service's community proxy
-6. Emits JSON progress events → proxy updates queue → Lidarr imports
-
-**Spotify is only queried for metadata** (track name, ISRC). The audio comes from Tidal/Qobuz/Deezer/Amazon community proxies — never from Spotify's servers.
+**No config needed** if venv is at `/venv/bin/python3`, `/app/venv/bin/python3`, or system `python3` has SpotiFLAC installed. The embedded wrapper extracts itself to a temp directory at runtime.
 
 ### VPN requirement
 
 > [!IMPORTANT]
-> Always route through VPN. The Python module connects to community proxies that serve copyrighted audio. Without VPN, your real IP is exposed to these services and to copyright enforcement. Set `HTTP_PROXY` and `HTTPS_PROXY` to your gluetun/OpenVPN/WireGuard HTTP proxy.
+> Always route through VPN. All backends connect to community proxies serving copyrighted audio. Without VPN, your real IP hits servers that log it. Set `HTTP_PROXY`/`HTTPS_PROXY` to your gluetun proxy:
 
 ```yaml
-# docker-compose.yml
 environment:
   - HTTP_PROXY=http://gluetun:8888
   - HTTPS_PROXY=http://gluetun:8888
-  - SPF_SPOTIFLAC_PYTHON_PATH=/app/scripts/spotiflac-py-wrapper.py
-  - SPF_SPOTIFLAC_PYTHON_VENV=/venv/bin/python3
 ```
+
+**Legal context (Germany):** Zero known Abmahnungen for SpotiFLAC/direct-download tools. All German copyright enforcement targets BitTorrent swarms exclusively. Direct downloads from private proxies are practically invisible to law firms. (Source: web searches across Reddit, forums, news — nothing found.) Still: VPN costs nothing when gluetun already runs.
 
 ### CLI only, or without Docker
 
@@ -206,23 +205,22 @@ Environment variables, all prefixed `SPF_`. Full reference: [`docs/API.md`](docs
 | `SPF_PORT` | 8484 | HTTP listen port |
 | `SPF_API_KEY` | (required) | API key for Lidarr auth |
 | `SPF_OUTPUT_DIR` | /downloads | FLAC output directory |
-| `SPF_SPOTIFLAC_CLI_PATH` | /usr/local/bin/spotiflac-cli | Path to the spotiflac-cli binary (Go CLI backend) |
-| `SPF_SPOTIFLAC_PYTHON_PATH` | (none) | Path to `spotiflac-py-wrapper.py` — enables Python module backend (recommended) |
-| `SPF_SPOTIFLAC_PYTHON_VENV` | (none) | Path to venv Python binary, e.g. `/venv/bin/python3` |
+| `SPF_SPOTIFLAC_CLI_PATH` | /usr/local/bin/spotiflac-cli | Path to spotiflac-cli binary (CLI backend) |
+| `SPF_SPOTIFLAC_PYTHON_VENV` | auto-detected | Path to venv python3, e.g. `/venv/bin/python3` |
 | `SPF_DEFAULT_SERVICE` | tidal | Download service |
 | `SPF_DEFAULT_QUALITY` | lossless | Quality: lossless, hires |
-| `SPF_FALLBACK_SERVICES` | (none) | Services to try, in order, if the primary fails |
+| `SPF_FALLBACK_SERVICES` | (none) | Services to try if primary fails |
 | `SPF_MAX_CONCURRENT` | 3 | Max concurrent downloads |
-| `SPF_JOB_TIMEOUT` | 30m | How long a download can run before it is considered stuck |
+| `SPF_JOB_TIMEOUT` | 30m | Max download time |
 | `SPF_DB_PATH` | /data/queue.db | SQLite database path |
-| `SPF_LOG_LEVEL` | info | Log verbosity: trace, debug, info, warn, error |
-| `SPF_HISTORY_RETENTION_COUNT` | 500 | Completed/failed jobs to keep in history |
-| `SPF_TIDAL_API_URL` | (none) | Custom Tidal API instance; skips community verification entirely |
-| `SPF_QOBUZ_API_URL` | (none) | Custom Qobuz API instance; skips community verification entirely |
-| `SPF_TIDAL_API_FALLBACK_URLS` | 6 known proxies | Comma-separated Tidal API URLs, tried in order. Health-checked before each download |
-| `SPF_VERIFY_RELAY_URL` | (none) | This proxy's own reachable `/verify/callback` URL for manual browser verification |
-| `SPF_VERIFY_NOTIFY_URL` | (none) | POSTs verification link here. Works with ntfy, Gotify, any POST-accepting URL |
-| `SPF_VERIFY_NOTIFY_TITLE` | SpotiFLAC verification needed | Sent as `Title` header alongside `SPF_VERIFY_NOTIFY_URL` |
+| `SPF_LOG_LEVEL` | info | Log level: trace, debug, info, warn, error |
+| `SPF_HISTORY_RETENTION_COUNT` | 500 | History entries to keep |
+| `SPF_TIDAL_API_URL` | (none) | Custom Tidal API instance |
+| `SPF_QOBUZ_API_URL` | (none) | Custom Qobuz API instance |
+| `SPF_TIDAL_API_FALLBACK_URLS` | 6 known proxies | Comma-separated Tidal API URLs, health-checked before download |
+| `SPF_VERIFY_RELAY_URL` | (none) | Proxy's own `/verify/callback` URL for manual browser relay |
+| `SPF_VERIFY_NOTIFY_URL` | (none) | Webhook URL for verification notifications (ntfy/Gotify compatible) |
+| `SPF_VERIFY_NOTIFY_TITLE` | SpotiFLAC verification needed | `Title` header for webhook notifications |
 
 ## Security
 

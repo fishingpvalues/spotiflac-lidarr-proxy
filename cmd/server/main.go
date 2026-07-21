@@ -103,7 +103,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.TidalAPIURL,
 		cfg.QobuzAPIURL,
 		cfg.TidalAPIFallbackURLs,
-		cfg.SpotiFLACPython,
 		cfg.SpotiFLACPythonVenv,
 	)
 	client.SetRelayPort(cfg.Port)

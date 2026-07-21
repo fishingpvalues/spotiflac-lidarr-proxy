@@ -51,13 +51,10 @@ type Config struct {
 	// through these proxies respect HTTP_PROXY/HTTPS_PROXY.
 	TidalAPIFallbackURLs []string `mapstructure:"-"`
 
-	// SpotiFLACPython is the path to the SpotiFLAC Python wrapper script.
-	// When set, downloads use the Python module instead of the Go CLI —
-	// the Python module has multi-service fallback (tidal→qobuz→deezer→amazon)
-	// and works without browser verification.
-	SpotiFLACPython string `mapstructure:"spotiflac_python_path"`
-
-	// SpotiFLACPythonVenv is the path to the Python venv binary (optional).
+	// SpotiFLACPythonVenv is the path to a Python venv binary with the
+	// SpotiFLAC module installed (e.g. /venv/bin/python3). Optional —
+	// auto-detected from common locations. The Python wrapper script is
+	// embedded in the binary and extracted at runtime.
 	SpotiFLACPythonVenv string `mapstructure:"spotiflac_python_venv"`
 
 	// VerifyNotifyURL, if set, gets an HTTP POST with a plain-text body
@@ -86,7 +83,7 @@ func Load() (*Config, error) {
 		"job_timeout", "db_path", "log_level", "fallback_services",
 		"history_retention_count", "verify_relay_url",
 		"tidal_api_url", "qobuz_api_url", "tidal_api_fallback_urls",
-		"spotiflac_python_path", "spotiflac_python_venv",
+		"spotiflac_python_venv",
 		"verify_notify_url", "verify_notify_title",
 	} {
 		// BindEnv only errors when called with zero keys; never the case here.
