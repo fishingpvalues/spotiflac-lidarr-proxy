@@ -30,26 +30,79 @@ type Client struct {
 	relayAddress   string
 	relayPort      int
 
+	// tidalAPIFallbacks is a list of additional Tidal API proxy URLs
+	// tried in order when the primary tidalAPIURL fails.
+	tidalAPIFallbacks []string
+
+	// resolvedTidalAPI caches the last known working Tidal API URL.
+	resolvedTidalAPI   string
+	resolvedTidalCheck time.Time
+
 	// verificationStates maps state param → upstream_cb URL for
 	// community verification relay forwarding (FSL/Byparr path).
 	verificationStates sync.Map
 }
 
-func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, verifyRelayURL, tidalAPIURL, qobuzAPIURL string) *Client {
+func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, verifyRelayURL, tidalAPIURL, qobuzAPIURL string, tidalAPIFallbacks []string) *Client {
 	fslURL := os.Getenv("SPOTIFLAC_FSL_URL")
 	relayAddress := os.Getenv("SPOTIFLAC_ADDRESS")
 
 	return &Client{
-		cliPath:        cliPath,
-		timeout:        timeout,
-		defaultService: defaultService,
-		defaultQuality: defaultQuality,
-		verifyRelayURL: verifyRelayURL,
-		tidalAPIURL:    tidalAPIURL,
-		qobuzAPIURL:    qobuzAPIURL,
-		fslURL:         fslURL,
-		relayAddress:   relayAddress,
+		cliPath:            cliPath,
+		timeout:            timeout,
+		defaultService:     defaultService,
+		defaultQuality:     defaultQuality,
+		verifyRelayURL:     verifyRelayURL,
+		tidalAPIURL:        tidalAPIURL,
+		qobuzAPIURL:        qobuzAPIURL,
+		fslURL:             fslURL,
+		relayAddress:       relayAddress,
+		tidalAPIFallbacks:  tidalAPIFallbacks,
 	}
+}
+
+// resolveTidalAPIURL returns the first working Tidal API URL from the
+// primary + fallback list. Results are cached for 5 minutes to avoid
+// health-checking on every download. Returns empty string if none work
+// (Spotiflac falls back to community tier).
+func (c *Client) resolveTidalAPIURL() string {
+	// If no fallbacks configured, just use the primary URL.
+	if len(c.tidalAPIFallbacks) == 0 {
+		return c.tidalAPIURL
+	}
+
+	// Use cached result if fresh.
+	if c.resolvedTidalAPI != "" && time.Since(c.resolvedTidalCheck) < 5*time.Minute {
+		return c.resolvedTidalAPI
+	}
+
+	// Build candidate list: primary first, then fallbacks.
+	candidates := []string{}
+	if c.tidalAPIURL != "" {
+		candidates = append(candidates, c.tidalAPIURL)
+	}
+	candidates = append(candidates, c.tidalAPIFallbacks...)
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	for _, u := range candidates {
+		req, err := http.NewRequest("GET", u+"/", nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("User-Agent", "spotiflac-lidarr-proxy/1.0")
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		// Any HTTP response means the proxy is alive.
+		c.resolvedTidalAPI = u
+		c.resolvedTidalCheck = time.Now()
+		return u
+	}
+
+	// None worked — return primary (may still work, health check might be flaky).
+	return c.tidalAPIURL
 }
 
 // SetRelayPort sets the port the proxy server listens on, used to construct
@@ -100,8 +153,8 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			"--service", service,
 			"--quality", cliQuality,
 		}
-		if c.tidalAPIURL != "" {
-			args = append(args, "--tidal-api-url", c.tidalAPIURL)
+		if tidalURL := c.resolveTidalAPIURL(); tidalURL != "" {
+			args = append(args, "--tidal-api-url", tidalURL)
 		}
 		if c.qobuzAPIURL != "" {
 			args = append(args, "--qobuz-api-url", c.qobuzAPIURL)

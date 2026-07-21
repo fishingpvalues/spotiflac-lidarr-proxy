@@ -22,6 +22,7 @@ services:
       # - SPF_VERIFY_RELAY_URL=https://spotiflac.example.com/verify/callback
       # - SPF_TIDAL_API_URL=https://your-tidal-api-instance.example
       # - SPF_QOBUZ_API_URL=https://your-qobuz-api-instance.example
+      # - SPF_TIDAL_API_FALLBACK_URLS=https://api.monochrome.tf,https://wolf.qqdl.site
       # - SPF_VERIFY_NOTIFY_URL=https://ntfy.sh/your-topic
       # - SPF_VERIFY_NOTIFY_TITLE=SpotiFLAC verification needed
       # --- Captcha auto-solving via Byparr/FlareSolverr ---
@@ -33,6 +34,8 @@ services:
       # the Turnstile callback that byparr's browser redirects to).
       # Auto-detected from the default route interface if left empty.
       - SPOTIFLAC_ADDRESS=${SPOTIFLAC_ADDRESS:-}
+      # Tidal API fallback URLs (comma-separated, tried in order)
+      - SPF_TIDAL_API_FALLBACK_URLS=${SPF_TIDAL_API_FALLBACK_URLS:-}
       # HTTP/HTTPS forward proxy (Go's http.Client auto-respects these)
       - HTTP_PROXY=${HTTP_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}

@@ -102,6 +102,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.VerifyRelayURL,
 		cfg.TidalAPIURL,
 		cfg.QobuzAPIURL,
+		cfg.TidalAPIFallbackURLs,
 	)
 	client.SetRelayPort(cfg.Port)
 

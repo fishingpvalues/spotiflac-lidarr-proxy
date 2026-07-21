@@ -17,7 +17,7 @@ import (
 func setupNewznabApp(t *testing.T) *fiber.App {
 	t.Helper()
 
-	client := spotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "")
+	client := spotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil)
 	handler := newznab.NewHandler(client, "test", "test-key", "lossless")
 
 	app := fiber.New()

@@ -44,7 +44,7 @@ func setupTestApp(t *testing.T) (*fiber.App, *queue.SQLiteQueue) {
 
 	st := storage.New(cfg.OutputDir)
 
-	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "")
+	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil)
 
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
@@ -381,7 +381,7 @@ touch "$OUTDIR/01.flac"
 echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 `
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
-	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "")
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "", nil)
 
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
@@ -440,7 +440,7 @@ touch "$OUTDIR/01.flac"
 echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 `
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
-	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "")
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "", nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	job := &queue.Job{NzoID: "SABnzbd_nzo_retry001", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/retry"}
@@ -492,7 +492,7 @@ touch "$OUTDIR/01.flac"
 echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 `
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
-	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "")
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "", nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	job := &queue.Job{
@@ -553,7 +553,7 @@ touch "$OUTDIR/01.flac"
 echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 `
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
-	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "")
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "", nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	job := &queue.Job{NzoID: "SABnzbd_nzo_fallback001", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/fb"}
@@ -605,7 +605,7 @@ echo '{"type":"error","message":"unavailable"}'
 exit 1
 `
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
-	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "")
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "", nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	for i := 0; i < 5; i++ {
@@ -682,7 +682,7 @@ touch "$OUTDIR/01.flac"
 echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 `
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
-	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "")
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "", nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	job := &queue.Job{NzoID: "SABnzbd_nzo_fbstaleclean001", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/fbstale"}
@@ -711,7 +711,7 @@ func TestProcessDownloadShortCircuitsWhenBreakerOpen(t *testing.T) {
 
 	cfg := &config.Config{OutputDir: t.TempDir(), MaxConcurrent: 1, JobTimeout: 5 * time.Second}
 	st := storage.New(cfg.OutputDir)
-	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "")
+	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	// Force the breaker open by feeding 5 consecutive failures for "tidal".
@@ -775,7 +775,7 @@ touch "$OUTDIR/01.flac"
 echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 `
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
-	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "")
+	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "", nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	// Trip tidal's breaker with 5 consecutive real failures (no fallback
@@ -823,7 +823,7 @@ func TestWarningsSurfacesOpenBreaker(t *testing.T) {
 	q, err := queue.New(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { q.Close() })
-	client := apispotiflac.NewClient("false", 2*time.Second, "tidal", "lossless", "", "", "") // "false" always exits 1
+	client := apispotiflac.NewClient("false", 2*time.Second, "tidal", "lossless", "", "", "", nil) // "false" always exits 1
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	for i := 0; i < 5; i++ {
@@ -858,7 +858,7 @@ func TestWarningsSurfacesStuckJob(t *testing.T) {
 	q, err := queue.New(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { q.Close() })
-	client := apispotiflac.NewClient("echo", 1*time.Second, "tidal", "lossless", "", "", "")
+	client := apispotiflac.NewClient("echo", 1*time.Second, "tidal", "lossless", "", "", "", nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	job := &queue.Job{
