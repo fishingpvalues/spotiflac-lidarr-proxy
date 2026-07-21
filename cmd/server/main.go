@@ -67,7 +67,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.JobTimeout,
 		cfg.DefaultService,
 		cfg.DefaultQuality,
+		cfg.TidalAPIURL,
+		cfg.QobuzAPIURL,
 	)
+	client.SetRelayPort(cfg.Port)
 
 	app := fiber.New(fiber.Config{
 		AppName:      "spotiflac-lidarr-proxy",
@@ -77,6 +80,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 	app.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
+
+	// Community verification relay — receives Turnstile grant callbacks
+	// from Byparr's headless browser and forwards to SpotiFLAC's local
+	// callback server. No auth required (called by Byparr's browser).
+	verifyRelay := api.NewVerifyRelayHandler(client)
+	app.Get("/api/verify-relay", verifyRelay.Handle)
 
 	sabHandler := sabnzbd.NewHandler(q, client, st, cfg, version)
 	sabHandler.SetLogger(log)

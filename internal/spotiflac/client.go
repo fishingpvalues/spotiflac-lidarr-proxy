@@ -2,10 +2,17 @@ package spotiflac
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
 	"os/exec"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
@@ -16,15 +23,49 @@ type Client struct {
 	timeout        time.Duration
 	defaultService string
 	defaultQuality string
+	tidalAPIURL    string
+	qobuzAPIURL    string
+	fslURL         string
+	relayAddress   string
+	relayPort      int
+
+	// verificationStates maps state param → upstream_cb URL for
+	// community verification relay forwarding.
+	verificationStates sync.Map
 }
 
-func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality string) *Client {
+func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, tidalAPIURL, qobuzAPIURL string) *Client {
+	fslURL := os.Getenv("SPOTIFLAC_FSL_URL")
+	relayAddress := os.Getenv("SPOTIFLAC_ADDRESS")
+
 	return &Client{
 		cliPath:        cliPath,
 		timeout:        timeout,
 		defaultService: defaultService,
 		defaultQuality: defaultQuality,
+		tidalAPIURL:    tidalAPIURL,
+		qobuzAPIURL:    qobuzAPIURL,
+		fslURL:         fslURL,
+		relayAddress:   relayAddress,
 	}
+}
+
+// SetRelayPort sets the port the proxy server listens on, used to construct
+// the SPOTIFLAC_VERIFY_RELAY_URL passed to SpotiFLAC CLI.
+func (c *Client) SetRelayPort(port int) {
+	c.relayPort = port
+}
+
+// LookupUpstreamCB returns the upstream_cb URL stored for the given
+// verification state parameter. Used by the verify-relay HTTP handler
+// to forward grants back to SpotiFLAC's local callback server.
+func (c *Client) LookupUpstreamCB(state string) (string, bool) {
+	v, ok := c.verificationStates.Load(state)
+	if !ok {
+		return "", false
+	}
+	s, _ := v.(string)
+	return s, ok
 }
 
 func (c *Client) Download(ctx context.Context, url, outputDir, service, quality string) (<-chan ProgressEvent, <-chan error) {
@@ -50,12 +91,34 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 		// Map proxy quality names to SpotiFLAC CLI uppercase flags
 		cliQuality := config.SpotiflacQuality(quality)
 
-		cmd := exec.CommandContext(ctx, c.cliPath,
+		args := []string{
 			"--url", url,
 			"--output-dir", outputDir,
 			"--service", service,
 			"--quality", cliQuality,
-		)
+		}
+		if c.tidalAPIURL != "" {
+			args = append(args, "--tidal-api-url", c.tidalAPIURL)
+		}
+		if c.qobuzAPIURL != "" {
+			args = append(args, "--qobuz-api-url", c.qobuzAPIURL)
+		}
+
+		cmd := exec.CommandContext(ctx, c.cliPath, args...)
+
+		// If FSL (Byparr/FlareSolverr) is configured, set the verify relay URL
+		// so SpotiFLAC rewrites the challenge URL's cb= parameter to point at
+		// our /api/verify-relay endpoint instead of opening a local browser.
+		if c.fslURL != "" && c.relayPort > 0 {
+			addr := c.relayAddress
+			if addr == "" {
+				addr = autoDetectIP()
+			}
+			if addr != "" {
+				relayURL := fmt.Sprintf("http://%s:%d/api/verify-relay", addr, c.relayPort)
+				cmd.Env = append(os.Environ(), "SPOTIFLAC_VERIFY_RELAY_URL="+relayURL)
+			}
+		}
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -68,7 +131,11 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			return
 		}
 
-		parseProgress(stdout, events, errs)
+		parseProgress(stdout, events, errs, func(ev ProgressEvent) {
+			if c.fslURL != "" && ev.VerificationURL != "" {
+				c.solveVerification(ev.VerificationURL)
+			}
+		})
 
 		if err := cmd.Wait(); err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
@@ -147,4 +214,91 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 	}
 
 	return results, nil
+}
+
+// solveVerification sends a community verification challenge URL to Byparr/FlareSolverr.
+// It extracts the upstream_cb and state parameters from the URL, stores the mapping,
+// then sends the URL to Byparr's headless browser. Byparr solves the Turnstile and
+// the resulting grant callback hits our /api/verify-relay endpoint, which forwards
+// to SpotiFLAC's local callback server via the stored upstream_cb mapping.
+func (c *Client) solveVerification(challengeURL string) {
+	parsed, err := url.Parse(challengeURL)
+	if err != nil {
+		return
+	}
+
+	upstreamCB := parsed.Query().Get("upstream_cb")
+	state := parsed.Query().Get("state")
+
+	if upstreamCB != "" && state != "" {
+		c.verificationStates.Store(state, upstreamCB)
+	}
+
+	// Send to Byparr/FlareSolverr asynchronously — the browser
+	// loads the challenge URL, solves Turnstile, and the redirect
+	// hits our verify-relay endpoint.
+	go func() {
+		if err := fslRequest(c.fslURL, challengeURL, c.timeout); err != nil {
+			// Verification failed; SpotiFLAC will time out waiting
+			// for the grant and emit an error.
+			c.verificationStates.Delete(state)
+		}
+	}()
+}
+
+// autoDetectIP returns the IP of the default route interface.
+// Used when SPOTIFLAC_ADDRESS is not explicitly set.
+func autoDetectIP() string {
+	// Try common Docker network interface first
+	addrs, err := os.ReadFile("/proc/net/fib_trie")
+	if err != nil {
+		return ""
+	}
+	// Simple heuristic: look for 172.x.x.x (typical Docker network)
+	// This is a best-effort fallback; setting SPOTIFLAC_ADDRESS explicitly
+	// is more reliable.
+	for _, prefix := range []string{"172.", "10.", "192.168."} {
+		if idx := strings.Index(string(addrs), prefix); idx >= 0 {
+			end := idx
+			for end < len(addrs) && (addrs[end] >= '0' && addrs[end] <= '9' || addrs[end] == '.') {
+				end++
+			}
+			ip := string(addrs[idx:end])
+			if len(ip) >= 7 {
+				return ip
+			}
+		}
+	}
+	return ""
+}
+
+// fslRequest sends a URL to a Byparr/FlareSolverr-compatible API for
+// headless browser rendering (Turnstile solving).
+func fslRequest(fslBase, targetURL string, timeout time.Duration) error {
+	payload := map[string]interface{}{
+		"url":         targetURL,
+		"max_timeout": int(timeout.Seconds()),
+	}
+	body, _ := json.Marshal(payload)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", fslBase+"/v1", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("fsl request build: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fsl request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("fsl returned HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
 }

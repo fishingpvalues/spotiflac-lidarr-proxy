@@ -7,7 +7,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/server ./cmd/server
 
-# Stage 2: Build spotiflac-cli from fork (requires Go 1.26)
+# Stage 2: Build spotiflac-cli from fork (headless, relay-capable)
 FROM golang:1.26-alpine AS cli-builder
 RUN apk add --no-cache git
 RUN git clone https://github.com/fishingpvalues/SpotiFLAC.git /spotiflac

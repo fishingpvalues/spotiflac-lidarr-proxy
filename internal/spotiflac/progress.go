@@ -7,17 +7,18 @@ import (
 )
 
 type ProgressEvent struct {
-	Type         string  `json:"type"`
-	Track        string  `json:"track,omitempty"`
-	Title        string  `json:"title,omitempty"`
-	Artist       string  `json:"artist,omitempty"`
-	Album        string  `json:"album,omitempty"`
-	Percent      float64 `json:"percent,omitempty"`
-	Speed        string  `json:"speed,omitempty"`
-	OutputPath   string  `json:"path,omitempty"`
-	Size         int64   `json:"size,omitempty"`
-	ISRC         string  `json:"isrc,omitempty"`
-	ErrorMessage string  `json:"message,omitempty"`
+	Type             string  `json:"type"`
+	Track            string  `json:"track,omitempty"`
+	Title            string  `json:"title,omitempty"`
+	Artist           string  `json:"artist,omitempty"`
+	Album            string  `json:"album,omitempty"`
+	Percent          float64 `json:"percent,omitempty"`
+	Speed            string  `json:"speed,omitempty"`
+	OutputPath       string  `json:"path,omitempty"`
+	Size             int64   `json:"size,omitempty"`
+	ISRC             string  `json:"isrc,omitempty"`
+	ErrorMessage     string  `json:"message,omitempty"`
+	VerificationURL  string  `json:"url,omitempty"`
 }
 
 type MetadataResult struct {
@@ -32,7 +33,7 @@ type MetadataResult struct {
 	TrackCount int    `json:"track_count"`
 }
 
-func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- error) {
+func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- error, onVerify func(ProgressEvent)) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -49,6 +50,15 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 			// Map track_done to a metadata event so the download processor
 			// can extract artist/album info and update progress
 			event.Type = "metadata"
+			events <- event
+		case "verification_required":
+			// SpotiFLAC headless build emits this when community verification
+			// is needed. The URL is pre-rewritten with SPOTIFLAC_VERIFY_RELAY_URL
+			// as the cb= parameter and upstream_cb= pointing at the local
+			// callback server.
+			if onVerify != nil {
+				onVerify(event)
+			}
 			events <- event
 		case "status", "progress", "metadata":
 			events <- event

@@ -41,7 +41,7 @@ func TestDownloadProgress(t *testing.T) {
 		`{"type":"metadata","artist":"Test Artist","album":"Test Album","isrc":"US-ABC-12-34567"}`,
 		`{"type":"complete","path":"/tmp/Test Artist/Test Album/01 - First Song.flac","size":28765432}`,
 	}
-	client := spotiflac.NewClient(mockCli(t, responses), 10*time.Second, "tidal", "lossless")
+	client := spotiflac.NewClient(mockCli(t, responses), 10*time.Second, "tidal", "lossless", "", "")
 
 	events, errs := client.Download(context.Background(),
 		"https://open.spotify.com/album/test",
@@ -80,7 +80,7 @@ loop:
 
 func TestDownloadTimeout(t *testing.T) {
 	responses := []string{} // exits immediately, but timeout is 1 nanosecond
-	client := spotiflac.NewClient(mockCli(t, responses), 1*time.Nanosecond, "tidal", "lossless")
+	client := spotiflac.NewClient(mockCli(t, responses), 1*time.Nanosecond, "tidal", "lossless", "", "")
 
 	events, errs := client.Download(context.Background(),
 		"https://open.spotify.com/album/test",

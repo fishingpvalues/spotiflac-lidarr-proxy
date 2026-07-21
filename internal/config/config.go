@@ -21,6 +21,8 @@ type Config struct {
 	JobTimeout       time.Duration `mapstructure:"job_timeout"`
 	DBPath           string        `mapstructure:"db_path"`
 	LogLevel         string        `mapstructure:"log_level"`
+	TidalAPIURL      string        `mapstructure:"tidal_api_url"`
+	QobuzAPIURL      string        `mapstructure:"qobuz_api_url"`
 }
 
 func Load() (*Config, error) {
@@ -34,6 +36,7 @@ func Load() (*Config, error) {
 		"api_key", "port", "output_dir", "spotiflac_cli_path",
 		"default_service", "default_quality", "max_concurrent",
 		"job_timeout", "db_path", "log_level",
+		"tidal_api_url", "qobuz_api_url",
 	} {
 		v.BindEnv(key)
 	}
@@ -98,7 +101,7 @@ func SpotiflacQuality(proxyQuality string) string {
 // Categories follow the pattern: music-[service][-quality]
 // Examples: music-tidal, music-flac-16, music-qobuz-flac-24
 func ParseCategory(cat string) (service, quality string) {
-	cat = cat // keep lowercase
+	cat = strings.ToLower(cat)
 
 	// Detect service
 	for _, svc := range []string{"tidal", "qobuz", "amazon", "deezer"} {

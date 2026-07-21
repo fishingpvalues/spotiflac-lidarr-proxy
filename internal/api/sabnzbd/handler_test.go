@@ -37,7 +37,7 @@ func setupTestApp(t *testing.T) (*fiber.App, *queue.SQLiteQueue) {
 
 	st := storage.New(cfg.OutputDir)
 
-	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless")
+	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "")
 
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 

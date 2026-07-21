@@ -13,10 +13,28 @@ services:
       - SPF_DEFAULT_SERVICE=tidal
       - SPF_DEFAULT_QUALITY=lossless
       - SPF_MAX_CONCURRENT=3
+      # FlareSolverr/Byparr for auto-solving Cloudflare Turnstile
+      # Point at byparr's FlareSolverr API (e.g. http://gluetun:8191 on the shared network)
+      - SPOTIFLAC_FSL_URL=${SPOTIFLAC_FSL_URL:-}
+      # This container's routable IP on the shared Docker network (used for
+      # the Turnstile callback that byparr's browser redirects to).
+      # Auto-detected from the default route interface if left empty,
+      # but it's more reliable to set it explicitly.
+      - SPOTIFLAC_ADDRESS=${SPOTIFLAC_ADDRESS:-}
+      # Custom Tidal/Qobuz API instances (bypass community tier & Turnstile)
+      - SPF_TIDAL_API_URL=${SPF_TIDAL_API_URL:-}
+      - SPF_QOBUZ_API_URL=${SPF_QOBUZ_API_URL:-}
+      # HTTP/HTTPS forward proxy for SpotiFLAC CLI (auto-respected by Go HTTP client)
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+
     volumes:
       - downloads:/downloads
       - data:/data
     restart: unless-stopped
+    networks:
+      - default
+      - potatostack  # shared network with byparr/gluetun for Turnstile callback
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8484/health"]
       interval: 30s
@@ -41,3 +59,8 @@ volumes:
   downloads:
   data:
   lidarr_config:
+
+networks:
+  potatostack:
+    name: potatostack_potatostack
+    external: true

@@ -182,6 +182,30 @@ services:
    - API Key: your SPF_API_KEY value
    - Categories: 3010, 3040
 
+## Captcha Solving (Byparr / FlareSolverr)
+
+The proxy integrates with **Byparr** (a FlareSolverr-compatible proxy) to automatically solve Cloudflare Turnstile challenges during SpotiFLAC's community verification. This enables fully headless operation — no human needs to open a browser.
+
+### How It Works
+
+1. SpotiFLAC detects `SPOTIFLAC_FSL_URL` and routes the Turnstile challenge URL through Byparr's headless browser
+2. Byparr auto-solves the Turnstile widget
+3. The Turnstile callback redirects back to SpotiFLAC's callback listener with a session grant
+4. SpotiFLAC exchanges the grant for a community session — download proceeds
+
+### Configuration
+
+| Env Variable | Default | Description |
+|-------------|---------|-------------|
+| `SPOTIFLAC_FSL_URL` | (unset) | Byparr/FlareSolverr API endpoint (e.g. `http://byparr:8191`) |
+| `SPOTIFLAC_ADDRESS` | auto-detected | This container's routable IP for the Turnstile callback reachable by Byparr's browser |
+
+> **Note:** Byparr's browser must be able to reach this container's callback listener on a random TCP port. The patch auto-detects the container's IP from the default route interface, but setting `SPOTIFLAC_ADDRESS` explicitly is more reliable on complex networks.
+
+### Alternative: Custom API URLs (No Captcha Needed)
+
+Set `SPF_TIDAL_API_URL` and/or `SPF_QOBUZ_API_URL` to point at self-hosted hifi-api instances. When these are configured, SpotiFLAC bypasses the community tier entirely — no Turnstile, no verification.
+
 ## Configuration
 
 All via environment variables prefixed `SPF_`:
