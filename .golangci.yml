@@ -12,6 +12,8 @@ linters:
       min-complexity: 15
     misspell:
       locale: US
+    dupl:
+      threshold: 100
   exclusions:
     generated: lax
     presets:
