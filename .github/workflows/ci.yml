@@ -67,6 +67,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Create external network for integration
+        run: docker network create potatostack_potatostack 2>/dev/null || true
+
       - name: Start proxy + Lidarr
         run: docker compose up -d --build
 
