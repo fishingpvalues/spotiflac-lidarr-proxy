@@ -27,9 +27,9 @@ type hifiTrackResponse struct {
 // hifiManifestBTS is the base64-decoded manifest when manifestMimeType
 // is "application/vnd.tidal.bts" (used for LOSSLESS/HIGH/LOW qualities).
 type hifiManifestBTS struct {
-	MimeType       string `json:"mimeType"`
-	Codecs         string `json:"codecs"`
-	EncryptionType string `json:"encryptionType"`
+	MimeType       string   `json:"mimeType"`
+	Codecs         string   `json:"codecs"`
+	EncryptionType string   `json:"encryptionType"`
 	URLs           []string `json:"urls"`
 }
 
@@ -53,7 +53,7 @@ type HiFiAdapter struct {
 func NewHiFiAdapter(upstream string) *HiFiAdapter {
 	return &HiFiAdapter{
 		upstream: upstream,
-		client: &http.Client{Timeout: 30 * time.Second},
+		client:   &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
