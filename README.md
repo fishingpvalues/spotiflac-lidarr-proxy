@@ -59,7 +59,7 @@ services:
 
 - Speaks both halves of Lidarr's protocol: SABnzbd (download client) and Newznab (indexer).
 - **Three download backends**, auto-selected by priority:
-  1. **SpotiFLAC Python module** (recommended) — multi-service fallback (tidal→qobuz→deezer→amazon), no browser verification, 12+ services, health checks, works out of the box.
+  1. **SpotiFLAC Python module** (recommended) — multi-service fallback (configurable via `SPF_FALLBACK_SERVICES`, defaults to tidal→qobuz→deezer→amazon), no browser verification, 12+ services, works out of the box.
   2. **SpotiFLAC CLI** (Go binary, built-in) — headless, with optional FSL/Byparr auto-solving for community captcha.
   3. **Hifi-API adapter** — auto-detects hifi-api format proxies (`api.monochrome.tf` etc.), spawns local format translator, passes translated endpoint to SpotiFLAC CLI.
 - Quality/service categories (`music-flac-24`, `music-tidal`, ...) map onto Lidarr's quality profiles.
