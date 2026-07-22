@@ -47,24 +47,30 @@ type Client struct {
 	// verificationStates maps state param → upstream_cb URL for
 	// community verification relay forwarding (FSL/Byparr path).
 	verificationStates sync.Map
+
+	// fallbackServices is the ordered list of fallback service names
+	// (e.g. ["qobuz", "deezer"]) used by the Python wrapper's internal
+	// cascade and the Go-level fallback chain.
+	fallbackServices []string
 }
 
-func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, verifyRelayURL, tidalAPIURL, qobuzAPIURL string, tidalAPIFallbacks []string, pythonVenv string) *Client {
+func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, verifyRelayURL, tidalAPIURL, qobuzAPIURL string, tidalAPIFallbacks []string, pythonVenv string, fallbackServices []string) *Client {
 	fslURL := os.Getenv("SPOTIFLAC_FSL_URL")
 	relayAddress := os.Getenv("SPOTIFLAC_ADDRESS")
 
 	return &Client{
-		cliPath:            cliPath,
-		timeout:            timeout,
-		defaultService:     defaultService,
-		defaultQuality:     defaultQuality,
-		verifyRelayURL:     verifyRelayURL,
-		tidalAPIURL:        tidalAPIURL,
-		qobuzAPIURL:        qobuzAPIURL,
-		fslURL:             fslURL,
-		relayAddress:       relayAddress,
-		tidalAPIFallbacks:  tidalAPIFallbacks,
-		pythonVenv:         pythonVenv,
+		cliPath:           cliPath,
+		timeout:           timeout,
+		defaultService:    defaultService,
+		defaultQuality:    defaultQuality,
+		verifyRelayURL:    verifyRelayURL,
+		tidalAPIURL:       tidalAPIURL,
+		qobuzAPIURL:       qobuzAPIURL,
+		fslURL:            fslURL,
+		relayAddress:      relayAddress,
+		tidalAPIFallbacks: tidalAPIFallbacks,
+		pythonVenv:        pythonVenv,
+		fallbackServices:  fallbackServices,
 	}
 }
 
@@ -223,7 +229,7 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 		if wrapErr == nil {
 			if _, statErr := os.Stat(pythonBin); statErr == nil {
 				pyEvents, pyErrs := c.downloadWithPython(ctx, pythonBin, wrapperPath, url, outputDir, service, quality)
-				if c.collectPythonResult(pyEvents, pyErrs, events, errs) {
+				if c.CollectPythonResult(pyEvents, pyErrs, events, errs) {
 					return // Python succeeded
 				}
 				// Python failed — fall through to CLI
@@ -324,11 +330,19 @@ func (c *Client) downloadWithPython(ctx context.Context, pythonBin, wrapperPath,
 	go func() {
 		defer func() { close(events); close(errs) }()
 
+		// Build service cascade: primary first, then configured fallbacks.
+		svcList := service
+		for _, fb := range c.fallbackServices {
+			if fb != service {
+				svcList += "," + fb
+			}
+		}
+
 		args := []string{
 			wrapperPath,
 			"--url", url,
 			"--output-dir", outputDir,
-			"--service", service + ",qobuz,deezer,amazon",
+			"--service", svcList,
 			"--quality", quality,
 		}
 
@@ -362,10 +376,10 @@ func (c *Client) downloadWithPython(ctx context.Context, pythonBin, wrapperPath,
 	return events, errs
 }
 
-// collectPythonResult drains Python channels. If a "complete" event arrives,
+// CollectPythonResult drains Python channels. If a "complete" event arrives,
 // it forwards all events+errors to the main channels and returns true.
 // Otherwise returns false (CLI fallback).
-func (c *Client) collectPythonResult(pyEvents <-chan ProgressEvent, pyErrs <-chan error, mainEvents chan<- ProgressEvent, mainErrs chan<- error) bool {
+func (c *Client) CollectPythonResult(pyEvents <-chan ProgressEvent, pyErrs <-chan error, mainEvents chan<- ProgressEvent, mainErrs chan<- error) bool {
 	var sawComplete bool
 	for {
 		select {
