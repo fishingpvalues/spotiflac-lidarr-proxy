@@ -120,7 +120,7 @@ func (c *Client) startHiFiAdapter(upstream string) (string, error) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(result); err != nil {
-			// Client likely disconnected; nothing to do.
+			_ = err // client likely disconnected
 		}
 	})
 
@@ -131,7 +131,7 @@ func (c *Client) startHiFiAdapter(upstream string) (string, error) {
 
 	go func() {
 		if err := http.Serve(listener, mux); err != nil && err != http.ErrServerClosed {
-			// hifi-adapter listener error; non-fatal (adapter is best-effort).
+			_ = err // non-fatal, adapter is best-effort
 		}
 	}()
 
