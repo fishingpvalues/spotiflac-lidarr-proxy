@@ -112,7 +112,7 @@ func TestCollectPythonResultForwardsAfterComplete(t *testing.T) {
 }
 
 // TestCollectPythonResultReturnsFalseOnNoComplete verifies collectPythonResult
-// returns false when no "complete" event arrives, signalling the caller to try CLI.
+// returns false when no "complete" event arrives, signaling the caller to try CLI.
 func TestCollectPythonResultReturnsFalseOnNoComplete(t *testing.T) {
 	client := spotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, "", nil)
 
