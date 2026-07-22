@@ -56,7 +56,7 @@ func (h *VerifyRelayHandler) Handle(c fiber.Ctx) error {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
-			"error":        "spotiflac callback rejected grant",
+			"error":         "spotiflac callback rejected grant",
 			"callback_code": resp.StatusCode,
 			"callback_body": string(body),
 		})

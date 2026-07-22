@@ -119,7 +119,9 @@ func (c *Client) startHiFiAdapter(upstream string) (string, error) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(result)
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			// Client likely disconnected; nothing to do.
+		}
 	})
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -127,7 +129,11 @@ func (c *Client) startHiFiAdapter(upstream string) (string, error) {
 		return "", fmt.Errorf("start hifi adapter: %w", err)
 	}
 
-	go http.Serve(listener, mux)
+	go func() {
+		if err := http.Serve(listener, mux); err != nil && err != http.ErrServerClosed {
+			// hifi-adapter listener error; non-fatal (adapter is best-effort).
+		}
+	}()
 
 	addr := fmt.Sprintf("http://127.0.0.1:%d", listener.Addr().(*net.TCPAddr).Port)
 	return addr, nil
@@ -196,6 +202,7 @@ func (c *Client) LookupUpstreamCB(state string) (string, bool) {
 	return s, ok
 }
 
+//nolint:gocyclo // Fallback cascade (Python→CLI→FSL→community) is inherently branched.
 func (c *Client) Download(ctx context.Context, url, outputDir, service, quality string) (<-chan ProgressEvent, <-chan error) {
 	if service == "" {
 		service = c.defaultService
