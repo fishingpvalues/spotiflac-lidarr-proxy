@@ -48,7 +48,7 @@ func (h *Handler) dispatch(c fiber.Ctx) error {
 		return h.handleCaps(c)
 	case "search":
 		return h.handleSearch(c)
-	case "music":
+	case "music", "musicsearch", "audio":
 		return h.handleMusic(c)
 	case "details":
 		return h.handleDetails(c)
@@ -114,9 +114,14 @@ func (h *Handler) handleMusic(c fiber.Ctx) error {
 	artist := c.Query("artist")
 	album := c.Query("album")
 
-	query := artist
-	if album != "" {
-		query = artist + " " + album
+	// Lidarr sends q= as the primary search term; artist/album are
+	// parsed metadata. Use q when available, falling back to artist.
+	query := c.Query("q")
+	if query == "" {
+		query = artist
+		if album != "" {
+			query = artist + " " + album
+		}
 	}
 
 	results, err := indexer.Search(c.Context(), h.client, query, artist, album)

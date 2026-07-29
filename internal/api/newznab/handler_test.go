@@ -79,6 +79,29 @@ func TestGetReturnsWellFormedNZB(t *testing.T) {
 	assert.Contains(t, resp.Header.Get("Content-Type"), "nzb")
 }
 
+func TestMusicSearch(t *testing.T) {
+	// Lidarr sends t=musicsearch (Newznab spec standard), not t=music.
+	// Prior bug: only "music" was handled; "musicsearch" fell through to
+	// default empty-results handler.
+	app := setupNewznabApp(t)
+
+	req, _ := http.NewRequest("GET", "/api/newznab?t=musicsearch&q=debussy&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestMusicSearchFallbackToQ(t *testing.T) {
+	// When only q= is provided (no artist/album), handleMusic must use q
+	// as the search query. Prior bug: it only used artist+album.
+	app := setupNewznabApp(t)
+
+	req, _ := http.NewRequest("GET", "/api/newznab?t=musicsearch&q=debussy&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
 func TestGetMissingIDReturnsBadRequest(t *testing.T) {
 	app := setupNewznabApp(t)
 
