@@ -153,11 +153,30 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("log_level", "info")
 	v.SetDefault("history_retention_count", 500)
 	v.SetDefault("verify_notify_title", "SpotiFLAC verification needed")
+	// Known public hifi-api / SpotiFLAC-compatible Tidal mirrors, probed in
+	// order at download time; dead ones are skipped (see probeAPI).
+	//
+	// Measured 2026-08-07 from a VPN exit and from a bare uplink alike:
+	// monochrome-api.samidy.com is the only one of these that answers as an
+	// API at all. api.monochrome.tf serves 503 and arran.monochrome.tf 502;
+	// every *.qqdl.site host and tidal.kinoplus.online refuse the connection
+	// outright; hifi.geeked.wtf no longer resolves. They stay listed because
+	// public mirrors come back, and a dead entry now costs one probe rather
+	// than poisoning the selection.
+	//
+	// Deliberately NOT listed: lossless.wtf, monochrome.samidy.com and
+	// if-it-runs-ship-it.lol. Those are the Monochrome *web UI*. They answer
+	// 200 with HTML, which the old "any response means alive" check happily
+	// accepted and handed to spotiflac-cli as an API endpoint.
 	v.SetDefault("tidal_api_fallback_urls",
-		"https://api.monochrome.tf,"+
-			"https://lossless.wtf,"+
+		"https://monochrome-api.samidy.com,"+
+			"https://api.monochrome.tf,"+
+			"https://arran.monochrome.tf,"+
 			"https://wolf.qqdl.site,"+
-			"https://hifi.geeked.wtf,"+
+			"https://maus.qqdl.site,"+
+			"https://vogel.qqdl.site,"+
+			"https://katze.qqdl.site,"+
+			"https://hund.qqdl.site,"+
 			"https://tidal.kinoplus.online,"+
 			"https://hifi-one.spotisaver.net")
 }

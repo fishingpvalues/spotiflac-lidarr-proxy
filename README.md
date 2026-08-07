@@ -165,32 +165,36 @@ When using the **SpotiFLAC CLI** backend (not the Python module), community veri
 
 ## Multi-source Tidal API fallback
 
-When using the CLI backend with `SPF_TIDAL_API_URL`, the proxy health-checks all configured API URLs before each download and auto-selects the first working one. If the primary URL fails, it falls back through `SPF_TIDAL_API_FALLBACK_URLS` (comma-separated list) before giving up.
+When using the CLI backend with `SPF_TIDAL_API_URL`, the proxy health-checks all configured API URLs and auto-selects the first working one. If the primary URL fails, it falls back through `SPF_TIDAL_API_FALLBACK_URLS` (comma-separated list) before giving up. The verdict is cached for 5 minutes — success *and* failure, so a list of mostly-dead public mirrors does not re-probe every candidate on every download.
+
+A candidate counts as working only if it answers **2xx with a JSON body**. That matters more than it sounds: `lossless.wtf`, `monochrome.samidy.com` and `if-it-runs-ship-it.lol` are the Monochrome *web UI*, and they answer 200 with HTML. The earlier "any HTTP response means alive" check accepted them, and `api.monochrome.tf`'s 503 too, then handed the result to `spotiflac-cli` as `--tidal-api-url`. If nothing passes, no `--tidal-api-url` is passed at all and SpotiFLAC continues down its own backend cascade.
 
 ### Hifi-API format adapter
 
-Many community Tidal proxies (`api.monochrome.tf`, `lossless.wtf`, etc.) use a manifest-based response format (hifi-api) instead of the direct URL format SpotiFLAC expects. The proxy **auto-detects** hifi-api instances and spawns a local format adapter that translates base64-encoded BTS/MPD manifests into direct download URLs.
+Some Tidal proxies use a manifest-based response format ([hifi-api](https://github.com/uimaxbai/hifi-api)) instead of the direct URL format SpotiFLAC expects. The proxy **auto-detects** hifi-api instances — their root reports `{"version":"2.x","Repo":"..."}` — and spawns a local format adapter that translates base64-encoded BTS/MPD manifests into direct download URLs.
 
-No configuration needed — detection is automatic via fingerprinting the root endpoint.
+No configuration needed. The adapter also handles hifi-api 2.x's playback queue: when every upstream playback credential is busy it answers `202` with a queue ticket rather than a manifest, and the adapter polls `statusUrl` until the ticket completes (up to 4 minutes) instead of reporting an empty manifest.
 
 ### Known public proxies
 
-| URL | Format | Status (via gluetun) |
-|-----|--------|----------------------|
-| `api.monochrome.tf` | hifi-api | Alive, upstream token dead |
-| `lossless.wtf` | hifi-api | Alive (monochrome mirror) |
-| `wolf/maus/vogel/katze/hund.qqdl.site` | community | DNS resolves, Cloudflare block |
-| `squid.wtf` | web tool | Alive |
-| `doubledouble.top` | web tool | Alive |
-| `antra.hoshi.cfd` | web tool | Alive |
-| `arcod.xyz` | web tool | Alive |
-| `vdwn.cloud` | web tool | Alive |
-| `imov.life` | web tool | Alive |
-| `lucida.to` | web tool | Cloudflare 403 |
-| `hifi.geeked.wtf` | unknown | Dead |
-| `tidal.kinoplus.online` | unknown | Dead |
+Measured 2026-08-07, both from a VPN exit and a bare uplink — results were identical, so none of these are geo/VPN artifacts.
 
-Sources: [FMHY](https://fmhy.net/audiopiracyguide), [tidaloader](https://github.com/RayZ3R0/tidaloader), [spofree](https://github.com/redretep/spofree). These URLs change frequently — set your own in `SPF_TIDAL_API_FALLBACK_URLS`.
+| URL | Format | Status |
+|-----|--------|--------|
+| `monochrome-api.samidy.com` | hifi-api 2.3 | **Alive.** Metadata works; `/track/` returns 403 `Upstream API error` (Tidal has blocked the instance's account) |
+| `api.monochrome.tf` | hifi-api | HTTP 503 |
+| `arran.monochrome.tf` | hifi-api | HTTP 502 |
+| `hifi-one.spotisaver.net` | hifi-api | HTTP 502 |
+| `wolf/maus/vogel/katze/hund.qqdl.site` | community | Connection refused |
+| `tidal.qqdl.site` | community | Cloudflare Turnstile (403) |
+| `tidal.kinoplus.online` | unknown | Connection refused |
+| `hifi.geeked.wtf` | unknown | NXDOMAIN |
+| `lossless.wtf`, `monochrome.samidy.com`, `if-it-runs-ship-it.lol` | **web UI, not an API** | Alive — do not configure as an API URL |
+| `squid.wtf`, `doubledouble.top`, `lucida.to` et al. | web tool | Not machine endpoints |
+
+hifi-api's own README notes that Tidal began mass-blocking the accounts these instances run on, which is why a reachable instance can still fail every `/track/` call. Nothing configured here works around that; the Python backend (backend 1) is the path that currently produces files.
+
+Sources: [FMHY](https://fmhy.net/audiopiracyguide), [Monochrome INSTANCES.md](https://github.com/monochrome-music/monochrome/blob/main/INSTANCES.md), [tidaloader](https://github.com/RayZ3R0/tidaloader), [spofree](https://github.com/redretep/spofree). These URLs change frequently — set your own in `SPF_TIDAL_API_FALLBACK_URLS`.
 
 ### Alternative: Custom API URLs (No Captcha Needed)
 
@@ -217,7 +221,7 @@ Environment variables, all prefixed `SPF_`. Full reference: [`docs/API.md`](docs
 | `SPF_HISTORY_RETENTION_COUNT` | 500 | History entries to keep |
 | `SPF_TIDAL_API_URL` | (none) | Custom Tidal API instance |
 | `SPF_QOBUZ_API_URL` | (none) | Custom Qobuz API instance |
-| `SPF_TIDAL_API_FALLBACK_URLS` | 6 known proxies | Comma-separated Tidal API URLs, health-checked before download |
+| `SPF_TIDAL_API_FALLBACK_URLS` | 10 known proxies | Comma-separated Tidal API URLs; probed in order, first one answering 2xx JSON wins, verdict cached 5 min |
 | `SPF_VERIFY_RELAY_URL` | (none) | Proxy's own `/verify/callback` URL for manual browser relay |
 | `SPF_VERIFY_NOTIFY_URL` | (none) | Webhook URL for verification notifications (ntfy/Gotify compatible) |
 | `SPF_VERIFY_NOTIFY_TITLE` | SpotiFLAC verification needed | `Title` header for webhook notifications |

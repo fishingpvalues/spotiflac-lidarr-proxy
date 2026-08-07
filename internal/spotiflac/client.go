@@ -40,8 +40,14 @@ type Client struct {
 	// tried in order when the primary tidalAPIURL fails.
 	tidalAPIFallbacks []string
 
-	// resolvedTidalAPI caches the last known working Tidal API URL.
+	// resolvedTidalAPI caches the last known working Tidal API URL, its
+	// classification, and when the probe ran. Guarded by tidalMu: Download()
+	// runs one goroutine per concurrent job and all of them consult this.
+	// A zero resolvedTidalCheck means "never probed"; an empty
+	// resolvedTidalAPI with a non-zero check time means "probed, all dead".
+	tidalMu            sync.Mutex
 	resolvedTidalAPI   string
+	resolvedTidalKind  apiKind
 	resolvedTidalCheck time.Time
 
 	// verificationStates maps state param → upstream_cb URL for
@@ -74,25 +80,70 @@ func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQua
 	}
 }
 
-// isHiFiAPI checks whether a URL hosts a hifi-api instance (manifest-based
-// format) rather than a SpotiFLAC-compatible API (direct URL format).
-// hifi-api root responds with {"version":"2.X","Repo":"..."}
-func isHiFiAPI(baseURL string) bool {
-	req, _ := http.NewRequest("GET", baseURL+"/", nil)
-	req.Header.Set("User-Agent", "spotiflac-lidarr-proxy/1.0")
-	resp, err := http.DefaultClient.Do(req)
+// probeTimeout bounds every Tidal-API health probe. http.DefaultClient has
+// no timeout at all, so a candidate that accepts the connection and then
+// stalls used to hang the download goroutine indefinitely.
+const probeTimeout = 8 * time.Second
+
+// apiKind classifies what, if anything, a candidate Tidal API URL is.
+type apiKind int
+
+const (
+	apiDead      apiKind = iota // unreachable, non-2xx, or not an API at all
+	apiSpotiFLAC                // SpotiFLAC-compatible: /track/ returns {"url": "..."}
+	apiHiFi                     // hifi-api: /track/ returns a base64 manifest
+)
+
+// probeAPI classifies a candidate Tidal API base URL by its root response.
+//
+// The old check was "any HTTP response means the proxy is alive", which is
+// wrong in both directions and was breaking downloads in production:
+//
+//   - https://lossless.wtf and https://monochrome.samidy.com are the
+//     Monochrome *web UI*, not its API. They answer 200 with HTML, so they
+//     were accepted, cached for 5 minutes, and handed to spotiflac-cli as
+//     --tidal-api-url, where every track lookup then failed.
+//   - https://api.monochrome.tf answers 503 and
+//     https://arran.monochrome.tf answers 502. Both counted as "alive" and,
+//     being first in the list, shadowed the one instance that does work.
+//
+// A real API answers 2xx with a JSON body, so that is what we require. A
+// hifi-api additionally identifies itself as {"version":"2.x","Repo":"..."},
+// which is what tells us to put the manifest-translating adapter in front.
+func probeAPI(baseURL string) apiKind {
+	req, err := http.NewRequest("GET", baseURL+"/", nil)
 	if err != nil {
-		return false
+		return apiDead
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "spotiflac-lidarr-proxy/1.0")
+
+	resp, err := (&http.Client{Timeout: probeTimeout}).Do(req)
+	if err != nil {
+		return apiDead
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return apiDead
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return apiDead
+	}
+
 	var check struct {
 		Version string `json:"version"`
 		Repo    string `json:"Repo"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 512)).Decode(&check); err != nil {
-		return false
+	if err := json.Unmarshal(bytes.TrimSpace(body), &check); err != nil {
+		return apiDead // HTML page, Cloudflare interstitial, plain text, ...
 	}
-	return check.Version != "" && check.Repo != ""
+	if check.Version != "" && check.Repo != "" {
+		return apiHiFi
+	}
+	return apiSpotiFLAC
 }
 
 // startHiFiAdapter starts a local HTTP server that translates between
@@ -140,18 +191,34 @@ func (c *Client) startHiFiAdapter(upstream string) (string, error) {
 }
 
 // resolveTidalAPIURL returns the first working Tidal API URL from the
-// primary + fallback list. Results are cached for 5 minutes to avoid
-// health-checking on every download. Returns empty string if none work
-// (Spotiflac falls back to community tier).
-func (c *Client) resolveTidalAPIURL() string {
-	// If no fallbacks configured, just use the primary URL.
+// primary + fallback list, together with what kind of API it is. Results are
+// cached for 5 minutes to avoid health-checking on every download. Returns
+// an empty URL and apiDead if none work, in which case the caller omits
+// --tidal-api-url entirely and SpotiFLAC falls back to the community tier.
+//
+// Downloads run concurrently (SPF_MAX_CONCURRENT), so the cache is guarded:
+// the fields were previously read and written from several goroutines at
+// once with no synchronisation.
+func (c *Client) resolveTidalAPIURL() (string, apiKind) {
+	// If no fallbacks are configured, the single explicit URL is the
+	// operator's deliberate choice - use it without second-guessing, but
+	// still classify it so the hifi-adapter gets wired up when needed.
 	if len(c.tidalAPIFallbacks) == 0 {
-		return c.tidalAPIURL
+		if c.tidalAPIURL == "" {
+			return "", apiDead
+		}
+		return c.tidalAPIURL, probeAPI(c.tidalAPIURL)
 	}
 
-	// Use cached result if fresh.
-	if c.resolvedTidalAPI != "" && time.Since(c.resolvedTidalCheck) < 5*time.Minute {
-		return c.resolvedTidalAPI
+	c.tidalMu.Lock()
+	defer c.tidalMu.Unlock()
+
+	// Use the cached verdict if fresh. Failure is cached too: with a list of
+	// mostly-dead public mirrors, an uncached miss re-probed every candidate
+	// on every single download, stalling each job by up to
+	// len(candidates) * probeTimeout before it even started.
+	if time.Since(c.resolvedTidalCheck) < 5*time.Minute && !c.resolvedTidalCheck.IsZero() {
+		return c.resolvedTidalAPI, c.resolvedTidalKind
 	}
 
 	// Build candidate list: primary first, then fallbacks.
@@ -161,26 +228,16 @@ func (c *Client) resolveTidalAPIURL() string {
 	}
 	candidates = append(candidates, c.tidalAPIFallbacks...)
 
-	client := &http.Client{Timeout: 8 * time.Second}
+	c.resolvedTidalAPI, c.resolvedTidalKind = "", apiDead
 	for _, u := range candidates {
-		req, err := http.NewRequest("GET", u+"/", nil)
-		if err != nil {
-			continue
+		if kind := probeAPI(u); kind != apiDead {
+			c.resolvedTidalAPI, c.resolvedTidalKind = u, kind
+			break
 		}
-		req.Header.Set("User-Agent", "spotiflac-lidarr-proxy/1.0")
-		resp, err := client.Do(req)
-		if err != nil {
-			continue
-		}
-		resp.Body.Close()
-		// Any HTTP response means the proxy is alive.
-		c.resolvedTidalAPI = u
-		c.resolvedTidalCheck = time.Now()
-		return u
 	}
+	c.resolvedTidalCheck = time.Now()
 
-	// None worked — return primary (may still work, health check might be flaky).
-	return c.tidalAPIURL
+	return c.resolvedTidalAPI, c.resolvedTidalKind
 }
 
 // SetRelayPort sets the port the proxy server listens on, used to construct
@@ -252,17 +309,23 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			"--service", service,
 			"--quality", cliQuality,
 		}
-		tidalURL := c.resolveTidalAPIURL()
+		tidalURL, tidalKind := c.resolveTidalAPIURL()
 		if tidalURL != "" {
-			// If the resolved URL is a hifi-api instance (manifest format),
-			// start a local adapter that translates to SpotiFLAC format.
-			if isHiFiAPI(tidalURL) {
+			// A hifi-api instance speaks manifests, not direct URLs, so put
+			// the translating adapter in front of it. If the adapter can't
+			// start, skip the custom API rather than handing spotiflac-cli a
+			// URL whose responses it cannot parse.
+			if tidalKind == apiHiFi {
 				adapterAddr, err := c.startHiFiAdapter(tidalURL)
-				if err == nil {
+				if err != nil {
+					tidalURL = ""
+				} else {
 					tidalURL = adapterAddr
 				}
 			}
-			args = append(args, "--tidal-api-url", tidalURL)
+			if tidalURL != "" {
+				args = append(args, "--tidal-api-url", tidalURL)
+			}
 		}
 		if c.qobuzAPIURL != "" {
 			args = append(args, "--qobuz-api-url", c.qobuzAPIURL)
