@@ -154,6 +154,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	verifyStore := verify.NewStore()
 	sabHandler.SetVerifyStore(verifyStore)
 
+	// Pick up anything left Queued by a previous process. Without this a
+	// restart strands those jobs forever - they are only ever dispatched
+	// from the addurl request that created them.
+	if resumed := sabHandler.ResumeQueuedJobs(); resumed > 0 {
+		log.Info().Int("jobs", resumed).Msg("resumed queued jobs from previous run")
+	}
+
 	nznbHandler := newznab.NewHandler(client, version, cfg.APIKey, cfg.DefaultQuality)
 	nznbHandler.SetLogger(log)
 

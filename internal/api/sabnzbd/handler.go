@@ -160,6 +160,36 @@ func (h *Handler) ProcessDownloadSync(job *queue.Job) {
 	h.processDownload(job)
 }
 
+// ResumeQueuedJobs re-dispatches every job still sitting in Queued, and
+// returns how many it started. Called once at startup.
+//
+// A job is only ever dispatched from handleAddURL's `go
+// h.ProcessDownloadSync(job)`. That goroutine dies with the process, but the
+// row stays Queued, and nothing ever looked at it again -- so any job that
+// had not yet reached Downloading when the container restarted was stranded
+// permanently. queue.RecoverStuckJobs covers the Downloading case (it fails
+// them, since partial on-disk state is not trusted); Queued jobs have no
+// partial state at all and can simply be started.
+//
+// Found in production 2026-08-07: 13 jobs queued on 2026-08-03 and -04 were
+// still listed as Queued four days and several restarts later. Lidarr sees
+// them as pending forever -- they never download, never fail, and never time
+// out.
+//
+// Each dispatch blocks on the same semaphore as a live request, so resuming
+// a large backlog cannot exceed SPF_MAX_CONCURRENT.
+func (h *Handler) ResumeQueuedJobs() int {
+	jobs, _, err := h.queue.List(queue.ListParams{Status: string(sabnzbd.StatusQueued)})
+	if err != nil {
+		h.log.Error().Err(err).Msg("resume queued jobs: list failed")
+		return 0
+	}
+	for _, job := range jobs {
+		go h.ProcessDownloadSync(job)
+	}
+	return len(jobs)
+}
+
 const maxAttempts = 3
 
 var retryBackoff = []time.Duration{5 * time.Second, 15 * time.Second}
