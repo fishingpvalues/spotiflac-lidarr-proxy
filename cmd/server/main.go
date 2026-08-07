@@ -144,8 +144,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// FSL (Byparr/FlareSolverr) auto-solving callback — receives Turnstile
 	// grant callbacks from Byparr's headless browser and forwards to
 	// SpotiFLAC's local callback server. No auth required (called by
-	// Byparr's browser, not by an authenticated client).
-	verifyRelay := api.NewVerifyRelayHandler()
+	// Byparr's browser, not by an authenticated client), which is exactly
+	// why it is handed the client's own state -> callback map: the
+	// forwarding target is resolved from what this server recorded, never
+	// from what an anonymous caller asked for.
+	verifyRelay := api.NewVerifyRelayHandler(client)
+	verifyRelay.SetLogger(log)
 	app.Get("/api/verify-relay", verifyRelay.Handle)
 
 	sabHandler := sabnzbd.NewHandler(q, client, st, cfg, version)
@@ -175,24 +179,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 	verifyHandler.SetLogger(log)
 	verifyHandler.RegisterRoutes(app)
 
-	// SABnzbd routes: require auth except version, auth modes
+	// SABnzbd routes: require auth except the version and auth modes, which
+	// Lidarr calls before it has a key configured.
 	sabGroup := app.Group("/api/sabnzbd")
-	sabGroup.Use(api.APIKeyAuthWithSkiplist(cfg.APIKey, "version", "auth"))
+	sabGroup.Use(api.APIKeyAuth(cfg.APIKey, []string{"version", "auth"}, nil))
 	sabHandler.RegisterRoutesOnGroup(sabGroup)
 
 	// Also register on /api for Lidarr SABnzbd compatibility (urlBase). This
 	// group is mounted at the bare "/api" prefix, so its middleware also
 	// matches every /api/newznab/* request (fiber matches Use() by path
-	// prefix, not by which group's own routes it is). Without "caps" in its
-	// own skiplist here too, it 401s t=caps before nznbGroup's skiplist
-	// below ever gets a chance to exempt it.
+	// prefix, not by which group's own routes it is). Without newznab's
+	// "caps" exempted here too, it 401s t=caps before nznbGroup's own
+	// skiplist below ever gets a chance to. That exemption belongs to the
+	// "t" parameter and only to it: as a shared skiplist matched against
+	// both parameters it let &t=caps skip auth on every mode= request.
 	sabRootGroup := app.Group("/api")
-	sabRootGroup.Use(api.APIKeyAuthWithSkiplist(cfg.APIKey, "version", "auth", "caps"))
+	sabRootGroup.Use(api.APIKeyAuth(cfg.APIKey, []string{"version", "auth"}, []string{"caps"}))
 	sabHandler.RegisterRoutesOnGroup(sabRootGroup)
 
 	// Newznab routes: require auth except caps
 	nznbGroup := app.Group("/api/newznab")
-	nznbGroup.Use(api.APIKeyAuthWithSkiplist(cfg.APIKey, "caps"))
+	nznbGroup.Use(api.APIKeyAuth(cfg.APIKey, nil, []string{"caps"}))
 	nznbHandler.RegisterRoutesOnGroup(nznbGroup)
 
 	log.Info().Int("port", cfg.Port).Str("version", version).Msg("starting server")

@@ -23,9 +23,9 @@ func TestAPIKeyAuthWithSkiplistOnOverlappingGroupsExemptsSharedSkipMode(t *testi
 	// skiplist ever gets a chance to run. Both overlapping groups' skiplists
 	// must agree, not just the one that logically "owns" the route.
 	app := fiber.New()
-	app.Group("/api").Use(api.APIKeyAuthWithSkiplist("correct-key", "version", "auth", "caps"))
+	app.Group("/api").Use(api.APIKeyAuth("correct-key", []string{"version", "auth"}, []string{"caps"}))
 	nznb := app.Group("/api/newznab")
-	nznb.Use(api.APIKeyAuthWithSkiplist("correct-key", "caps"))
+	nznb.Use(api.APIKeyAuth("correct-key", nil, []string{"caps"}))
 	nznb.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
 
 	req, _ := http.NewRequest("GET", "/api/newznab?t=caps", nil)

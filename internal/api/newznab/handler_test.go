@@ -21,7 +21,7 @@ func setupNewznabApp(t *testing.T) *fiber.App {
 	handler := newznab.NewHandler(client, "test", "test-key", "lossless")
 
 	app := fiber.New()
-	app.Use(api.APIKeyAuthWithSkiplist("test-key", "caps"))
+	app.Use(api.APIKeyAuth("test-key", nil, []string{"caps"}))
 	handler.RegisterRoutes(app)
 
 	return app
