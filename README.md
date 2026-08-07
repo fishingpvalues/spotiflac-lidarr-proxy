@@ -1,268 +1,310 @@
-<p align="center">
-  <img src="docs/assets/icon.svg" width="96" height="96" alt="spotiflac-lidarr-proxy icon">
-</p>
+# spotiflac-lidarr-proxy
 
-<h1 align="center">Spotiflac-Lidarr Proxy</h1>
+A download client and indexer for Lidarr, backed by SpotiFLAC.
 
-<p align="center">
-  <a href="https://github.com/fishingpvalues/spotiflac-lidarr-proxy/actions/workflows/ci.yml"><img src="https://github.com/fishingpvalues/spotiflac-lidarr-proxy/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases/latest"><img src="https://img.shields.io/github/v/release/fishingpvalues/spotiflac-lidarr-proxy" alt="Latest release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
-  <a href="go.mod"><img src="https://img.shields.io/badge/go-1.25%2B-00ADD8.svg" alt="Go version"></a>
-  <a href="https://github.com/fishingpvalues/spotiflac-lidarr-proxy/pkgs/container/spotiflac-lidarr-proxy"><img src="https://img.shields.io/badge/docker-ghcr.io-2496ED.svg" alt="Docker image"></a>
-</p>
+Lidarr has no concept of a streaming service. It knows how to talk to Usenet
+indexers and to SABnzbd. This program implements both of those protocols, so
+Lidarr can add it as an ordinary Newznab indexer and an ordinary SABnzbd
+download client without knowing anything unusual is happening. Behind that
+interface it drives SpotiFLAC, which resolves a Spotify link to the same
+recording on Tidal, Qobuz, Amazon Music or Deezer and downloads the FLAC.
+Spotify links are used only as a search key; no account is needed on any of
+the five services.
 
-<p align="center">
-  Lets Lidarr talk to SpotiFLAC.
-</p>
+Use it only for material you have the right to download. See [Legal](#legal).
 
-> [!WARNING]
-> Use this only to download content you have the legal right to download. See [Legal](#legal).
+## Installation
 
-This proxy implements the SABnzbd download client API and the Newznab indexer API, so Lidarr treats it like an ordinary Usenet setup. Underneath, it drives a headless SpotiFLAC CLI to pull FLAC and hi-res audio from Tidal, Qobuz, Amazon Music, and Deezer, using Spotify links as the search key, no account or login required for any of the four. The published Docker image bundles a matching `spotiflac-cli` build, so this one container is all you need.
+The container image contains everything the program needs: the proxy, a
+matching `spotiflac-cli` build, and a Python environment with the SpotiFLAC
+module. There is nothing else to install.
 
-## Getting started
+    docker run -d \
+      -p 8484:8484 \
+      -e SPF_API_KEY=$(openssl rand -hex 16) \
+      -v /srv/downloads:/downloads \
+      -v spotiflac-data:/data \
+      ghcr.io/fishingpvalues/spotiflac-lidarr-proxy:latest
 
-```bash
-git clone https://github.com/fishingpvalues/spotiflac-lidarr-proxy.git
-cd spotiflac-lidarr-proxy
-cp .env.example .env
-# edit .env and set SPF_API_KEY to a random string
-docker compose up -d
-```
+Put it on the same Docker network as Lidarr and give both the same downloads
+volume, mounted at the same path, so Lidarr can import what this writes.
+[`docker-compose.yml`](docker-compose.yml) is a working example.
 
-This starts the proxy next to a Lidarr container on the same Docker network, sharing a `/downloads` volume. See [`docker-compose.yml`](docker-compose.yml) for the full list of settings, or use a prebuilt image directly:
+Binaries for linux, macOS and Windows on amd64 and arm64 are attached to each
+[release](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases),
+along with `checksums.txt`. Running outside a container means supplying
+`spotiflac-cli` yourself; it ships as a separate archive in the same release.
 
-```yaml
-services:
-  proxy:
-    image: ghcr.io/fishingpvalues/spotiflac-lidarr-proxy:latest
-    ports: ["8484:8484"]
-    environment:
-      - SPF_API_KEY=your-secret-key
-      - SPF_OUTPUT_DIR=/downloads
-    volumes:
-      - downloads:/downloads
-```
+    SPF_API_KEY=... SPF_OUTPUT_DIR=/srv/downloads \
+    SPF_SPOTIFLAC_CLI_PATH=/usr/local/bin/spotiflac-cli \
+    ./spotiflac-lidarr-proxy serve
 
-### Lidarr setup
+`-v` raises the log level to debug, `-vv` to trace.
 
-1. **Download Client:** Settings -> Download Clients -> Add -> SABnzbd
-   - Host: `proxy`, Port: `8484`, URL Base: leave empty
-   - API Key: your `SPF_API_KEY` value, Category: `music`
+## Configuring Lidarr
 
-2. **Indexer:** Settings -> Indexers -> Add -> Newznab
-   - URL: `http://proxy:8484/api/newznab`
-   - API Key: your `SPF_API_KEY` value, Categories: 3010, 3040
+Two entries, both pointing at this program. Use the same key for each.
 
-## Features
+Settings, Download Clients, Add, SABnzbd:
 
-- Speaks both halves of Lidarr's protocol: SABnzbd (download client) and Newznab (indexer).
-- **Three download backends**, auto-selected by priority:
-  1. **SpotiFLAC Python module** (recommended) — multi-service fallback (configurable via `SPF_FALLBACK_SERVICES`, defaults to tidal→qobuz→deezer→amazon), no browser verification, 12+ services, works out of the box.
-  2. **SpotiFLAC CLI** (Go binary, built-in) — headless, with optional FSL/Byparr auto-solving for community captcha.
-  3. **Hifi-API adapter** — auto-detects hifi-api format proxies (`api.monochrome.tf` etc.), spawns local format translator, passes translated endpoint to SpotiFLAC CLI.
-- Quality/service categories (`music-flac-24`, `music-tidal`, ...) map onto Lidarr's quality profiles.
-- Multi-source Tidal API fallback chain with health-check auto-selection (8+ known public proxies, FMHY-sourced).
-- Confirms each download actually completed before reporting success, not just that a request was sent.
-- Per-service circuit breaker, with an optional fallback chain across Tidal/Qobuz/Amazon/Deezer.
-- Prometheus `/metrics`, a real `/health` check, and a `warnings` endpoint for open breakers or stuck jobs.
-- SQLite-backed job queue that survives restarts.
+    Host      spotiflac-proxy
+    Port      8484
+    API Key   your SPF_API_KEY
+    Category  music
 
-## Why not a Lidarr plugin?
+Settings, Indexers, Add, Newznab:
 
-Lidarr plugins are compiled .NET assemblies loaded into Lidarr's own process, only available on Lidarr's separate "plugins" build, and a bug in one runs with the same access as Lidarr itself. This proxy runs as its own process instead, speaking a protocol Lidarr has supported for years across every build. It survives Lidarr internals changing, can sit behind whatever VPN sidecar you already use (Gluetun or otherwise, entirely your call), and a crash in it never takes Lidarr down too.
+    URL         http://spotiflac-proxy:8484/api/newznab
+    API Key     your SPF_API_KEY
+    Categories  3010, 3040
 
-## Downloa backend priority
+The indexer answers directed searches only. Lidarr's RSS sync sends a query
+with no artist and no album, and there is no catalogue to browse, so that
+returns nothing by design.
 
-The proxy tries backends in order, first success wins:
+## How downloads happen
 
-| Priority | Backend | Needs | Captcha? |
-|----------|---------|-------|----------|
-| 1 | **Python wrapper** (embedded) | Python venv with `SpotiFLAC` pip module | No |
-| 2 | CLI + custom Tidal API + hifi-adapter | `SPF_TIDAL_API_URL` or fallback URLs | No |
-| 3 | CLI + FSL/Byparr auto-solve | `SPOTIFLAC_FSL_URL` + Byparr container | Auto-solved |
-| 4 | CLI community tier | Nothing | Manual browser |
+Lidarr searches, picks a release, and hands the download to the SABnzbd side.
+Each job then goes through up to four backends, in order, first success wins.
 
-### Backend 1: SpotiFLAC Python module (built-in)
+| # | Backend | Requires | Human interaction |
+|---|---------|----------|-------------------|
+| 1 | SpotiFLAC Python module | in the image | none |
+| 2 | `spotiflac-cli` against a custom Tidal or Qobuz API | `SPF_TIDAL_API_URL` or a reachable fallback | none |
+| 3 | `spotiflac-cli` with a captcha solver | `SPOTIFLAC_FSL_URL` | none |
+| 4 | `spotiflac-cli` against the community tier | nothing | solve a captcha in a browser |
 
-The Python wrapper script is **embedded in the Go binary** — no external files needed. If a Python venv with the SpotiFLAC module is detected, it's used automatically. Falls through to CLI if Python is unavailable or the wrapper fails.
+Backend 1 handles its own authentication and needs no browser, which is why it
+is tried first. Backends 2 through 4 exist because upstream sources fail often
+and independently.
 
-**What it does:** Multi-service fallback across 12+ providers (tidal, qobuz, deezer, amazon, soundcloud, youtube, apple, pandora...), internal auth handling — **no account, no browser verification, no captcha**.
+Jobs are recorded in SQLite and survive a restart, including ones that had not
+started yet. Completion is verified against the files on disk rather than
+assumed from a successful request. A per-service circuit breaker stops sending
+work to a service after five consecutive failures and reopens after ten
+minutes; `SPF_FALLBACK_SERVICES` lets a job try another service instead of
+failing.
 
-```dockerfile
-# Dockerfile addition (before the runtime stage):
-FROM python:3.12-alpine AS python-deps
-RUN python3 -m venv /venv && /venv/bin/pip install --no-cache-dir SpotiFLAC requests
+### Public Tidal API mirrors
 
-# In runtime stage, copy the venv:
-COPY --from=python-deps /venv /venv
-```
+Backend 2 needs a Tidal API instance. `SPF_TIDAL_API_FALLBACK_URLS` ships a
+list of known public ones, probed in order; the first that answers 2xx with a
+JSON body is used, and that verdict is cached for five minutes. Instances that
+are down cost one bounded probe rather than blocking the list behind them.
 
-```bash
-# Env var (optional — auto-detected):
-SPF_SPOTIFLAC_PYTHON_VENV=/venv/bin/python3
-```
+A note on what qualifies. `lossless.wtf`, `monochrome.samidy.com` and
+`if-it-runs-ship-it.lol` are the Monochrome *web interface*, not its API. They
+answer 200 with HTML. Do not configure them as API URLs.
 
-**No config needed** if venv is at `/venv/bin/python3`, `/app/venv/bin/python3`, or system `python3` has SpotiFLAC installed. The embedded wrapper extracts itself to a temp directory at runtime.
+State of the public list, measured 2026-08-07 from a VPN exit and from a bare
+connection, with identical results:
 
-### VPN requirement
+| Instance | Result |
+|----------|--------|
+| `monochrome-api.samidy.com` | reachable, hifi-api 2.3; metadata works, `/track/` returns 403 |
+| `api.monochrome.tf` | HTTP 503 |
+| `arran.monochrome.tf` | HTTP 502 |
+| `hifi-one.spotisaver.net` | HTTP 502 |
+| `*.qqdl.site`, `tidal.kinoplus.online` | connection refused |
+| `tidal.qqdl.site` | Cloudflare interstitial |
+| `hifi.geeked.wtf` | NXDOMAIN |
 
-> [!IMPORTANT]
-> Always route through VPN. All backends connect to community proxies serving copyrighted audio. Without VPN, your real IP hits servers that log it. Set `HTTP_PROXY`/`HTTPS_PROXY` to your gluetun proxy:
+That is not a configuration problem and no setting works around it. hifi-api's
+own documentation notes that Tidal began blocking the accounts these instances
+run on, so a reachable instance can still fail every track lookup. Public
+mirrors come back; the list is probed fresh, so recovery needs no action.
 
-```yaml
-environment:
-  - HTTP_PROXY=http://gluetun:8888
-  - HTTPS_PROXY=http://gluetun:8888
-```
+Instances speaking the [hifi-api](https://github.com/uimaxbai/hifi-api) format
+return a base64 manifest rather than a download URL. Those are detected from
+their root response and a translating adapter is started in front of them
+automatically. The adapter also waits out hifi-api's playback queue, which
+answers 202 with a ticket when every upstream credential is busy.
 
-**Legal context (Germany):** Zero known Abmahnungen for SpotiFLAC/direct-download tools. All German copyright enforcement targets BitTorrent swarms exclusively. Direct downloads from private proxies are practically invisible to law firms. (Source: web searches across Reddit, forums, news — nothing found.) Still: VPN costs nothing when gluetun already runs.
+Self-hosting your own instance and pointing `SPF_TIDAL_API_URL` at it avoids
+all of the above, and is the only arrangement that does not depend on
+someone else's uptime.
 
-### CLI only, or without Docker
+## Captcha solving
 
-Every [release](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases) ships three things: the proxy binary, a standalone `spotiflac-cli` binary, and a `checksums.txt` to verify them, for `linux`/`darwin`/`windows` on `amd64`/`arm64`. If you just want SpotiFLAC downloads from the command line with no Lidarr involved, grab `spotiflac-cli` on its own:
+Backend 4 requires solving a Cloudflare Turnstile in a real browser, once.
+Backend 3 avoids that by delegating to a headless solver over the FlareSolverr
+API. Point `SPOTIFLAC_FSL_URL` at one.
 
-```bash
-curl -L -o spotiflac-cli.tar.gz \
-  https://github.com/fishingpvalues/spotiflac-lidarr-proxy/releases/latest/download/spotiflac-cli_<tag>_<os>_<arch>.tar.gz
-tar xzf spotiflac-cli.tar.gz && ./spotiflac-cli --help
-```
+[trawl](https://github.com/germondai/trawl) is the recommended solver.
+FlareSolverr is effectively unmaintained against current Turnstile, and trawl
+keeps the same API and port, so it is a drop-in replacement:
 
-To run the proxy itself without Docker, download `spotiflac-lidarr-proxy_<tag>_<os>_<arch>.tar.gz` the same way (or `go build ./cmd/server`), then point it at a `spotiflac-cli`:
+    services:
+      trawl:
+        image: ghcr.io/germondai/trawl:latest
+        environment:
+          - PORT=8191
+          - BROWSER_POOL_SIZE=2
 
-```bash
-SPF_API_KEY=your-secret-key SPF_OUTPUT_DIR=/path/to/downloads \
-SPF_SPOTIFLAC_CLI_PATH=/path/to/spotiflac-cli \
-./spotiflac-lidarr-proxy serve       # -v for debug, -vv for trace
-```
+      proxy:
+        image: ghcr.io/fishingpvalues/spotiflac-lidarr-proxy:latest
+        environment:
+          - SPOTIFLAC_FSL_URL=http://trawl:8191
+          - SPOTIFLAC_ADDRESS=proxy
 
-Testing: `go test ./... -count=1` (unit), `INTEGRATION=1 go test ./tests/integration/... -v` (real docker-compose stack).
+`SPOTIFLAC_ADDRESS` must be an address the solver's browser can reach back on,
+since the challenge redirects there. It is auto-detected from the default
+route, which is wrong often enough to be worth setting explicitly.
 
-## Captcha Solving (Byparr / FlareSolverr)
+This path is best-effort. The challenge page is itself behind Cloudflare and
+sometimes rejects headless browsers outright. Backends 1 and 2 need none of
+this, and are the ones to prefer.
 
-When using the **SpotiFLAC CLI** backend (not the Python module), community verification requires solving a Cloudflare Turnstile. The proxy integrates with **Byparr** (a FlareSolverr-compatible proxy) to attempt this automatically.
+## Running behind a VPN
 
-> **Note:** The Python module (recommended) does NOT need this — it uses alternative auth methods that skip browser verification entirely. This section only applies if you're using the CLI backend without a custom API URL.
+Every backend talks to third-party servers that will log the connecting
+address. Route the container through a VPN sidecar. With
+[gluetun](https://github.com/qdm12/gluetun), share its network namespace:
 
-### How It Works
+    services:
+      proxy:
+        network_mode: "service:gluetun"
+        depends_on:
+          gluetun:
+            condition: service_healthy
 
-1. SpotiFLAC CLI emits `verification_required` JSON event with a challenge URL
-2. Proxy's FSL integration sends the challenge URL to Byparr's headless browser
-3. Byparr loads the challenge page, auto-solves the Turnstile widget
-4. The challenge page redirects to the proxy's `/api/verify-relay` endpoint with a grant
-5. Proxy forwards the grant to SpotiFLAC's local callback server
-6. SpotiFLAC exchanges the grant for a community session — download proceeds
+Sharing a namespace has consequences worth stating plainly. Every container
+doing this reaches the others on `127.0.0.1`, and `depends_on` alone does not
+survive the VPN container restarting, which takes the network with it. Publish
+ports on the gluetun service, not on this one.
 
-### Configuration
+`HTTP_PROXY`/`HTTPS_PROXY` are honoured for outbound requests if you would
+rather use gluetun's HTTP proxy than its namespace. They are deliberately
+stripped from the `spotiflac-cli` subprocess, which talks to public endpoints
+directly and mishandles a proxy that speaks HTTP to an HTTPS client.
 
-| Env Variable | Default | Description |
-|-------------|---------|-------------|
-| `SPOTIFLAC_FSL_URL` | (unset) | Byparr/FlareSolverr API endpoint (e.g. `http://byparr:8191`) |
-| `SPOTIFLAC_ADDRESS` | auto-detected | This container's routable IP for the Turnstile callback reachable by Byparr's browser |
-
-> **Known limitation:** The `verify.spotbye.qzz.io` challenge page is behind Cloudflare and may block headless browsers (returns HTTP 400). In testing, Byparr correctly receives the challenge URL but the verification page rejects the headless browser. Use the Python module or custom API URLs to bypass this entirely.
-
-## Multi-source Tidal API fallback
-
-When using the CLI backend with `SPF_TIDAL_API_URL`, the proxy health-checks all configured API URLs and auto-selects the first working one. If the primary URL fails, it falls back through `SPF_TIDAL_API_FALLBACK_URLS` (comma-separated list) before giving up. The verdict is cached for 5 minutes — success *and* failure, so a list of mostly-dead public mirrors does not re-probe every candidate on every download.
-
-A candidate counts as working only if it answers **2xx with a JSON body**. That matters more than it sounds: `lossless.wtf`, `monochrome.samidy.com` and `if-it-runs-ship-it.lol` are the Monochrome *web UI*, and they answer 200 with HTML. The earlier "any HTTP response means alive" check accepted them, and `api.monochrome.tf`'s 503 too, then handed the result to `spotiflac-cli` as `--tidal-api-url`. If nothing passes, no `--tidal-api-url` is passed at all and SpotiFLAC continues down its own backend cascade.
-
-### Hifi-API format adapter
-
-Some Tidal proxies use a manifest-based response format ([hifi-api](https://github.com/uimaxbai/hifi-api)) instead of the direct URL format SpotiFLAC expects. The proxy **auto-detects** hifi-api instances — their root reports `{"version":"2.x","Repo":"..."}` — and spawns a local format adapter that translates base64-encoded BTS/MPD manifests into direct download URLs.
-
-No configuration needed. The adapter also handles hifi-api 2.x's playback queue: when every upstream playback credential is busy it answers `202` with a queue ticket rather than a manifest, and the adapter polls `statusUrl` until the ticket completes (up to 4 minutes) instead of reporting an empty manifest.
-
-### Known public proxies
-
-Measured 2026-08-07, both from a VPN exit and a bare uplink — results were identical, so none of these are geo/VPN artifacts.
-
-| URL | Format | Status |
-|-----|--------|--------|
-| `monochrome-api.samidy.com` | hifi-api 2.3 | **Alive.** Metadata works; `/track/` returns 403 `Upstream API error` (Tidal has blocked the instance's account) |
-| `api.monochrome.tf` | hifi-api | HTTP 503 |
-| `arran.monochrome.tf` | hifi-api | HTTP 502 |
-| `hifi-one.spotisaver.net` | hifi-api | HTTP 502 |
-| `wolf/maus/vogel/katze/hund.qqdl.site` | community | Connection refused |
-| `tidal.qqdl.site` | community | Cloudflare Turnstile (403) |
-| `tidal.kinoplus.online` | unknown | Connection refused |
-| `hifi.geeked.wtf` | unknown | NXDOMAIN |
-| `lossless.wtf`, `monochrome.samidy.com`, `if-it-runs-ship-it.lol` | **web UI, not an API** | Alive — do not configure as an API URL |
-| `squid.wtf`, `doubledouble.top`, `lucida.to` et al. | web tool | Not machine endpoints |
-
-hifi-api's own README notes that Tidal began mass-blocking the accounts these instances run on, which is why a reachable instance can still fail every `/track/` call. Nothing configured here works around that; the Python backend (backend 1) is the path that currently produces files.
-
-Sources: [FMHY](https://fmhy.net/audiopiracyguide), [Monochrome INSTANCES.md](https://github.com/monochrome-music/monochrome/blob/main/INSTANCES.md), [tidaloader](https://github.com/RayZ3R0/tidaloader), [spofree](https://github.com/redretep/spofree). These URLs change frequently — set your own in `SPF_TIDAL_API_FALLBACK_URLS`.
-
-### Alternative: Custom API URLs (No Captcha Needed)
-
-Set `SPF_TIDAL_API_URL` and/or `SPF_QOBUZ_API_URL` to point at self-hosted hifi-api instances. When these are configured, SpotiFLAC bypasses the community tier entirely — no Turnstile, no verification.
+WireGuard sessions expire silently: the tunnel reports healthy and passes no
+packets. If every backend starts failing at once, check egress before
+suspecting this program.
 
 ## Configuration
 
-Environment variables, all prefixed `SPF_`. Full reference: [`docs/API.md`](docs/API.md).
+All variables are prefixed `SPF_`, except the two SpotiFLAC ones. Full
+reference in [`docs/API.md`](docs/API.md).
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SPF_PORT` | 8484 | HTTP listen port |
-| `SPF_API_KEY` | (required) | API key for Lidarr auth |
-| `SPF_OUTPUT_DIR` | /downloads | FLAC output directory |
-| `SPF_SPOTIFLAC_CLI_PATH` | /usr/local/bin/spotiflac-cli | Path to spotiflac-cli binary (CLI backend) |
-| `SPF_SPOTIFLAC_PYTHON_VENV` | auto-detected | Path to venv python3, e.g. `/venv/bin/python3` |
-| `SPF_DEFAULT_SERVICE` | tidal | Download service |
-| `SPF_DEFAULT_QUALITY` | lossless | Quality: lossless, hires |
-| `SPF_FALLBACK_SERVICES` | (none) | Services to try if primary fails |
-| `SPF_MAX_CONCURRENT` | 3 | Max concurrent downloads |
-| `SPF_JOB_TIMEOUT` | 30m | Max download time |
-| `SPF_DB_PATH` | /data/queue.db | SQLite database path |
-| `SPF_LOG_LEVEL` | info | Log level: trace, debug, info, warn, error |
-| `SPF_HISTORY_RETENTION_COUNT` | 500 | History entries to keep |
-| `SPF_TIDAL_API_URL` | (none) | Custom Tidal API instance |
-| `SPF_QOBUZ_API_URL` | (none) | Custom Qobuz API instance |
-| `SPF_TIDAL_API_FALLBACK_URLS` | 10 known proxies | Comma-separated Tidal API URLs; probed in order, first one answering 2xx JSON wins, verdict cached 5 min |
-| `SPF_VERIFY_RELAY_URL` | (none) | Proxy's own `/verify/callback` URL for manual browser relay |
-| `SPF_VERIFY_NOTIFY_URL` | (none) | Webhook URL for verification notifications (ntfy/Gotify compatible) |
-| `SPF_VERIFY_NOTIFY_TITLE` | SpotiFLAC verification needed | `Title` header for webhook notifications |
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `SPF_API_KEY` | required | Shared secret for Lidarr |
+| `SPF_PORT` | 8484 | Listen port |
+| `SPF_OUTPUT_DIR` | /downloads | Where finished audio is written |
+| `SPF_DB_PATH` | /data/queue.db | Job queue database |
+| `SPF_DEFAULT_SERVICE` | tidal | tidal, qobuz, amazon or deezer |
+| `SPF_DEFAULT_QUALITY` | lossless | lossless or hires |
+| `SPF_FALLBACK_SERVICES` | none | Services tried after the primary fails |
+| `SPF_MAX_CONCURRENT` | 3 | Concurrent downloads |
+| `SPF_JOB_TIMEOUT` | 30m | Ceiling per job |
+| `SPF_HISTORY_RETENTION_COUNT` | 500 | History rows kept |
+| `SPF_LOG_LEVEL` | info | trace, debug, info, warn, error |
+| `SPF_TIDAL_API_URL` | none | Custom Tidal API instance |
+| `SPF_QOBUZ_API_URL` | none | Custom Qobuz API instance |
+| `SPF_TIDAL_API_FALLBACK_URLS` | built-in list | Comma-separated, probed in order |
+| `SPF_SPOTIFLAC_CLI_PATH` | /usr/local/bin/spotiflac-cli | CLI binary |
+| `SPF_SPOTIFLAC_PYTHON_VENV` | /venv/bin/python3 | Python environment for backend 1 |
+| `SPF_VERIFY_RELAY_URL` | none | This program's reachable `/verify/callback` URL |
+| `SPF_VERIFY_NOTIFY_URL` | none | Webhook posted to when verification is needed |
+| `SPF_VERIFY_NOTIFY_TITLE` | SpotiFLAC verification needed | `Title` header for that webhook |
+| `SPOTIFLAC_FSL_URL` | none | FlareSolverr-compatible solver |
+| `SPOTIFLAC_ADDRESS` | auto | Address the solver can reach this program on |
+
+`SPF_FALLBACK_SERVICES` deliberately excludes `amazon` by default. That
+provider drives a real browser, which this image does not ship, so it fails
+after writing an undecryptable `.enc` file into the job directory.
+
+Amazon categories map onto Lidarr quality profiles through the SABnzbd
+category name: `music-tidal`, `music-qobuz-flac-24` and so on select service
+and quality per job.
 
 ## Security
 
-This proxy authenticates with a single static API key, the same trust model SABnzbd and every other Lidarr download client already use. It is only as safe as the network it sits on: the API key is compared in constant time, redacted from logs, and every value passed to the SpotiFLAC subprocess is checked against a strict allowlist, but none of that helps if the *arr stack itself is exposed to the internet.
+Authentication is a single static API key, the same model SABnzbd itself uses.
+The key is compared in constant time and redacted from request logs. Values
+reaching the `spotiflac-cli` subprocess are matched against an anchored
+allowlist first, so a crafted release name cannot inject arguments, and job
+directories are derived from server-generated identifiers rather than
+user-supplied paths.
 
-- **Never publish this proxy's port to the internet.** Keep it on Lidarr's internal Docker network.
-- **Use a reverse proxy** (Caddy/Traefik/nginx) and terminate TLS there for remote access.
-- **Prefer a VPN over port-forwarding.** Tailscale/WireGuard beats opening a router port.
-- **Rotate `SPF_API_KEY`** if it ever leaks, and check `GET /api/sabnzbd?mode=warnings` periodically.
-- **Keep the image updated.** Renovate tracks dependency and base-image updates on this repo.
+Three endpoints are deliberately unauthenticated:
+
+- `/health` reports which internal checks failed.
+- `/metrics` exposes Prometheus counters and queue depth.
+- `/api/verify-relay` receives the captcha grant, which arrives as a browser
+  redirect carrying no API key. Its forwarding target is taken from the
+  state-to-callback mapping this program recorded when it dispatched the
+  challenge, never from the request. An unrecognised state falls back to the
+  supplied value only if it is plain http, on loopback, at `/session-grant`;
+  redirects are not followed and the upstream response body is logged rather
+  than returned.
+
+Everything else requires the key, including `mode=version` and `t=caps` on any
+route that is not actually invoking them.
+
+Do not publish the port to the internet. Keep it on Lidarr's network, and
+reach it remotely over Tailscale or WireGuard rather than a forwarded port. If
+the key leaks, change it; there is no session state to invalidate.
+
+`GET /api?mode=warnings&apikey=...` lists open circuit breakers and pending
+verifications, and is worth checking when downloads stop.
+
+## Why a proxy and not a Lidarr plugin
+
+Lidarr plugins are .NET assemblies loaded into Lidarr's process, available
+only on its separate plugins branch, and a fault in one has Lidarr's access. A
+separate process speaking a protocol Lidarr has supported for years keeps
+working across Lidarr releases, can be put behind whatever VPN sidecar you
+already run, and cannot take Lidarr down with it.
 
 ## Troubleshooting
 
-Repeated failures for one service (Tidal/Qobuz/Amazon/Deezer) are usually IP-based rate limiting, not an auth problem. The built-in circuit breaker stops sending jobs to a service after 5 consecutive failures for 10 minutes; check `GET /api/sabnzbd?mode=warnings` for open breakers, or set `SPF_FALLBACK_SERVICES` so jobs try another service automatically.
+Repeated failures against one service are usually address-based rate limiting
+rather than an authentication problem; `mode=warnings` will show the breaker
+open. Set `SPF_FALLBACK_SERVICES` so jobs move on by themselves.
 
-### "browser integration is not ready" / one-time community verification
+If every service fails at once, the cause is upstream or network, not
+configuration. Confirm egress works, then check whether the Tidal mirrors are
+answering at all.
 
-Only applies to the **Go CLI backend**. The Python module (recommended) does not need this. Options, in order of reliability:
-
-1. **Use the Python module** (recommended). Set `SPF_SPOTIFLAC_PYTHON_PATH` + `SPF_SPOTIFLAC_PYTHON_VENV`. The Python module uses alternative auth methods that skip browser verification entirely. See [SpotiFLAC Python module](#spotiflac-python-module-recommended) above.
-2. Set `SPF_TIDAL_API_URL` and/or `SPF_QOBUZ_API_URL` to a custom Tidal/Qobuz API instance (self-hosted, with your own account). Both skip the community tier and its verification entirely.
-3. Run the `ghcr.io/fishingpvalues/spotiflac-lidarr-proxy:latest-gui` image alongside this one, sharing the same app-data volume. SpotiFLAC desktop app behind noVNC at port 6901. Complete verification once in a real browser, session persists on shared volume. See [`docker-compose.gui.yml`](docker-compose.gui.yml).
-4. Set `SPF_VERIFY_RELAY_URL` to this proxy's reachable `/verify/callback` URL, open the link from `mode=warnings` in any browser. Mechanically works but the challenge page may not complete reliably.
-5. Run SpotiFLAC desktop once on any machine with a browser, copy the session file to `/home/spotiflac/.spotiflac` in the container.
+For `browser integration is not ready` on the CLI backend, in order of
+reliability: use backend 1, which is in the image and needs none of this;
+point `SPF_TIDAL_API_URL` at an instance you control; run the
+`:latest-gui` image alongside this one, sharing the app-data volume, and
+complete verification once in the browser it exposes over noVNC (see
+[`docker-compose.gui.yml`](docker-compose.gui.yml)); or set
+`SPF_VERIFY_RELAY_URL` and open the link from `mode=warnings` yourself.
 
 ## API reference
 
-Full route tables and response fields: [`docs/API.md`](docs/API.md). Machine-readable spec: [`openapi.json`](openapi.json), checked against the running server on every CI run.
+Route tables and response fields are in [`docs/API.md`](docs/API.md). The
+machine-readable specification is [`openapi.json`](openapi.json), which CI
+checks against the running server on every build.
 
-## AI usage
+## Development
 
-This project was planned and implemented with AI assistance (Anthropic Claude Code). All AI-generated code goes through the same automated tests and manual review as any other contribution.
+    go test ./... -count=1
+    INTEGRATION=1 go test ./tests/integration/... -v
+
+The integration suite starts a real docker-compose stack.
+
+This project was written with AI assistance. Everything goes through the same
+tests and review as anything else here.
 
 ## Legal
 
-SpotiFLAC and this proxy are third-party tools, not affiliated with Spotify, Tidal, Qobuz, Amazon Music, or any other streaming service. For educational and private use only. You are responsible for complying with your local laws and the Terms of Service of the respective platforms. Provided "as is", without warranty of any kind; the author assumes no liability for any bans, damages, or legal issues arising from its use.
+SpotiFLAC and this program are third-party tools with no affiliation to
+Spotify, Tidal, Qobuz, Amazon Music, Deezer or any other service. You are
+responsible for complying with the law where you live and with the terms of
+the services involved. Provided as is, without warranty; the author accepts no
+liability for bans, damages or legal consequences arising from its use.
 
-**API credits (from the upstream SpotiFLAC project):** [MusicBrainz](https://musicbrainz.org), [LRCLIB](https://lrclib.net), [Songlink/Odesli](https://song.link), [Songstats](https://songstats.com), [hifi-api](https://github.com/binimum/hifi-api), [Qobuz-DL](https://github.com/QobuzDL/Qobuz-DL).
+Upstream API credits: [MusicBrainz](https://musicbrainz.org),
+[LRCLIB](https://lrclib.net), [Songlink/Odesli](https://song.link),
+[Songstats](https://songstats.com),
+[hifi-api](https://github.com/binimum/hifi-api),
+[Qobuz-DL](https://github.com/QobuzDL/Qobuz-DL).
 
 ## License
 

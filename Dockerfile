@@ -25,10 +25,34 @@ RUN CGO_ENABLED=0 go build -tags headless -ldflags="-s -w" -o /out/spotiflac-cli
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S spotiflac && adduser -S spotiflac -G spotiflac
+
+# The Python backend is what the proxy tries first and what actually produces
+# files in practice. It used to be left to whoever built a downstream image,
+# so the published image did not contain the backend its own documentation
+# called priority 1 - anyone pulling it silently got the CLI backends only.
+#
+# Built here rather than copied from python:3.12-alpine: that image keeps its
+# interpreter in /usr/local/bin, so a venv created there points its symlinks
+# and pyvenv.cfg at paths this image does not have.
+#
+# pydoll: SpotiFLAC imports it unconditionally for the Amazon provider, so
+# without it the entire module fails to import and every backend-1 download
+# fails. The distribution is named "pydoll-python" while the module is
+# "pydoll", which is why it was previously believed to be missing from PyPI
+# and replaced with hand-written stub modules. It is a real package, so the
+# stubs are gone. Amazon additionally needs a browser this image does not
+# ship, which is why it is not in the default fallback chain.
+RUN apk add --no-cache python3 py3-pip && \
+    python3 -m venv /venv && \
+    /venv/bin/pip install --no-cache-dir SpotiFLAC requests nodriver pydoll-python && \
+    apk del py3-pip && \
+    find /venv -name '__pycache__' -type d -prune -exec rm -rf {} +
+
 COPY --from=builder /out/server /usr/local/bin/server
 COPY --from=cli-builder /out/spotiflac-cli /usr/local/bin/spotiflac-cli
-RUN mkdir -p /downloads /data /home/spotiflac/.spotiflac && \
-    chown -R spotiflac:spotiflac /downloads /data /home/spotiflac
+RUN mkdir -p /downloads /data /home/spotiflac/.spotiflac /home/spotiflac/.cache/spotiflac && \
+    chown -R spotiflac:spotiflac /downloads /data /home/spotiflac /venv
 USER spotiflac
+ENV SPF_SPOTIFLAC_PYTHON_VENV=/venv/bin/python3
 EXPOSE 8484
 ENTRYPOINT ["server", "serve"]
