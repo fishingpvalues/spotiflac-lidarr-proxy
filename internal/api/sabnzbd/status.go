@@ -50,7 +50,20 @@ func (h *Handler) handleGetConfig(c fiber.Ctx) error {
 	resp.Config.Misc.CompletedDir = h.cfg.OutputDir
 	resp.Config.Misc.CompleteDirEnabled = true
 	resp.Config.Misc.PreCheck = false
+	// We never prune history behind Lidarr's back (PruneHistory only trims
+	// our own oldest entries, well past import), so both retention fields
+	// must say so. history_retention_option is the one that matters on
+	// SABnzbd >= 4.3 and is what Lidarr checks first; without it Lidarr
+	// falls through to its legacy branch, which ends in
+	//
+	//   return retention != "0";
+	//
+	// and so read our "all" - meaning "keep everything" - as "removes
+	// completed downloads", raising
+	// DownloadClientRemovesCompletedDownloadsCheck against a client that
+	// removes nothing.
 	resp.Config.Misc.HistoryRetention = "all"
+	resp.Config.Misc.HistoryRetentionOption = "all"
 	return c.JSON(resp)
 }
 
