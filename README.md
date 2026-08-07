@@ -58,9 +58,15 @@ Settings, Indexers, Add, Newznab:
     API Key     your SPF_API_KEY
     Categories  3010, 3040
 
+Set the download client's category to `music`, or Lidarr's test reports "a
+category is recommended".
+
 The indexer answers directed searches only. Lidarr's RSS sync sends a query
-with no artist and no album, and there is no catalogue to browse, so that
-returns nothing by design.
+with no artist and no album, and there is nothing to browse, so it returns
+nothing by design. For the same reason Lidarr's indexer Test button reports
+"Query successful, but no results in the configured categories were
+returned". That is expected here and does not stop searches working; the
+button has no way to express "search-only indexer".
 
 ## How downloads happen
 
