@@ -15,6 +15,16 @@ func Search(ctx context.Context, client *spotiflac.Client, query, artist, album 
 		searchQuery = artist
 	}
 
+	// An empty query is not an error, it's Lidarr's RSS sync: t=music with
+	// no q/artist/album, issued on every indexer refresh. spotiflac-cli
+	// rejects --search "" with "error: --url is required" and exit 1, which
+	// surfaced as a "newznab music search failed" every ~7 minutes forever.
+	// There is nothing to browse here - this indexer only answers directed
+	// searches - so return no releases rather than shelling out to fail.
+	if strings.TrimSpace(searchQuery) == "" {
+		return nil, nil
+	}
+
 	results, err := client.SearchMetadata(ctx, searchQuery)
 	if err != nil {
 		return results, err
