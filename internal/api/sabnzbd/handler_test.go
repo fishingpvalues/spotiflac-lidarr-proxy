@@ -901,3 +901,24 @@ func TestWarningsSurfacesStuckJob(t *testing.T) {
 	}
 	assert.True(t, found, "warnings should surface the job stuck in Downloading past 2x its timeout")
 }
+
+func TestGetConfigCategoriesCarryNoRelativeDir(t *testing.T) {
+	// Lidarr resolves a relative category dir against complete_dir and checks
+	// that the result exists inside its own container. Downloads land in
+	// complete_dir/<nzo_id>, never complete_dir/music, so a non-empty dir
+	// raised a permanent RemotePathMappingCheck error against a working setup.
+	app, _ := setupTestApp(t)
+
+	req, _ := http.NewRequest("GET", "/api/sabnzbd?mode=get_config&output=json&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	var cfgResp sabtypes.ConfigResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&cfgResp))
+	require.NotEmpty(t, cfgResp.Config.Categories)
+	for _, cat := range cfgResp.Config.Categories {
+		assert.Empty(t, cat.Dir, "category %q must not advertise a relative dir", cat.Name)
+		assert.NotEmpty(t, cat.Name)
+	}
+}
