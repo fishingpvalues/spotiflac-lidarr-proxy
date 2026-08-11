@@ -496,6 +496,7 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 	for scanner.Scan() {
 		var raw struct {
 			Type       string `json:"type"`
+			Entity     string `json:"entity"`
 			Name       string `json:"name"`
 			Artist     string `json:"artist"`
 			Album      string `json:"album"`
@@ -522,16 +523,26 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 		if artist == "" {
 			artist = raw.Name
 		}
-		results = append(results, MetadataResult{
+		album := raw.Album
+		result := MetadataResult{
 			Artist:     artist,
-			Album:      raw.Album,
+			Album:      album,
 			Title:      title,
 			SpotifyURL: url,
 			CoverURL:   raw.CoverURL,
 			ISRC:       raw.ISRC,
 			Genre:      raw.Genre,
 			TrackCount: raw.TrackCount,
-		})
+			Entity:     raw.Entity,
+		}
+		// An album hit from a CLI that predates the `entity`/`album` fix
+		// carries its title in name and leaves album empty. Recover it, or the
+		// indexer's "an album must have an album name" rule throws away the
+		// only releases Lidarr is able to import.
+		if result.Album == "" && result.EntityKind() == EntityAlbum {
+			result.Album = title
+		}
+		results = append(results, result)
 	}
 
 	if err := cmd.Wait(); err != nil {

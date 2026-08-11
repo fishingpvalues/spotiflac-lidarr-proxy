@@ -69,3 +69,68 @@ func TestFilterResultsDropsResultsWithNoAlbum(t *testing.T) {
 	assert.Len(t, got, 1)
 	assert.Equal(t, "My Love", got[0].Album)
 }
+
+func TestFilterResultsPrefersAlbumOverItsOwnTracks(t *testing.T) {
+	// Downloading a track URL yields one file, and Lidarr imports nothing
+	// below an 80% album match, so the album hit must be the release we
+	// publish for a given (artist, album).
+	results := []spotiflac.MetadataResult{
+		{Artist: "Eminem", Album: "Kamikaze", Title: "The Ringer", Entity: "track",
+			SpotifyURL: "https://open.spotify.com/track/2jt2WxXMCD4zjACthkJQVE"},
+		{Artist: "Eminem", Album: "Kamikaze", Title: "Kamikaze", Entity: "album",
+			SpotifyURL: "https://open.spotify.com/album/3HNnxK7NgLXbDoxRZxNWiR"},
+		{Artist: "Eminem", Album: "Kamikaze", Title: "Fall", Entity: "track",
+			SpotifyURL: "https://open.spotify.com/track/58QhkbaAkLFnn7JwAnAato"},
+	}
+
+	got := filterResults(results, "Eminem", "")
+
+	assert.Len(t, got, 1)
+	assert.Contains(t, got[0].SpotifyURL, "/album/")
+}
+
+func TestFilterResultsKeepsTracksWithNoAlbumCounterpart(t *testing.T) {
+	// A single has no album hit, and dropping it would make singles - the bulk
+	// of what this indexer is asked for - unsearchable.
+	results := []spotiflac.MetadataResult{
+		{Artist: "Fred again..", Album: "solo", Title: "solo", Entity: "track",
+			SpotifyURL: "https://open.spotify.com/track/6U5h4WhbYufaRGXQhnileY"},
+	}
+
+	got := filterResults(results, "", "")
+
+	assert.Len(t, got, 1)
+	assert.Contains(t, got[0].SpotifyURL, "/track/")
+}
+
+func TestFilterResultsComparesOnlyThePrimaryArtist(t *testing.T) {
+	// Spotify credits a track to every featured artist but the album to the
+	// primary one, so a naive full-string compare never matches the pair up.
+	results := []spotiflac.MetadataResult{
+		{Artist: "Eminem, Joyner Lucas", Album: "Kamikaze", Title: "Lucky You", Entity: "track",
+			SpotifyURL: "https://open.spotify.com/track/60SdxE8apGAxMiRrpbmLY0"},
+		{Artist: "Eminem", Album: "Kamikaze", Title: "Kamikaze", Entity: "album",
+			SpotifyURL: "https://open.spotify.com/album/3HNnxK7NgLXbDoxRZxNWiR"},
+	}
+
+	got := filterResults(results, "", "")
+
+	assert.Len(t, got, 1)
+	assert.Contains(t, got[0].SpotifyURL, "/album/")
+}
+
+func TestFilterResultsDerivesEntityFromURLWhenFieldMissing(t *testing.T) {
+	// CLI builds older than the `entity` field emit neither it nor an album
+	// name for album hits; the URL path is the fallback.
+	results := []spotiflac.MetadataResult{
+		{Artist: "Eminem", Album: "Kamikaze", Title: "Fall",
+			SpotifyURL: "https://open.spotify.com/track/58QhkbaAkLFnn7JwAnAato"},
+		{Artist: "Eminem", Album: "Kamikaze", Title: "Kamikaze",
+			SpotifyURL: "https://open.spotify.com/album/3HNnxK7NgLXbDoxRZxNWiR"},
+	}
+
+	got := filterResults(results, "", "")
+
+	assert.Len(t, got, 1)
+	assert.Contains(t, got[0].SpotifyURL, "/album/")
+}
