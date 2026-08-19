@@ -63,7 +63,7 @@ func TestVerifyRelayRefusesArbitraryUpstream(t *testing.T) {
 		{"external host by name", "http://evil.example/session-grant"},
 		{"external https", "https://example.com/session-grant"},
 		{"private lan address", "http://192.168.178.93/session-grant"},
-		{"docker bridge neighbour", "http://172.22.0.5/session-grant"},
+		{"docker bridge neighbor", "http://172.22.0.5/session-grant"},
 		{"link local metadata", "http://169.254.169.254/session-grant"},
 		{"loopback but not a grant path", "http://127.0.0.1:8191/"},
 		{"loopback gluetun control api", "http://127.0.0.1:8008/v1/publicip/ip"},

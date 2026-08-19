@@ -190,7 +190,7 @@ func (a *HiFiAdapter) awaitPlayback(statusURL string) (*hifiTrackResponse, error
 		switch resp.Status {
 		case "pending", "processing":
 			continue
-		case "failed", "cancelled":
+		case "failed", "cancelled": //nolint:misspell // upstream API response value, must match verbatim
 			return nil, fmt.Errorf("hifi-adapter: playback request %s", resp.Status)
 		default:
 			// Completed: the poll carries the original playback response.

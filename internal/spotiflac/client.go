@@ -198,7 +198,7 @@ func (c *Client) startHiFiAdapter(upstream string) (string, error) {
 //
 // Downloads run concurrently (SPF_MAX_CONCURRENT), so the cache is guarded:
 // the fields were previously read and written from several goroutines at
-// once with no synchronisation.
+// once with no synchronization.
 func (c *Client) resolveTidalAPIURL() (string, apiKind) {
 	// If no fallbacks are configured, the single explicit URL is the
 	// operator's deliberate choice - use it without second-guessing, but
