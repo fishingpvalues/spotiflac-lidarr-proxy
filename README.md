@@ -75,6 +75,19 @@ nothing by design. For the same reason Lidarr's indexer Test button reports
 returned". That is expected here and does not stop searches working; the
 button has no way to express "search-only indexer".
 
+### Albums, not tracks
+
+A Spotify search returns both tracks and the albums containing them, and both
+rendered here as the same release title. Only the album is importable: grabbing a
+track URL downloads exactly one file, and Lidarr refuses to import an album match
+below 80% ("Album match is not close enough: 76.5 % vs 80 %", "Has missing
+tracks"). So an album hit now wins its `(primary artist, album)` pair and the
+track hits under it are dropped. Tracks with no album hit above them - singles -
+are still published, and a single is a complete release in Lidarr's eyes.
+
+Grabbing an album URL makes SpotiFLAC download every track into one job
+directory, which is what Lidarr's importer expects to find.
+
 ## How downloads happen
 
 Lidarr searches, picks a release, and hands the download to the SABnzbd side.

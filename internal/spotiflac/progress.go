@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"strings"
 )
 
 type ProgressEvent struct {
@@ -33,6 +34,35 @@ type MetadataResult struct {
 	Genre      string `json:"genre"`
 	Year       int    `json:"year"`
 	TrackCount int    `json:"track_count"`
+	// Entity is "album", "track" or "" - what the Spotify URL points at.
+	// The CLI reports it as `entity`; older builds omit the field, so it is
+	// also derived from the URL path. It decides whether a grab downloads a
+	// whole album or one file, which is the difference between a release
+	// Lidarr can import and one it always rejects.
+	Entity string `json:"entity"`
+}
+
+// Spotify URL path segments, as they appear in CLI search output.
+const (
+	EntityAlbum = "album"
+	EntityTrack = "track"
+)
+
+// EntityKind reports what the result's Spotify URL points at, preferring the
+// CLI's own `entity` field and falling back to the URL path for CLI builds that
+// predate it.
+func (m MetadataResult) EntityKind() string {
+	switch m.Entity {
+	case EntityAlbum, EntityTrack:
+		return m.Entity
+	}
+	switch {
+	case strings.Contains(m.SpotifyURL, "/album/"):
+		return EntityAlbum
+	case strings.Contains(m.SpotifyURL, "/track/"):
+		return EntityTrack
+	}
+	return ""
 }
 
 func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- error, output *bytes.Buffer, onVerify func(ProgressEvent)) {
