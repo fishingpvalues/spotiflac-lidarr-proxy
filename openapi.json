@@ -358,7 +358,7 @@
         "properties": {
           "name": { "type": "string" },
           "order": { "type": "integer" },
-          "dir": { "type": "string", "description": "Output subdirectory" }
+          "dir": { "type": "string", "description": "Always empty: downloads land in complete_dir/<nzo_id>, not in a per-category subdirectory" }
         }
       },
       "Script": {

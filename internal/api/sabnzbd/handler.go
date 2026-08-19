@@ -342,7 +342,7 @@ func (h *Handler) handleProgressEvent(job *queue.Job, evt spotiflac.ProgressEven
 			h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("progress update failed")
 		}
 	case "metadata":
-		job.Filename = evt.Artist + " - " + evt.Album
+		job.Filename = releaseName(job.Filename, evt)
 		if err := h.queue.Update(job); err != nil {
 			h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("metadata update failed")
 		}
@@ -385,7 +385,7 @@ func (h *Handler) handleCompleteEvent(job *queue.Job, evt spotiflac.ProgressEven
 	job.OutputPath = evt.OutputPath
 	now := time.Now()
 	job.CompletedAt = &now
-	job.Filename = evt.Artist + " - " + evt.Album
+	job.Filename = releaseName(job.Filename, evt)
 	if err := h.queue.Update(job); err != nil {
 		h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("mark job completed failed")
 	}
@@ -394,6 +394,38 @@ func (h *Handler) handleCompleteEvent(job *queue.Job, evt spotiflac.ProgressEven
 	}
 	h.log.Info().Str("nzo_id", job.NzoID).Str("path", evt.OutputPath).Msg("download complete")
 	return true, ""
+}
+
+// releaseName decides what a job is called in queue and history output.
+//
+// current is whatever the job already carries; at addurl time that is the NZB
+// name Lidarr itself sent, i.e. the exact release title it grabbed. Lidarr
+// matches its tracked download against that string, so an unconditional
+// overwrite from CLI metadata breaks the match: SpotiFLAC reports no album for
+// single tracks, which produced names like "Fred again.., BLANCO - " - a
+// trailing separator and no title - and Lidarr then treated every completed
+// single as an untracked download it could not map back to a grab.
+//
+// Metadata therefore only wins when it is strictly better: both artist and
+// album present, or, for a nameless job, artist plus track title.
+func releaseName(current string, evt spotiflac.ProgressEvent) string {
+	artist := strings.TrimSpace(evt.Artist)
+	album := strings.TrimSpace(evt.Album)
+	title := strings.TrimSpace(evt.Title)
+
+	if artist != "" && album != "" {
+		return artist + " - " + album
+	}
+	if strings.TrimSpace(current) != "" {
+		return current
+	}
+	if artist != "" && title != "" {
+		return artist + " - " + title
+	}
+	if artist != "" {
+		return artist
+	}
+	return title
 }
 
 func (h *Handler) failJob(job *queue.Job, errMsg string) {

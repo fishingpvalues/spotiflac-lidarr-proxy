@@ -95,3 +95,26 @@ func TestNewznabXMLTagsTitleWithRecognizableQuality(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(hires), "A - B [FLAC 24-bit]</title>")
 }
+
+func TestNewznabXMLIncludesCategoryAttrs(t *testing.T) {
+	// Consumers read item categories only from newznab:attr name="category";
+	// the <category> element is decorative. Without the attrs every release
+	// parses with an empty category set, so anything that filters or routes on
+	// category drops it.
+	results := []spotiflac.MetadataResult{
+		{Artist: "A", Album: "B", SpotifyURL: "https://open.spotify.com/album/x", TrackCount: 3},
+	}
+
+	lossless, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key", "lossless")
+	require.NoError(t, err)
+	assert.Contains(t, string(lossless), `name="category" value="3000"`)
+	assert.Contains(t, string(lossless), `name="category" value="3010"`,
+		"lossless releases must carry the Lossless subcategory advertised in caps")
+
+	hires, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key", "hires")
+	require.NoError(t, err)
+	assert.Contains(t, string(hires), `name="category" value="3000"`)
+	assert.Contains(t, string(hires), `name="category" value="3040"`,
+		"hires releases must carry the FLAC 24-bit subcategory advertised in caps")
+	assert.NotContains(t, string(hires), `name="category" value="3010"`)
+}

@@ -61,6 +61,13 @@ Settings, Indexers, Add, Newznab:
 Set the download client's category to `music`, or Lidarr's test reports "a
 category is recommended".
 
+Categories carry a name but no directory. Downloads land in
+`SPF_OUTPUT_DIR/<nzo_id>`, never in a per-category subdirectory, and Lidarr
+resolves a relative category dir against `complete_dir` and then checks that the
+result exists inside its own container - so advertising one raises a permanent
+"places downloads in ... but this directory does not appear to exist" health
+error against a working setup.
+
 The indexer answers directed searches only. Lidarr's RSS sync sends a query
 with no artist and no album, and there is nothing to browse, so it returns
 nothing by design. For the same reason Lidarr's indexer Test button reports

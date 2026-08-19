@@ -20,27 +20,35 @@ func (h *Handler) handleAuth(c fiber.Ctx) error {
 
 func (h *Handler) handleGetConfig(c fiber.Ctx) error {
 	resp := sabnzbd.ConfigResponse{}
+	// Dir is deliberately empty on every category. Downloads land directly in
+	// OutputDir/<nzo_id>, never in a per-category subdirectory, and Lidarr
+	// resolves a relative category dir against complete_dir to decide where the
+	// client writes: a "music" dir made it check OutputDir/music, which never
+	// exists, and it then raised a permanent
+	// "download client SpotiFLAC places downloads in ... but this directory does
+	// not appear to exist inside the container" health error against a working
+	// setup. Category names still route service and quality (ParseCategory).
 	resp.Config.Categories = []sabnzbd.Category{
 		// Generic quality categories
-		{Name: "music", Order: 0, Dir: "music"},
-		{Name: "music-flac-16", Order: 1, Dir: "music-flac-16"},
-		{Name: "music-flac-24", Order: 2, Dir: "music-flac-24"},
-		{Name: "music-lossless", Order: 3, Dir: "music-lossless"},
-		{Name: "music-mp3", Order: 4, Dir: "music-mp3"},
+		{Name: "music", Order: 0},
+		{Name: "music-flac-16", Order: 1},
+		{Name: "music-flac-24", Order: 2},
+		{Name: "music-lossless", Order: 3},
+		{Name: "music-mp3", Order: 4},
 		// Service-specific categories
-		{Name: "music-tidal", Order: 10, Dir: "music-tidal"},
-		{Name: "music-qobuz", Order: 11, Dir: "music-qobuz"},
-		{Name: "music-amazon", Order: 12, Dir: "music-amazon"},
-		{Name: "music-deezer", Order: 13, Dir: "music-deezer"},
+		{Name: "music-tidal", Order: 10},
+		{Name: "music-qobuz", Order: 11},
+		{Name: "music-amazon", Order: 12},
+		{Name: "music-deezer", Order: 13},
 		// Service x Quality combined categories
-		{Name: "music-tidal-flac-16", Order: 20, Dir: "music-tidal-flac-16"},
-		{Name: "music-tidal-flac-24", Order: 21, Dir: "music-tidal-flac-24"},
-		{Name: "music-qobuz-flac-16", Order: 22, Dir: "music-qobuz-flac-16"},
-		{Name: "music-qobuz-flac-24", Order: 23, Dir: "music-qobuz-flac-24"},
-		{Name: "music-amazon-flac-16", Order: 24, Dir: "music-amazon-flac-16"},
-		{Name: "music-amazon-flac-24", Order: 25, Dir: "music-amazon-flac-24"},
-		{Name: "music-deezer-flac-16", Order: 26, Dir: "music-deezer-flac-16"},
-		{Name: "music-deezer-flac-24", Order: 27, Dir: "music-deezer-flac-24"},
+		{Name: "music-tidal-flac-16", Order: 20},
+		{Name: "music-tidal-flac-24", Order: 21},
+		{Name: "music-qobuz-flac-16", Order: 22},
+		{Name: "music-qobuz-flac-24", Order: 23},
+		{Name: "music-amazon-flac-16", Order: 24},
+		{Name: "music-amazon-flac-24", Order: 25},
+		{Name: "music-deezer-flac-16", Order: 26},
+		{Name: "music-deezer-flac-24", Order: 27},
 	}
 	resp.Config.Scripts = []sabnzbd.Script{
 		{Name: "Default", Default: true},

@@ -88,6 +88,26 @@ type Attr struct {
 	Value string `xml:"value,attr"`
 }
 
+// newznabCategories returns the numeric category ids to advertise per item,
+// parent first, matching what CapsXML declares.
+//
+// Consumers read an item's categories ONLY from `newznab:attr name="category"`
+// (Lidarr's NewznabRssParser.GetCategory, and the same in Prowlarr, autobrr and
+// cross-seed); the human-readable <category> element is decorative. Without
+// these attrs every release we hand out parses with an empty category set, so
+// any consumer that filters or routes on category silently drops it.
+//
+// This is NOT what makes Lidarr's indexer Test button complain. That message
+// ("no results in the configured categories") is emitted whenever the result set
+// is empty, and Lidarr tests with a browse query - no artist, no album - which
+// this indexer answers with zero items by design. See README.
+func newznabCategories(quality string) []string {
+	if quality == "hires" {
+		return []string{"3000", "3040"}
+	}
+	return []string{"3000", "3010"}
+}
+
 // qualityTag returns a release-title suffix Lidarr's QualityParser will
 // recognize (verified against its actual regexes: CodecRegex matches
 // "flac" case-insensitively, SampleSizeRegex matches "24-bit" /
@@ -133,11 +153,16 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality s
 	}
 
 	titleSuffix := qualityTag(quality)
+	categories := newznabCategories(quality)
 
 	for _, r := range results {
 		estimatedSize := EstimateSizeBytes(r.TrackCount, "lossless")
 		title := r.Artist + " - " + r.Album + titleSuffix
-		attrs := []Attr{
+		attrs := make([]Attr, 0, len(categories)+10)
+		for _, cat := range categories {
+			attrs = append(attrs, Attr{Name: "category", Value: cat})
+		}
+		attrs = append(attrs, []Attr{
 			{Name: "artist", Value: r.Artist},
 			{Name: "album", Value: r.Album},
 			{Name: "genre", Value: r.Genre},
@@ -147,7 +172,7 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality s
 			{Name: "grabs", Value: "0"},
 			{Name: "files", Value: fmt.Sprintf("%d", r.TrackCount)},
 			{Name: "poster", Value: r.CoverURL},
-		}
+		}...)
 		if r.ISRC != "" {
 			attrs = append(attrs, Attr{Name: "isrc", Value: r.ISRC})
 		}
