@@ -354,7 +354,19 @@ open. Set `SPF_FALLBACK_SERVICES` so jobs move on by themselves.
 
 If every service fails at once, the cause is upstream or network, not
 configuration. Confirm egress works, then check whether the Tidal mirrors are
-answering at all.
+answering at all. A failed job now carries the backend's own reasons, so read
+those before changing settings. The ones seen in practice, and what they mean:
+
+| Reason | Cause |
+|--------|-------|
+| `ext:tidal-web: NETWORK_ERROR: Timeout (120s) calling download` | the extension's upstream API is not answering |
+| `ext:qobuz-web: NETWORK_ERROR: Timeout (120s) calling checkAvailability` | same |
+| `ext:amazon: Track not available: not_found_on_amazon` | that provider genuinely does not have it |
+| `ext:deezer: <asyncio.locks.Lock ...> is bound to a different event loop` | an upstream SpotiFLAC bug: `core/session_memory.py` and `core/profiles.py` hold module-level `asyncio.Lock()` objects, which bind to whichever loop first awaits them and then reject every other one. Nothing configurable fixes it; treat Deezer as unreliable |
+
+None of these are worked around here on purpose. Monkeypatching an installed
+site-packages module is lost on every version bump and hides the problem in
+the meantime.
 
 For `browser integration is not ready` on the CLI backend, in order of
 reliability: use backend 1, which is in the image and needs none of this;
