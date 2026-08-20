@@ -17,6 +17,7 @@ type Handler struct {
 	version        string
 	apiKey         string
 	defaultQuality string
+	rssQuery       string
 }
 
 func NewHandler(client *spotiflac.Client, version, apiKey, defaultQuality string) *Handler {
@@ -27,6 +28,14 @@ func NewHandler(client *spotiflac.Client, version, apiKey, defaultQuality string
 		apiKey:         apiKey,
 		defaultQuality: defaultQuality,
 	}
+}
+
+// SetRSSQuery sets the search used to answer a browse feed - t=music with no
+// q, artist or album, which is what Lidarr's RSS sync and its indexer Test
+// button both send. Empty means "answer nothing", which is honest but makes
+// Lidarr's Test button report a failure; see config.Config.RSSQuery.
+func (h *Handler) SetRSSQuery(q string) {
+	h.rssQuery = q
 }
 
 func (h *Handler) SetLogger(log zerolog.Logger) {
@@ -122,6 +131,10 @@ func (h *Handler) handleMusic(c fiber.Ctx) error {
 		if album != "" {
 			query = artist + " " + album
 		}
+	}
+	// Nothing to search on at all is a browse/RSS request.
+	if query == "" && artist == "" && album == "" {
+		query = h.rssQuery
 	}
 
 	results, err := indexer.Search(c.Context(), h.client, query, artist, album)

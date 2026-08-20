@@ -166,6 +166,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	nznbHandler := newznab.NewHandler(client, version, cfg.APIKey, cfg.DefaultQuality)
+	nznbHandler.SetRSSQuery(cfg.RSSQuery)
 	nznbHandler.SetLogger(log)
 
 	app.Use(api.RequestLogger(log))

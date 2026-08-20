@@ -25,6 +25,23 @@ type Config struct {
 
 	HistoryRetentionCount int `mapstructure:"history_retention_count"`
 
+	// RSSQuery is the search this indexer answers when Lidarr asks for a
+	// browse feed - t=music with no q, artist or album, which is what an RSS
+	// sync and the indexer Test button both send.
+	//
+	// Empty by default, and an empty browse answer is a legitimate one: this
+	// indexer resolves Spotify metadata for a named album and has no notion
+	// of "what is new". Lidarr, however, treats an empty result as a failure
+	// and answers the Test button with "Query successful, but no results in
+	// the configured categories were returned from your indexer", which
+	// looks like a broken indexer even though every real search works.
+	//
+	// Set this to make the Test button pass and give the RSS sync something
+	// real to chew on. Anything Spotify's search understands works; the
+	// results are ordinary album releases, so Lidarr ignores every one that
+	// does not match an album it is monitoring.
+	RSSQuery string `mapstructure:"rss_query"`
+
 	// VerifyRelayURL, if set, must be this proxy's own externally reachable
 	// /verify/callback URL (e.g. https://spotiflac.example.com/verify/callback).
 	// Passed to spotiflac-cli so it can relay Tidal/Qobuz/Amazon's one-time
@@ -79,7 +96,7 @@ func Load() (*Config, error) {
 
 	for _, key := range []string{
 		"api_key", "port", "output_dir", "spotiflac_cli_path",
-		"default_service", "default_quality", "max_concurrent",
+		"default_service", "default_quality", "max_concurrent", "rss_query",
 		"job_timeout", "db_path", "log_level", "fallback_services",
 		"history_retention_count", "verify_relay_url",
 		"tidal_api_url", "qobuz_api_url", "tidal_api_fallback_urls",
