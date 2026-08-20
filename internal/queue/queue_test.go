@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -332,4 +333,71 @@ func TestPruneHistoryZeroMeansUnlimited(t *testing.T) {
 	_, total, err := q.History(queue.ListParams{Limit: 10})
 	require.NoError(t, err)
 	assert.Equal(t, 3, total, "keep=0 should mean no pruning")
+}
+
+// TestRecoverStuckJobsSurvivesAPrune is the regression guard for a job
+// disappearing outright. RecoverStuckJobs left completed_at NULL, and
+// PruneHistory ranked history by completed_at DESC, where a NULL loses to
+// every real timestamp - so a job recovered into an already-full history was
+// deleted by the very next addurl. Observed in production: a release Lidarr
+// had grabbed was gone from the database entirely, leaving Lidarr with a grab
+// it could neither fail nor blocklist.
+func TestRecoverStuckJobsSurvivesAPrune(t *testing.T) {
+	q := newTestQueue(t)
+
+	// A full history of older, properly-timestamped rows.
+	past := time.Now().Add(-48 * time.Hour)
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("SABnzbd_nzo_old%d", i)
+		job := &queue.Job{NzoID: id}
+		require.NoError(t, q.Add(job))
+		completed := past.Add(time.Duration(i) * time.Minute)
+		job.CompletedAt = &completed
+		require.NoError(t, q.Update(job))
+		require.NoError(t, q.MoveToHistory(id))
+	}
+
+	// The interrupted job: still Downloading when the process died. Add
+	// always inserts as Queued, so the status has to be set afterwards.
+	stuck := &queue.Job{NzoID: "SABnzbd_nzo_stuck"}
+	require.NoError(t, q.Add(stuck))
+	stuck.Status = sabnzbd.StatusDownloading
+	require.NoError(t, q.Update(stuck))
+	recovered, err := q.RecoverStuckJobs()
+	require.NoError(t, err)
+	require.Equal(t, 1, recovered)
+
+	require.NoError(t, q.PruneHistory(3))
+
+	hist, _, err := q.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	var ids []string
+	for _, j := range hist {
+		ids = append(ids, j.NzoID)
+	}
+	assert.Contains(t, ids, "SABnzbd_nzo_stuck",
+		"a job recovered from a restart must outlive a prune, so Lidarr can see it failed")
+}
+
+func TestRecoverStuckJobsRecordsFailureAndTime(t *testing.T) {
+	q := newTestQueue(t)
+
+	job := &queue.Job{NzoID: "SABnzbd_nzo_rec"}
+	require.NoError(t, q.Add(job))
+	job.Status = sabnzbd.StatusDownloading
+	require.NoError(t, q.Update(job))
+
+	n, err := q.RecoverStuckJobs()
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	// Get only looks at the active queue; a recovered job is history.
+	hist, _, err := q.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, hist, 1)
+	got := hist[0]
+	assert.Equal(t, sabnzbd.StatusFailed, got.Status)
+	assert.Equal(t, "interrupted by restart", got.ErrorMessage)
+	require.NotNil(t, got.CompletedAt, "without a completion time the row is the first thing a prune deletes")
+	assert.WithinDuration(t, time.Now(), *got.CompletedAt, time.Minute)
 }

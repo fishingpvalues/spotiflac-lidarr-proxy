@@ -342,10 +342,17 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 // failure can't leave some jobs recovered and others not, and can't strand
 // a job between "marked Failed" and "moved to history".
 func (q *SQLiteQueue) RecoverStuckJobs() (int, error) {
+	// completed_at has to be set here, not left NULL. PruneHistory ranks
+	// history by completed_at, and a NULL loses to every timestamped row, so
+	// a job recovered into a full history was deleted by the very next
+	// addurl instead of being reported as failed. Observed in production: a
+	// release Lidarr had grabbed vanished from the queue database entirely,
+	// leaving Lidarr with a grab it could neither fail nor blocklist - so it
+	// re-grabbed the same release forever.
 	result, err := q.db.Exec(
-		`UPDATE jobs SET status = ?, error_message = ?, is_history = 1
+		`UPDATE jobs SET status = ?, error_message = ?, is_history = 1, completed_at = ?
 		 WHERE status = ? AND is_history = 0`,
-		sabnzbd.StatusFailed, "interrupted by restart", sabnzbd.StatusDownloading,
+		sabnzbd.StatusFailed, "interrupted by restart", time.Now(), sabnzbd.StatusDownloading,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("recover stuck jobs: %w", err)
@@ -363,9 +370,14 @@ func (q *SQLiteQueue) PruneHistory(keep int) error {
 	if keep <= 0 {
 		return nil
 	}
+	// COALESCE, because completed_at is nullable and a NULL sorts below
+	// every real timestamp under DESC - which made any history row without
+	// one the first thing deleted, however recent it actually was.
+	// time_added is NOT NULL, so it is always a usable stand-in.
 	_, err := q.db.Exec(
 		`DELETE FROM jobs WHERE is_history = 1 AND id NOT IN (
-			SELECT id FROM jobs WHERE is_history = 1 ORDER BY completed_at DESC, id DESC LIMIT ?
+			SELECT id FROM jobs WHERE is_history = 1
+			ORDER BY COALESCE(completed_at, time_added) DESC, id DESC LIMIT ?
 		)`, keep,
 	)
 	if err != nil {
