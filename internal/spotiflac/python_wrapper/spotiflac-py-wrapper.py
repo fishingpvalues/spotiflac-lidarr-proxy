@@ -421,6 +421,13 @@ def run_download(args):
             # provider browsers plus the Turnstile solver's own, in a
             # container capped at 2 CPUs.
             max_concurrent_downloads=args.max_parallel,
+            # Without this, SpotiFLAC's downloader builds its JS extension
+            # provider with `timeout_s=opts.timeout_s or 120` and every
+            # extension call is capped at 120 seconds - which a
+            # Turnstile-gated provider cannot finish inside, so it fails with
+            # "NETWORK_ERROR: Timeout (120s) calling download" no matter how
+            # much room the layers above it are given.
+            timeout_s=args.provider_timeout,
         )
     finally:
         builtins.input = original_input
@@ -485,6 +492,7 @@ def main():
     parser.add_argument("--no-enrich", action="store_true")
     parser.add_argument("--enrich-budget", type=float, default=20.0)
     parser.add_argument("--max-parallel", type=int, default=1)
+    parser.add_argument("--provider-timeout", type=int, default=900)
     args = parser.parse_args()
 
     if args.resolve:
