@@ -3,6 +3,11 @@ package indexer
 import (
 	"context"
 	"strings"
+	"unicode"
+
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
 )
@@ -53,14 +58,17 @@ func Search(ctx context.Context, client *spotiflac.Client, query, artist, album 
 //     track hits survive only where no album hit covers them, which is what
 //     keeps genuine singles searchable.
 func filterResults(results []spotiflac.MetadataResult, artist, album string) []spotiflac.MetadataResult {
+	wantArtist := normalizeForMatch(artist)
+	wantAlbum := normalizeForMatch(album)
+
 	matches := func(r spotiflac.MetadataResult) bool {
 		if r.Album == "" {
 			return false
 		}
-		if artist != "" && !strings.Contains(strings.ToLower(r.Artist), strings.ToLower(artist)) {
+		if wantArtist != "" && !strings.Contains(normalizeForMatch(r.Artist), wantArtist) {
 			return false
 		}
-		if album != "" && !strings.Contains(strings.ToLower(r.Album), strings.ToLower(album)) {
+		if wantAlbum != "" && !strings.Contains(normalizeForMatch(r.Album), wantAlbum) {
 			return false
 		}
 		return true
@@ -91,5 +99,50 @@ func filterResults(results []spotiflac.MetadataResult, artist, album string) []s
 // primary one, so only the first credit can be compared.
 func releaseKey(r spotiflac.MetadataResult) string {
 	artist, _, _ := strings.Cut(r.Artist, ",")
-	return strings.ToLower(strings.TrimSpace(artist)) + "\x00" + strings.ToLower(strings.TrimSpace(r.Album))
+	return normalizeForMatch(artist) + "\x00" + normalizeForMatch(r.Album)
+}
+
+// diacriticFold strips combining marks so "Beyoncé" and "Beyonce" compare
+// equal.
+var diacriticFold = transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+
+// ligatureFold covers the letters Unicode decomposition leaves alone: NFD
+// does not turn "æ" into "ae", so "Ágætis byrjun" still failed to match
+// "Agaetis byrjun". These are the ones that actually occur in music
+// metadata.
+var ligatureFold = strings.NewReplacer(
+	"æ", "ae", "Æ", "ae",
+	"ø", "o", "Ø", "o",
+	"œ", "oe", "Œ", "oe",
+	"ð", "d", "Ð", "d",
+	"þ", "th", "Þ", "th",
+	"ß", "ss",
+	"đ", "d", "Đ", "d",
+	"ł", "l", "Ł", "l",
+	"ı", "i",
+)
+
+// normalizeForMatch reduces a name to lowercase letters and digits, with
+// diacritics folded away.
+//
+// A plain lowercase strings.Contains was too strict to match what Lidarr
+// asks for against what Spotify returns. Lidarr sends the artist and album
+// as its own metadata source spells them, and the two disagree constantly on
+// punctuation and accents: "Beyoncé" vs "Beyonce", "Motorhead" vs
+// "Motörhead", "AC/DC" vs "AC-DC", "Ágætis byrjun" vs "Agaetis byrjun".
+// Every one of those filtered the whole result set to nothing, which
+// surfaces as an indexer that simply has no releases for that album.
+func normalizeForMatch(s string) string {
+	folded, _, err := transform.String(diacriticFold, ligatureFold.Replace(s))
+	if err != nil {
+		folded = s
+	}
+	var b strings.Builder
+	b.Grow(len(folded))
+	for _, r := range strings.ToLower(folded) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

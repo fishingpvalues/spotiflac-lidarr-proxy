@@ -134,3 +134,43 @@ func TestFilterResultsDerivesEntityFromURLWhenFieldMissing(t *testing.T) {
 	assert.Len(t, got, 1)
 	assert.Contains(t, got[0].SpotifyURL, "/album/")
 }
+
+func TestSearchMatchesAcrossDiacriticsAndPunctuation(t *testing.T) {
+	// Lidarr sends the artist and album as its own metadata source spells
+	// them, and Spotify disagrees constantly on accents and punctuation. A
+	// plain lowercase Contains dropped the whole result set, which looks
+	// like an indexer with no releases for that album.
+	cases := []struct {
+		name          string
+		artist, album string
+		gotArtist     string
+		gotAlbum      string
+	}{
+		{"accent on the artist", "Beyonce", "Lemonade", "Beyoncé", "Lemonade"},
+		{"accent on the album", "Sigur Ros", "Agaetis byrjun", "Sigur Rós", "Ágætis byrjun"},
+		{"umlaut", "Motorhead", "Ace of Spades", "Motörhead", "Ace of Spades"},
+		{"slash", "AC-DC", "Back in Black", "AC/DC", "Back in Black"},
+		{"apostrophe", "Guns N Roses", "Appetite for Destruction", "Guns N' Roses", "Appetite for Destruction"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			results := []spotiflac.MetadataResult{{
+				Artist:     tc.gotArtist,
+				Album:      tc.gotAlbum,
+				SpotifyURL: "https://open.spotify.com/album/x",
+			}}
+			got := filterResults(results, tc.artist, tc.album)
+			assert.Len(t, got, 1)
+		})
+	}
+}
+
+func TestSearchStillRejectsAnUnrelatedArtist(t *testing.T) {
+	results := []spotiflac.MetadataResult{{
+		Artist:     "Some Other Band",
+		Album:      "Lemonade",
+		SpotifyURL: "https://open.spotify.com/album/x",
+	}}
+	assert.Empty(t, filterResults(results, "Beyonce", "Lemonade"))
+}
