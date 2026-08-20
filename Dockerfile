@@ -14,7 +14,13 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /out/s
 
 # Stage 2: Build spotiflac-cli from fork (headless, relay-capable)
 FROM golang:1.26-alpine AS cli-builder
-ARG SPOTIFLAC_COMMIT=326bbfaf03d9c49bfec9f3565136728d1fdd95fd
+# a74d185 fixes the headless CLI dying on the first metadata batch of any
+# album URL: app.go emitted Wails frontend events inline, and the CLI's
+# context.Background() is not a Wails lifecycle context, so EventsEmit killed
+# the process. Verified on the target deployment - the pinned build exits 1
+# after one stdout line for an album URL, a74d185 runs on to the provider
+# cascade. Album downloads through backends 2-4 had never worked.
+ARG SPOTIFLAC_COMMIT=a74d1856d3159477dd131cd58067f2089e936a24
 RUN apk add --no-cache git
 RUN git clone https://github.com/fishingpvalues/SpotiFLAC.git /spotiflac && \
     cd /spotiflac && git checkout ${SPOTIFLAC_COMMIT}
