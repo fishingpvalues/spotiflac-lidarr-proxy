@@ -1,6 +1,7 @@
 package spotiflac_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -409,4 +411,38 @@ echo '{"type":"complete","path":"/tmp/out/dummy.flac","size":100,"artist":"A","a
 	serviceArg := strings.TrimSpace(string(data))
 	assert.Equal(t, "tidal,qobuz", serviceArg,
 		"primary service must not appear twice in --service list")
+}
+
+// TestPythonFailureIsLoggedNotSilentlyDropped guards the only record of why
+// the backend the proxy tries first did not work. CollectPythonResult
+// deliberately does not forward a Python error when there was no "complete"
+// event - the caller has to fall through to the CLI rather than fail the job -
+// but it used to discard the error entirely, so a backend-1 failure produced
+// no log line at all and the only way to diagnose it was to run the wrapper
+// by hand.
+func TestPythonFailureIsLoggedNotSilentlyDropped(t *testing.T) {
+	var buf bytes.Buffer
+	client := spotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, "", nil)
+	client.SetLogger(zerolog.New(&buf))
+
+	pyEvents := make(chan spotiflac.ProgressEvent)
+	pyErrs := make(chan error, 1)
+	mainEvents := make(chan spotiflac.ProgressEvent, 4)
+	mainErrs := make(chan error, 4)
+
+	pyErrs <- &spotiflac.DownloadError{
+		Message:   "no files downloaded - all services failed",
+		RawOutput: "ext:tidal-web: NETWORK_ERROR: Timeout (120s) calling download",
+	}
+	close(pyEvents)
+
+	ok := client.CollectPythonResult(pyEvents, pyErrs, mainEvents, mainErrs)
+	assert.False(t, ok, "no complete event means the CLI must still be tried")
+
+	logged := buf.String()
+	assert.Contains(t, logged, "python backend failed")
+	assert.Contains(t, logged, "NETWORK_ERROR: Timeout (120s) calling download",
+		"the backend's own reason has to survive into the log")
+
+	assert.Empty(t, mainErrs, "the error must not fail the job, only be recorded")
 }

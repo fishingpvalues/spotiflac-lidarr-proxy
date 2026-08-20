@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
 )
@@ -59,6 +62,18 @@ type Client struct {
 	// (e.g. ["qobuz", "deezer"]) used by the Python wrapper's internal
 	// cascade and the Go-level fallback chain.
 	fallbackServices []string
+
+	// log records what the backends did. Without it a Python-backend
+	// failure was invisible: CollectPythonResult drops the error on the
+	// floor so the job can fall through to the CLI, which is correct, but
+	// it also meant the only way to find out why backend 1 failed was to
+	// run the wrapper by hand.
+	log zerolog.Logger
+}
+
+// SetLogger attaches a logger. Optional: the zero value discards.
+func (c *Client) SetLogger(log zerolog.Logger) {
+	c.log = log
 }
 
 func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, verifyRelayURL, tidalAPIURL, qobuzAPIURL string, tidalAPIFallbacks []string, pythonVenv string, fallbackServices []string) *Client {
@@ -478,9 +493,26 @@ func (c *Client) CollectPythonResult(pyEvents <-chan ProgressEvent, pyErrs <-cha
 			if !ok {
 				continue
 			}
-			if e != nil && sawComplete {
-				mainErrs <- e
+			if e == nil {
+				continue
 			}
+			if sawComplete {
+				mainErrs <- e
+				continue
+			}
+			// Not forwarded on purpose - without a "complete" the caller
+			// falls through to the CLI, and surfacing this error would fail
+			// the job instead. It still gets logged: this is the only
+			// record of why the backend the proxy tries first did not work.
+			var de *DownloadError
+			detail := ""
+			if errors.As(e, &de) {
+				detail = de.RawOutput
+			}
+			c.log.Warn().
+				Err(e).
+				Str("detail", lastNBytes([]byte(detail), 2048)).
+				Msg("python backend failed, falling through to CLI")
 		}
 	}
 }

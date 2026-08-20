@@ -152,6 +152,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	verifyRelay.SetLogger(log)
 	app.Get("/api/verify-relay", verifyRelay.Handle)
 
+	client.SetLogger(log)
+
 	sabHandler := sabnzbd.NewHandler(q, client, st, cfg, version)
 	sabHandler.SetLogger(log)
 
