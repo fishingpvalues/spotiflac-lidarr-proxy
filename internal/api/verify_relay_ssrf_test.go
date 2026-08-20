@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -192,3 +194,42 @@ var errRejected = &rejectedError{}
 type rejectedError struct{}
 
 func (e *rejectedError) Error() string { return "upstream rejected by validation" }
+
+// TestVerifyRelayLogsEveryOutcome guards the observability of the one hop
+// that had none. The route is registered before api.RequestLogger is
+// installed, and fiber does not apply middleware to earlier routes, so a
+// relay callback left no trace at all - which made "did the grant ever
+// arrive?" unanswerable while debugging a solver that reported success and a
+// download that reported "verification timed out".
+func TestVerifyRelayLogsEveryOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"missing params", "", "callback missing grant or upstream_cb"},
+		{
+			"rejected target",
+			"?grant=g&upstream_cb=" + url.QueryEscape("http://10.0.0.1/session-grant"),
+			"rejected callback target",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			h := api.NewVerifyRelayHandler(nil)
+			h.SetLogger(zerolog.New(&buf))
+
+			app := fiber.New()
+			app.Get("/api/verify-relay", h.Handle)
+
+			req, _ := http.NewRequest("GET", "/api/verify-relay"+tc.query, nil)
+			_, err := app.Test(req)
+			require.NoError(t, err)
+
+			logged := buf.String()
+			assert.Contains(t, logged, "callback received",
+				"every callback must be recorded, whatever happens to it")
+			assert.Contains(t, logged, tc.want)
+		})
+	}
+}

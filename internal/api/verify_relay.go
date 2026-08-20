@@ -59,7 +59,24 @@ func (h *VerifyRelayHandler) SetLogger(log zerolog.Logger) {
 func (h *VerifyRelayHandler) Handle(c fiber.Ctx) error {
 	grant := c.Query("grant")
 	supplied := c.Query("upstream_cb")
+
+	// This hop is logged explicitly because nothing else logs it. The route
+	// is registered before api.RequestLogger is installed (deliberately, so
+	// that Prometheus scrapes of /metrics do not fill the log), and fiber
+	// does not apply middleware to routes registered before it - so a relay
+	// callback left no trace whatsoever, success or failure.
+	//
+	// That cost real debugging time: with a solver reporting it had obtained
+	// cf_clearance and a download reporting "community verification failed:
+	// verification timed out", there was no way to tell whether the grant
+	// ever arrived here. Every outcome below is logged now.
+	h.log.Info().
+		Bool("has_grant", grant != "").
+		Bool("has_upstream_cb", supplied != "").
+		Msg("verify relay: callback received")
+
 	if grant == "" || supplied == "" {
+		h.log.Warn().Msg("verify relay: callback missing grant or upstream_cb")
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "missing upstream_cb or grant parameter",
 		})
@@ -111,6 +128,7 @@ func (h *VerifyRelayHandler) Handle(c fiber.Ctx) error {
 		})
 	}
 
+	h.log.Info().Msg("verify relay: grant forwarded and accepted")
 	return c.SendString("Verified")
 }
 
