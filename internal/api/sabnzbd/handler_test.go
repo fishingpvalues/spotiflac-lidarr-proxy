@@ -26,6 +26,28 @@ import (
 	sabtypes "github.com/fishingpvalues/spotiflac-lidarr-proxy/pkg/sabnzbd"
 )
 
+// newProgressTestHandler builds a handler wired to an in-memory queue, for
+// tests that drive events straight at it instead of over HTTP.
+func newProgressTestHandler(t *testing.T) (*sabnzbd.Handler, *queue.SQLiteQueue) {
+	t.Helper()
+
+	cfg := &config.Config{
+		APIKey:         "test-key",
+		OutputDir:      t.TempDir(),
+		DefaultService: "tidal",
+		DefaultQuality: "lossless",
+		MaxConcurrent:  1,
+		JobTimeout:     30 * time.Minute,
+	}
+
+	q, err := queue.New(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+
+	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, "", nil)
+	return sabnzbd.NewHandler(q, client, storage.New(cfg.OutputDir), cfg, "0.1.0-test"), q
+}
+
 func setupTestApp(t *testing.T) (*fiber.App, *queue.SQLiteQueue) {
 	t.Helper()
 
@@ -69,7 +91,11 @@ func TestVersion(t *testing.T) {
 
 	var v sabtypes.VersionResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&v))
-	assert.Equal(t, "0.1.0-test", v.Version)
+	// The test app's build string is "0.1.0-test", which is not strict
+	// X.Y.Z, so the handshake reports "develop" - the one non-numeric string
+	// Lidarr accepts. Echoing the raw build string back is what made every
+	// non-release tag fail Lidarr's Test button with "Unknown Version".
+	assert.Equal(t, "develop", v.Version)
 }
 
 func TestAuth(t *testing.T) {
@@ -1006,4 +1032,58 @@ func TestAddFileFallsBackToTheUploadedFilename(t *testing.T) {
 	assert.Equal(t, "Some Artist - Some Album", job.Filename, "the .nzb suffix is not part of the release name")
 
 	waitForHistory(t, q, r.NzoIDs[0])
+}
+
+// TestProgressUsesBytesWrittenNotFinishedFiles guards the progress bar. A
+// percentage derived from the finished-file count is 0 % until it is 100 % on
+// any single-track release, so Lidarr showed a download sitting at zero for
+// its entire life.
+func TestProgressUsesBytesWrittenNotFinishedFiles(t *testing.T) {
+	h, q := newProgressTestHandler(t)
+
+	job := &queue.Job{NzoID: "SABnzbd_nzo_prog", Size: 40 * 1024 * 1024}
+	require.NoError(t, q.Add(job))
+	job.Size = 40 * 1024 * 1024
+
+	h.HandleProgressEventForTest(job, apispotiflac.ProgressEvent{
+		Type:  "progress",
+		Bytes: 10 * 1024 * 1024,
+	})
+
+	assert.InDelta(t, 25.0, job.Percentage, 0.01)
+	assert.Equal(t, int64(30*1024*1024), job.Sizeleft)
+}
+
+func TestProgressFallsBackToReportedPercentWithoutByteCount(t *testing.T) {
+	h, q := newProgressTestHandler(t)
+
+	job := &queue.Job{NzoID: "SABnzbd_nzo_prog2", Size: 100}
+	require.NoError(t, q.Add(job))
+	job.Size = 100
+
+	h.HandleProgressEventForTest(job, apispotiflac.ProgressEvent{
+		Type:    "progress",
+		Percent: 40,
+	})
+
+	assert.InDelta(t, 40.0, job.Percentage, 0.01)
+	assert.Equal(t, int64(60), job.Sizeleft)
+}
+
+func TestProgressNeverReports100BeforeCompletion(t *testing.T) {
+	// Lidarr treats a queue item at 100 % as ready to import; the terminal
+	// "complete" event is what may say 100, not a progress tick.
+	h, q := newProgressTestHandler(t)
+
+	job := &queue.Job{NzoID: "SABnzbd_nzo_prog3", Size: 1000}
+	require.NoError(t, q.Add(job))
+	job.Size = 1000
+
+	h.HandleProgressEventForTest(job, apispotiflac.ProgressEvent{
+		Type:  "progress",
+		Bytes: 5000, // more on disk than estimated
+	})
+
+	assert.LessOrEqual(t, job.Percentage, 99.0)
+	assert.Zero(t, job.Sizeleft, "sizeleft must not go negative")
 }
