@@ -364,6 +364,13 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			return
 		}
 
+		// Without this the CLI's stderr goes to /dev/null (exec.Cmd's
+		// default for a nil Stderr), so pydoll's and the extension bridge's
+		// diagnostics were discarded before anyone could read them. Only
+		// this goroutine reads the buffer, and only after Wait returns.
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
+
 		if err := cmd.Start(); err != nil {
 			errs <- fmt.Errorf("start spotiflac: %w", err)
 			return
@@ -384,7 +391,7 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			if ctx.Err() == context.DeadlineExceeded {
 				errs <- fmt.Errorf("spotiflac timed out after %s", c.timeout)
 			} else {
-				errs <- fmt.Errorf("spotiflac exited: %w", err)
+				errs <- newExitError("cli exited", err, &stderrBuf, &outputBuf)
 			}
 		}
 	}()
@@ -426,6 +433,9 @@ func (c *Client) downloadWithPython(ctx context.Context, pythonBin, wrapperPath,
 			return
 		}
 
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
+
 		if err := cmd.Start(); err != nil {
 			errs <- fmt.Errorf("start python wrapper: %w", err)
 			return
@@ -439,7 +449,7 @@ func (c *Client) downloadWithPython(ctx context.Context, pythonBin, wrapperPath,
 			if ctx.Err() == context.DeadlineExceeded {
 				errs <- fmt.Errorf("python download timed out after %s", c.timeout)
 			} else {
-				errs <- fmt.Errorf("python wrapper exited: %w", err)
+				errs <- newExitError("python wrapper exited", err, &stderrBuf, &outputBuf)
 			}
 		}
 	}()
@@ -487,6 +497,26 @@ func (c *Client) CollectPythonResult(pyEvents <-chan ProgressEvent, pyErrs <-cha
 // every SpotiFLAC grab in production. The bundled Python module has the real
 // values (SpotifyMetadataClient), so ask it, and fall back to the CLI only
 // when Python is unavailable or answers nothing.
+
+// newExitError reports a non-zero subprocess exit together with what the
+// subprocess actually said.
+//
+// A backend that dies without emitting its own JSON "error" event reached
+// Lidarr as nothing but `spotiflac exited: exit status 1`. Both streams are
+// needed: SpotiFLAC prints its provider-cascade reasons ("ext:tidal-web:
+// NETWORK_ERROR: Timeout (120s) calling download") to stdout, while pydoll
+// and the extension bridge log to stderr, and the two failures look nothing
+// alike.
+func newExitError(context string, err error, stderrBuf, outputBuf *bytes.Buffer) error {
+	return &DownloadError{
+		Message: fmt.Sprintf("%s: %s", context, err),
+		RawOutput: joinNonEmpty(
+			lastNBytes(stderrBuf.Bytes(), 4096),
+			lastNBytes(outputBuf.Bytes(), 4096),
+		),
+	}
+}
+
 func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataResult, error) {
 	pythonBin := findPython(c.pythonVenv)
 	if wrapperPath, err := extractPythonWrapper(); err == nil {

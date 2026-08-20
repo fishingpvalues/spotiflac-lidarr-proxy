@@ -90,3 +90,34 @@ echo '{"type":"search_result","entity":"album","name":"B","artist":"A","album":"
 	require.Len(t, results, 1)
 	assert.Equal(t, "https://open.spotify.com/album/x", results[0].SpotifyURL)
 }
+
+// TestDownloadExitErrorCarriesSubprocessOutput is the regression guard for a
+// failure that reached Lidarr as nothing but "spotiflac exited: exit status
+// 1". A backend that dies without emitting its own JSON "error" event still
+// printed the reason - to stdout, to stderr, or both - and all of it was
+// being discarded.
+func TestDownloadExitErrorCarriesSubprocessOutput(t *testing.T) {
+	dir := t.TempDir()
+	cli := writeScript(t, dir, "spotiflac-cli", `
+echo 'ext:tidal-web: NETWORK_ERROR: Timeout (120s) calling download'
+echo 'pydoll: Browser failed to start within timeout' >&2
+exit 1
+`)
+
+	client := spotiflac.NewClient(cli, 30*time.Second, "tidal", "lossless", "", "", "", nil, "/nonexistent/python3", nil)
+	_, errs := client.Download(context.Background(), "https://open.spotify.com/album/x", dir, "tidal", "lossless")
+
+	var got error
+	for e := range errs {
+		if e != nil {
+			got = e
+			break
+		}
+	}
+	require.Error(t, got)
+
+	var de *spotiflac.DownloadError
+	require.ErrorAs(t, got, &de)
+	assert.Contains(t, de.RawOutput, "NETWORK_ERROR: Timeout (120s) calling download", "stdout carries the provider cascade's reasons")
+	assert.Contains(t, de.RawOutput, "Browser failed to start within timeout", "stderr carries pydoll's diagnostics")
+}
