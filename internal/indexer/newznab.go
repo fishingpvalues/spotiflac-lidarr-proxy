@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
@@ -123,6 +124,29 @@ func qualityTag(quality string) string {
 	return " [FLAC]"
 }
 
+// yearAttr renders the release year, or the empty string when it is unknown.
+// A literal "0" is worse than nothing: Lidarr parses the attr into its
+// release year and then scores the album against it, so an unknown year that
+// claims to be year zero fails the year component of its album-match check
+// outright ("Album match is not close enough: 77.6 % vs 80 % [year, country,
+// tracks]" - seen against production on every SpotiFLAC grab).
+func yearAttr(year int) string {
+	if year <= 0 {
+		return ""
+	}
+	return strconv.Itoa(year)
+}
+
+// categoryLabel renders the decorative <category> element. Without a genre
+// the old unconditional "Music > " + genre left a dangling separator
+// ("Music > ") on every single item.
+func categoryLabel(genre string) string {
+	if genre == "" {
+		return "Music"
+	}
+	return "Music > " + genre
+}
+
 func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality string) ([]byte, error) {
 	if results == nil {
 		results = []spotiflac.MetadataResult{}
@@ -156,7 +180,7 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality s
 	categories := newznabCategories(quality)
 
 	for _, r := range results {
-		estimatedSize := EstimateSizeBytes(r.TrackCount, "lossless")
+		estimatedSize := EstimateSizeBytes(r.TrackCount, quality)
 		title := r.Artist + " - " + r.Album + titleSuffix
 		attrs := make([]Attr, 0, len(categories)+10)
 		for _, cat := range categories {
@@ -166,7 +190,7 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality s
 			{Name: "artist", Value: r.Artist},
 			{Name: "album", Value: r.Album},
 			{Name: "genre", Value: r.Genre},
-			{Name: "year", Value: fmt.Sprintf("%d", r.Year)},
+			{Name: "year", Value: yearAttr(r.Year)},
 			{Name: "title", Value: title},
 			{Name: "size", Value: fmt.Sprintf("%d", estimatedSize)},
 			{Name: "grabs", Value: "0"},
@@ -182,15 +206,32 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality s
 		// client - the raw Spotify page is HTML and fails that check
 		// outright. handleGet (t=get) generates a synthetic NZB carrying
 		// r.SpotifyURL as embedded metadata; see nzb.go.
-		downloadURL := fmt.Sprintf("%s/api/newznab?t=get&id=%s&apikey=%s",
-			serverURL, url.QueryEscape(r.SpotifyURL), url.QueryEscape(apiKey))
+		// name/size/tracks ride along on the download URL because that is
+		// the only channel there is. Lidarr fetches this URL verbatim, and
+		// its follow-up mode=addfile POST carries no nzbname and no size -
+		// so t=get folds these into the NZB it returns, and the SABnzbd
+		// side reads them back out (indexer.ParseNZBMeta). Without the
+		// name the queue slot's filename is empty and Lidarr never tracks
+		// the download at all.
+		params := url.Values{}
+		params.Set("t", "get")
+		params.Set("id", r.SpotifyURL)
+		params.Set("name", title)
+		if estimatedSize > 0 {
+			params.Set("size", strconv.FormatInt(estimatedSize, 10))
+		}
+		if r.TrackCount > 0 {
+			params.Set("tracks", strconv.Itoa(r.TrackCount))
+		}
+		params.Set("apikey", apiKey)
+		downloadURL := serverURL + "/api/newznab?" + params.Encode()
 
 		item := Item{
 			Title:       title,
 			GUID:        GUID{Value: r.SpotifyURL, IsPermaLink: true},
 			Link:        downloadURL,
 			PubDate:     time.Now().Format(time.RFC1123Z),
-			Category:    "Music > " + r.Genre,
+			Category:    categoryLabel(r.Genre),
 			Description: fmt.Sprintf("%s - %s (%d tracks)", r.Artist, r.Album, r.TrackCount),
 			Comments:    "",
 			Enclosure: Enclosure{

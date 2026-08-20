@@ -1,6 +1,7 @@
 package newznab_test
 
 import (
+	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/newznab"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/indexer"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
 )
 
@@ -109,4 +111,47 @@ func TestGetMissingIDReturnsBadRequest(t *testing.T) {
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, 400, resp.StatusCode)
+}
+
+func TestHandleGetFoldsReleaseNameSizeAndTracksIntoTheNZB(t *testing.T) {
+	// Lidarr fetches this endpoint and re-uploads the bytes to the download
+	// client with a POST that carries no nzbname and no size. The NZB is
+	// therefore the only channel for them, and without the name the queue
+	// slot's filename is empty and Lidarr never tracks the download.
+	app := setupNewznabApp(t)
+
+	req, _ := http.NewRequest("GET",
+		"/api/newznab?t=get&id=https%3A%2F%2Fopen.spotify.com%2Falbum%2Fx&name=Daft+Punk+-+Discovery+%5BFLAC%5D&size=513802240&tracks=14&apikey=test-key",
+		nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	release, err := indexer.ParseNZBMeta(body)
+	require.NoError(t, err)
+	assert.Equal(t, "https://open.spotify.com/album/x", release.SpotifyURL)
+	assert.Equal(t, "Daft Punk - Discovery [FLAC]", release.Name)
+	assert.Equal(t, int64(513802240), release.Size)
+	assert.Equal(t, 14, release.TrackCount)
+}
+
+func TestHandleGetWithoutANameFallsBackToTheID(t *testing.T) {
+	app := setupNewznabApp(t)
+
+	req, _ := http.NewRequest("GET",
+		"/api/newznab?t=get&id=https%3A%2F%2Fopen.spotify.com%2Falbum%2Fy&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	release, err := indexer.ParseNZBMeta(body)
+	require.NoError(t, err)
+	assert.Equal(t, "https://open.spotify.com/album/y", release.Name)
+	assert.Zero(t, release.Size)
+	assert.Zero(t, release.TrackCount)
 }

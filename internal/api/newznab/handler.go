@@ -170,7 +170,24 @@ func (h *Handler) handleGet(c fiber.Ctx) error {
 	if id == "" {
 		return c.Status(fiber.StatusBadRequest).SendString("missing id")
 	}
-	nzb, err := indexer.GenerateNZB(id, id, "", time.Now().Unix())
+	// name/size/tracks come from the search result's own download URL
+	// (indexer.NewznabXML builds it). Lidarr's follow-up mode=addfile POST
+	// carries none of them, so the NZB is the only way to hand the release
+	// name to the download client - and without it the queue slot has an
+	// empty filename and Lidarr never tracks the download.
+	name := c.Query("name")
+	if name == "" {
+		name = id
+	}
+	size, _ := strconv.ParseInt(c.Query("size"), 10, 64)
+	tracks, _ := strconv.Atoi(c.Query("tracks"))
+	nzb, err := indexer.GenerateNZBRelease(indexer.Release{
+		SpotifyURL: id,
+		Name:       name,
+		Size:       size,
+		TrackCount: tracks,
+		Date:       time.Now().Unix(),
+	})
 	if err != nil {
 		h.log.Error().Err(err).Str("id", id).Msg("nzb generation failed")
 		return c.Status(fiber.StatusInternalServerError).SendString("nzb generation failed")
