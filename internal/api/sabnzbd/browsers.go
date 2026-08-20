@@ -1,6 +1,7 @@
 package sabnzbd
 
 import (
+	"context"
 	"os/exec"
 )
 
@@ -34,4 +35,16 @@ func reapStaleBrowsers() {
 	for _, pattern := range browserProcessPatterns {
 		_ = exec.Command("pkill", "-9", "-f", pattern).Run()
 	}
+}
+
+// CancelJob stops an in-flight download, if there is one for this nzo_id.
+// Safe to call for a job that is not running.
+func (h *Handler) CancelJob(nzoID string) bool {
+	if v, ok := h.running.LoadAndDelete(nzoID); ok {
+		if cancel, ok := v.(context.CancelFunc); ok {
+			cancel()
+			return true
+		}
+	}
+	return false
 }

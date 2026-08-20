@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -32,6 +33,14 @@ type Handler struct {
 	sem         chan struct{}
 	breaker     *breaker.Breaker
 	verifyStore *verify.Store
+
+	// running maps an nzo_id to the cancel func of its in-flight download.
+	// Deleting a job used to remove the row and leave the goroutine running,
+	// so it kept its concurrency slot - with SPF_MAX_CONCURRENT=1 a single
+	// abandoned job wedged the whole queue for as long as its retries and
+	// service fallbacks took, which is hours. Observed: a freshly added job
+	// sat "Queued" for 270s and never started.
+	running sync.Map
 }
 
 func NewHandler(q *queue.SQLiteQueue, client *spotiflac.Client, s *storage.Storage, cfg *config.Config, version string) *Handler {
@@ -198,6 +207,13 @@ func (h *Handler) processDownload(job *queue.Job) {
 	h.sem <- struct{}{}
 	defer func() { <-h.sem }()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	h.running.Store(job.NzoID, cancel)
+	defer func() {
+		h.running.Delete(job.NzoID)
+		cancel()
+	}()
+
 	primarySvc := job.Service
 
 	jobDir, err := h.storage.PrepareJobDir(job.NzoID)
@@ -223,7 +239,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 		lastErr = fmt.Sprintf("service %s temporarily unavailable (circuit open)", primarySvc)
 		metrics.RecordJobResult(string(sabnzbd.StatusFailed), primarySvc)
 	} else {
-		lastErr = h.runAttemptsWithRetry(job, jobDir, maxAttempts)
+		lastErr = h.runAttemptsWithRetry(ctx, job, jobDir, maxAttempts)
 		if lastErr == "" {
 			return
 		}
@@ -234,6 +250,10 @@ func (h *Handler) processDownload(job *queue.Job) {
 	for _, fallbackSvc := range h.fallbackChain(job.Service) {
 		if !h.breaker.Allow(fallbackSvc) {
 			continue
+		}
+		if ctx.Err() != nil {
+			h.log.Info().Str("nzo_id", job.NzoID).Msg("job cancelled, stopping service fallback")
+			return
 		}
 		if h.outOfTime(job) {
 			h.log.Warn().Str("nzo_id", job.NzoID).Msg("job budget exhausted, not trying further services")
@@ -249,7 +269,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 		} else if _, perr := h.storage.PrepareJobDir(job.NzoID); perr != nil {
 			h.log.Warn().Err(perr).Str("nzo_id", job.NzoID).Msg("failed to recreate job dir before fallback attempt")
 		}
-		if fbErr := h.runAttemptsWithRetry(job, jobDir, 1); fbErr == "" {
+		if fbErr := h.runAttemptsWithRetry(ctx, job, jobDir, 1); fbErr == "" {
 			return
 		} else {
 			lastErr = fbErr
@@ -277,14 +297,17 @@ func (h *Handler) outOfTime(job *queue.Job) bool {
 // runAttemptsWithRetry runs up to `attempts` tries of the download, sleeping
 // with backoff and clearing the job dir between them. Returns "" on success,
 // the last error otherwise.
-func (h *Handler) runAttemptsWithRetry(job *queue.Job, jobDir string, attempts int) string {
+func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobDir string, attempts int) string {
 	var lastErr string
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if attempt > 1 && h.outOfTime(job) {
 			h.log.Warn().Str("nzo_id", job.NzoID).Int("attempt", attempt).Msg("job budget exhausted, not retrying")
 			return lastErr
 		}
-		ok, errMsg := h.attemptDownload(job, jobDir)
+		if ctx.Err() != nil {
+			return "cancelled"
+		}
+		ok, errMsg := h.attemptDownload(ctx, job, jobDir)
 		if ok {
 			return ""
 		}
@@ -319,7 +342,7 @@ func (h *Handler) fallbackChain(current string) []string {
 // to history itself (mirroring the previous inline behavior); on failure it
 // returns false with the error message and leaves the job untouched for the
 // caller to retry or ultimately fail.
-func (h *Handler) attemptDownload(job *queue.Job, jobDir string) (bool, string) {
+func (h *Handler) attemptDownload(ctx context.Context, job *queue.Job, jobDir string) (bool, string) {
 	// A previous download's browser is still running and will stop this one's
 	// from starting at all (see reapStaleBrowsers). Guarded on concurrency
 	// because a sibling job's browser is indistinguishable from a stray, so
@@ -328,7 +351,6 @@ func (h *Handler) attemptDownload(job *queue.Job, jobDir string) (bool, string) 
 		reapStaleBrowsers()
 	}
 
-	ctx := context.Background()
 	events, errs := h.client.Download(ctx, job.SpotifyURL, jobDir, job.Service, job.Quality)
 
 	for {

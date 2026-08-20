@@ -190,6 +190,12 @@ func (h *Handler) handleDelete(c fiber.Ctx) error {
 			Status: false, Error: "missing nzo_id",
 		})
 	}
+	// Cancel the download before dropping the row. Without this the
+	// goroutine kept running - and kept its concurrency slot - so with
+	// SPF_MAX_CONCURRENT=1 a deleted job stalled every later one for as long
+	// as its retries and service fallbacks took.
+	h.CancelJob(nzoID)
+
 	delFiles := c.Query("del_files") == "1"
 	if err := h.queue.Delete(nzoID, delFiles); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(sabnzbd.StatusResponse{

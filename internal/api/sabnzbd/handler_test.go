@@ -1087,3 +1087,31 @@ func TestProgressNeverReports100BeforeCompletion(t *testing.T) {
 	assert.LessOrEqual(t, job.Percentage, 99.0)
 	assert.Zero(t, job.Sizeleft, "sizeleft must not go negative")
 }
+
+// TestDeleteCancelsTheInFlightDownload guards a queue-wedging bug. Deleting a
+// job removed its row and left the download goroutine running, so it kept its
+// concurrency slot - and with SPF_MAX_CONCURRENT=1 the next job never started.
+// Observed against production: a freshly added job sat "Queued" for 270s and
+// never ran, because a job deleted minutes earlier still held the only slot.
+func TestDeleteCancelsTheInFlightDownload(t *testing.T) {
+	app, q := setupTestApp(t)
+
+	// A CLI that never finishes on its own, so the only way the slot is
+	// released is by cancelling it.
+	require.NoError(t, q.Add(&queue.Job{NzoID: "SABnzbd_nzo_cancelme"}))
+
+	req, _ := http.NewRequest("GET",
+		"/api/sabnzbd?mode=queue&name=delete&value=SABnzbd_nzo_cancelme&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	_, err = q.Get("SABnzbd_nzo_cancelme")
+	assert.Error(t, err, "the row must be gone")
+}
+
+func TestCancelJobReportsWhetherSomethingWasRunning(t *testing.T) {
+	h, _ := newProgressTestHandler(t)
+	assert.False(t, h.CancelJob("SABnzbd_nzo_not_running"),
+		"cancelling an unknown job is a no-op, not a panic")
+}
