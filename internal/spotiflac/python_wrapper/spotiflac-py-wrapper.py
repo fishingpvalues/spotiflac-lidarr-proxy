@@ -26,6 +26,7 @@ import io
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 
@@ -239,31 +240,78 @@ def run_search(args):
 # ---------------------------------------------------------------------------
 
 
-def resolve_release(url):
-    """Best-effort album/track metadata before the download starts.
+def resolve_in_process(url):
+    """Album/track metadata for one Spotify URL, in this process.
 
-    Returns (artist, album, title, year, track_count). Every field is
-    optional: metadata resolution failing must not stop a download that
-    would otherwise work, so this degrades to empties.
+    Only ever called through resolve_release's child process - see the note
+    there on why it must not share a process with the download.
     """
-    try:
-        client = metadata_client()
-        name, tracks, _cover, info = client.get_url(url)
-    except Exception:
-        return "", "", "", 0, 0
+    client = metadata_client()
+    name, tracks, _cover, info = client.get_url(url)
 
     if not tracks:
-        return "", "", name or "", release_year(info.get("release_date", "")), 0
+        return {
+            "artist": "",
+            "album": "",
+            "title": name or "",
+            "year": release_year(info.get("release_date", "")),
+            "track_count": 0,
+        }
 
     first = tracks[0]
     is_album = "/album/" in url
-    artist = getattr(first, "album_artist", "") or getattr(first, "artists", "")
-    album = getattr(first, "album", "") or (name if is_album else "")
-    title = "" if is_album else getattr(first, "title", "")
-    year = release_year(
-        info.get("release_date", "") or getattr(first, "release_date", "")
-    )
-    return artist, album, title, year, len(tracks)
+    return {
+        "artist": getattr(first, "album_artist", "") or getattr(first, "artists", ""),
+        "album": getattr(first, "album", "") or (name if is_album else ""),
+        "title": "" if is_album else getattr(first, "title", ""),
+        "year": release_year(
+            info.get("release_date", "") or getattr(first, "release_date", "")
+        ),
+        "track_count": len(tracks),
+    }
+
+
+def resolve_release(url):
+    """Best-effort album/track metadata before the download starts.
+
+    Runs in a child process, deliberately. SpotiFLAC caches asyncio
+    primitives across event loops, and its sync entry points each spin up a
+    fresh loop - resolving metadata first in this process and then calling
+    SpotiFLAC() makes the Deezer provider fail with "<asyncio.locks.Lock
+    object ...> is bound to a different event loop" (observed against the
+    real module). A separate process shares no loop state at all.
+
+    Returns (artist, album, title, year, track_count). Every field is
+    optional: failing to resolve metadata must not stop a download that
+    would otherwise work, so this degrades to empties.
+    """
+    empty = ("", "", "", 0, 0)
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--resolve", url],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except Exception:
+        return empty
+
+    for line in reversed(proc.stdout.splitlines()):
+        try:
+            payload = json.loads(line)
+        except ValueError:
+            continue
+        if payload.get("type") != "resolved":
+            continue
+        return (
+            payload.get("artist", ""),
+            payload.get("album", ""),
+            payload.get("title", ""),
+            int(payload.get("year", 0) or 0),
+            int(payload.get("track_count", 0) or 0),
+        )
+    return empty
 
 
 def emit_progress_until(stop, output_dir, expected):
@@ -389,6 +437,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url")
     parser.add_argument("--search")
+    parser.add_argument("--resolve")
     parser.add_argument("--output-dir")
     parser.add_argument("--service", default="tidal,qobuz,deezer,amazon")
     parser.add_argument("--quality", default="LOSSLESS")
@@ -397,6 +446,14 @@ def main():
     parser.add_argument("--enrich-budget", type=float, default=20.0)
     args = parser.parse_args()
 
+    if args.resolve:
+        quiet_loggers()
+        try:
+            emit("resolved", **resolve_in_process(args.resolve))
+        except Exception as e:
+            emit("error", message=f"resolve failed: {e}")
+            return 1
+        return 0
     if args.search:
         return run_search(args)
     if not args.url or not args.output_dir:
