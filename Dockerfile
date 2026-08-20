@@ -74,9 +74,32 @@ RUN apk add --no-cache \
 # and replaced with hand-written stub modules. It is a real package, so the
 # stubs are gone. Amazon additionally needs a browser this image does not
 # ship, which is why it is not in the default fallback chain.
+# SpotiFLAC is pinned. It was unpinned, so every rebuild silently picked up
+# whatever PyPI had latest - which is both irreproducible and impossible to
+# patch against, since a patch has to match a known shape.
+#
+# The patch itself: SpotiFLAC 3.0.6 creates `_io_lock = asyncio.Lock()` at
+# import time in core/session_memory.py and core/profiles.py. An asyncio.Lock
+# binds to the first loop that awaits it and rejects every other one, and
+# SpotiFLAC runs several loops per process, so the Deezer provider failed on
+# every single download with
+#
+#   ext:deezer · Failed to resolve Deezer download: <asyncio.locks.Lock
+#                object at 0x...> is bound to a different event loop
+#
+# 3.0.6 is the newest release, so there is nothing to upgrade to. The patch
+# makes those locks per-loop; verified in a live container, where the same
+# lock is now usable from two consecutive asyncio.run() calls that previously
+# raised. It fails the build loudly if the pattern is gone, rather than
+# quietly doing nothing after a version bump.
+COPY patches/python/per_loop_lock.py /tmp/per_loop_lock.py
 RUN apk add --no-cache python3 py3-pip && \
     python3 -m venv /venv && \
-    /venv/bin/pip install --no-cache-dir SpotiFLAC requests nodriver pydoll-python && \
+    /venv/bin/pip install --no-cache-dir \
+        "SpotiFLAC==3.0.6" requests nodriver pydoll-python && \
+    /venv/bin/python3 /tmp/per_loop_lock.py \
+        /venv/lib/python3.12/site-packages/SpotiFLAC && \
+    rm -f /tmp/per_loop_lock.py && \
     apk del py3-pip && \
     find /venv -name '__pycache__' -type d -prune -exec rm -rf {} +
 
