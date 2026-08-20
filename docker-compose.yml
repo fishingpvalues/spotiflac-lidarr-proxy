@@ -5,10 +5,13 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8484:8484"
-    # Chromium needs more than Docker's default 64 MB of /dev/shm, and
-    # pydoll launches it without --disable-dev-shm-usage. Measured in a real
-    # container: at 64 MB the same headless Chromium command produces no DOM
-    # at all, and pydoll reports "Command timeout: NetworkMethod.ENABLE".
+    # Defence in depth for the Chromium the Python backend drives. Measured
+    # in a real container: at Docker's default 64 MB of /dev/shm a headless
+    # Chromium prints GPU init errors and then no DOM at all, while the same
+    # command with --disable-dev-shm-usage prints the page. SpotiFLAC's own
+    # solver does pass that flag (core/solver.py `_docker_flags`), so this is
+    # not what makes it work today - it is here so any launch path that
+    # forgets the flag does not silently hang.
     shm_size: "512m"
     environment:
       - SPF_API_KEY=test-integration-key

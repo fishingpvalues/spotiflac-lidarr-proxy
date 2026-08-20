@@ -27,11 +27,12 @@ module. There is nothing else to install.
       -v spotiflac-data:/data \
       ghcr.io/fishingpvalues/spotiflac-lidarr-proxy:latest
 
-`--shm-size` is not optional. Chromium needs more than Docker's default
-64 MB of `/dev/shm`, and pydoll launches it without
-`--disable-dev-shm-usage`; at 64 MB the browser starts and then produces
-nothing, which surfaces as `Command timeout: NetworkMethod.ENABLE` and a
-download that fails after two minutes of apparently working.
+`--shm-size` guards the Chromium the Python backend drives. At Docker's
+default 64 MB of `/dev/shm` a headless Chromium prints GPU init errors and
+then no page at all; the same command with `--disable-dev-shm-usage` works.
+SpotiFLAC's solver does pass that flag, so this is insurance rather than a
+requirement - but it costs nothing and a launch path that forgets the flag
+hangs silently.
 
 Put it on the same Docker network as Lidarr and give both the same downloads
 volume, mounted at the same path, so Lidarr can import what this writes.
@@ -310,8 +311,12 @@ already run, and cannot take Lidarr down with it.
 ## Troubleshooting
 
 **Downloads fail after ~2 minutes and the log mentions
-`Command timeout: NetworkMethod.ENABLE`.** `/dev/shm` is too small. Give the
-container `--shm-size=512m` (or compose's `shm_size: "512m"`).
+`Command timeout: NetworkMethod.ENABLE`.** The browser started but its first
+CDP command never answered. Check `$HOME` is writable (below) first, then CPU
+headroom: two providers each launch their own browser, and a container capped
+at 2 CPUs alongside Xvfb can starve them. Raising `--shm-size` is worth
+trying but is not usually the cause - SpotiFLAC's solver already passes
+`--disable-dev-shm-usage`.
 
 **Every download fails with `exit status 1` and the log mentions
 `Browser failed to start within timeout`.** The user the container runs as
