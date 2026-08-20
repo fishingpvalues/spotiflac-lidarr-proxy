@@ -434,7 +434,10 @@ func TestPythonFailureIsLoggedNotSilentlyDropped(t *testing.T) {
 		Message:   "no files downloaded - all services failed",
 		RawOutput: "ext:tidal-web: NETWORK_ERROR: Timeout (120s) calling download",
 	}
+	// Both have to be closed, exactly as downloadWithPython's defer does it:
+	// the collector drains until both are done, so leaving one open hangs.
 	close(pyEvents)
+	close(pyErrs)
 
 	ok := client.CollectPythonResult(pyEvents, pyErrs, mainEvents, mainErrs)
 	assert.False(t, ok, "no complete event means the CLI must still be tried")

@@ -16,10 +16,18 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
 )
 
+// noPython points the client at a Python that does not exist, so search and
+// download exercise the CLI path deterministically. An empty venv path makes
+// findPython fall back to whatever python3 the machine has, and that one has
+// no SpotiFLAC module - so the test would spawn a real interpreter, wait for
+// it to fail, and only then reach the mock CLI. Harmless in isolation, slow
+// and timing-dependent under a full-suite run.
+const noPython = "/nonexistent/python3"
+
 func setupNewznabApp(t *testing.T) *fiber.App {
 	t.Helper()
 
-	client := spotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, "", nil)
+	client := spotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, noPython, nil)
 	handler := newznab.NewHandler(client, "test", "test-key", "lossless")
 
 	app := fiber.New()

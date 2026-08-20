@@ -477,11 +477,17 @@ func (c *Client) downloadWithPython(ctx context.Context, pythonBin, wrapperPath,
 // Otherwise returns false (CLI fallback).
 func (c *Client) CollectPythonResult(pyEvents <-chan ProgressEvent, pyErrs <-chan error, mainEvents chan<- ProgressEvent, mainErrs chan<- error) bool {
 	var sawComplete bool
-	for {
+	// Both channels are drained until both are closed, rather than returning
+	// the moment pyEvents closes. select chooses at random among ready cases
+	// and a closed channel is always ready, so returning on the first closed
+	// pyEvents dropped whatever was still sitting in pyErrs - the backend's
+	// own failure reason, about half the time, at random.
+	for pyEvents != nil || pyErrs != nil {
 		select {
 		case evt, ok := <-pyEvents:
 			if !ok {
-				return sawComplete
+				pyEvents = nil
+				continue
 			}
 			if evt.Type == "complete" {
 				sawComplete = true
@@ -491,6 +497,7 @@ func (c *Client) CollectPythonResult(pyEvents <-chan ProgressEvent, pyErrs <-cha
 			}
 		case e, ok := <-pyErrs:
 			if !ok {
+				pyErrs = nil
 				continue
 			}
 			if e == nil {
@@ -511,10 +518,11 @@ func (c *Client) CollectPythonResult(pyEvents <-chan ProgressEvent, pyErrs <-cha
 			}
 			c.log.Warn().
 				Err(e).
-				Str("detail", lastNBytes([]byte(detail), 2048)).
+				Str("detail", significantLines(detail, 12)).
 				Msg("python backend failed, falling through to CLI")
 		}
 	}
+	return sawComplete
 }
 
 // SearchMetadata resolves a free-text query to releases, Python backend

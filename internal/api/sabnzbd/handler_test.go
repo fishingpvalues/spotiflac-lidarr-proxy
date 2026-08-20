@@ -28,6 +28,14 @@ import (
 
 // newProgressTestHandler builds a handler wired to an in-memory queue, for
 // tests that drive events straight at it instead of over HTTP.
+// noPython points the client at a Python that does not exist, so search and
+// download exercise the CLI path deterministically. An empty venv path makes
+// findPython fall back to whatever python3 the machine has, and that one has
+// no SpotiFLAC module - so the test would spawn a real interpreter, wait for
+// it to fail, and only then reach the mock CLI. Harmless in isolation, slow
+// and timing-dependent under a full-suite run.
+const noPython = "/nonexistent/python3"
+
 func newProgressTestHandler(t *testing.T) (*sabnzbd.Handler, *queue.SQLiteQueue) {
 	t.Helper()
 
@@ -44,7 +52,7 @@ func newProgressTestHandler(t *testing.T) (*sabnzbd.Handler, *queue.SQLiteQueue)
 	require.NoError(t, err)
 	t.Cleanup(func() { q.Close() })
 
-	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, "", nil)
+	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, noPython, nil)
 	return sabnzbd.NewHandler(q, client, storage.New(cfg.OutputDir), cfg, "0.1.0-test"), q
 }
 
@@ -66,7 +74,7 @@ func setupTestApp(t *testing.T) (*fiber.App, *queue.SQLiteQueue) {
 
 	st := storage.New(cfg.OutputDir)
 
-	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, "", nil)
+	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, noPython, nil)
 
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
@@ -737,7 +745,7 @@ func TestProcessDownloadShortCircuitsWhenBreakerOpen(t *testing.T) {
 
 	cfg := &config.Config{OutputDir: t.TempDir(), MaxConcurrent: 1, JobTimeout: 5 * time.Second}
 	st := storage.New(cfg.OutputDir)
-	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, "", nil)
+	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, noPython, nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	// Force the breaker open by feeding 5 consecutive failures for "tidal".
@@ -884,7 +892,7 @@ func TestWarningsSurfacesStuckJob(t *testing.T) {
 	q, err := queue.New(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { q.Close() })
-	client := apispotiflac.NewClient("echo", 1*time.Second, "tidal", "lossless", "", "", "", nil, "", nil)
+	client := apispotiflac.NewClient("echo", 1*time.Second, "tidal", "lossless", "", "", "", nil, noPython, nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
 	job := &queue.Job{
