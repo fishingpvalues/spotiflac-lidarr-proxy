@@ -16,8 +16,16 @@ Use it only for material you have the right to download. See [Legal](#legal).
 ## Installation
 
 The container image contains everything the program needs: the proxy, a
-matching `spotiflac-cli` build, and a Python environment with the SpotiFLAC
-module. There is nothing else to install.
+matching `spotiflac-cli` build, a Python environment with the SpotiFLAC
+module, and the browser stack that module drives - Chromium, Node.js and
+Xvfb. There is nothing else to install and no browser to supply.
+
+Chromium is baked in on purpose. SpotiFLAC's providers are Node extensions
+and its Turnstile solver drives a real (non-headless) Chromium under Xvfb, so
+an image without them cannot run backend 1 at all - which is the backend this
+proxy tries first and the only one that needs no captcha and no third-party
+API mirror. Earlier images shipped the Python module without the browser, so
+backend 1 failed on every job and the failure looked like a network problem.
 
     docker run -d \
       -p 8484:8484 \
@@ -117,15 +125,16 @@ Each job then goes through up to four backends, in order, first success wins.
 
 | # | Backend | Requires | Human interaction |
 |---|---------|----------|-------------------|
-| 1 | SpotiFLAC Python module | in the image, plus a writable `$HOME` | none |
+| 1 | SpotiFLAC Python module + bundled Chromium | in the image, plus a writable `$HOME` | none |
 | 2 | `spotiflac-cli` against a custom Tidal or Qobuz API | `SPF_TIDAL_API_URL` or a reachable fallback | none |
 | 3 | `spotiflac-cli` with a captcha solver | `SPOTIFLAC_FSL_URL` | none |
 | 4 | `spotiflac-cli` against the community tier | nothing | solve a captcha in a browser |
 
-Backend 1 handles its own authentication, which is why it is tried first. It
-does drive Chromium under Xvfb for some providers, so the image ships
-`chromium`, `nodejs` and `xvfb`, and the user it runs as needs a writable
-`$HOME`. Backends 2 through 4 exist because upstream sources fail often
+Backend 1 handles its own authentication, which is why it is tried first. Its
+providers are Node extensions and some of them drive Chromium under Xvfb, all
+three of which are in the image. The only thing it needs from the host is a
+writable `$HOME` for the browser's profile and crash-handler state - see
+Troubleshooting if downloads fail with a bare `exit status 1`. Backends 2 through 4 exist because upstream sources fail often
 and independently.
 
 Jobs are recorded in SQLite and survive a restart, including ones that had not
@@ -175,6 +184,10 @@ all of the above, and is the only arrangement that does not depend on
 someone else's uptime.
 
 ## Captcha solving
+
+Backend 1 solves Turnstile itself with the bundled Chromium, so in the normal
+case none of this section applies. It is the fallback backends that need an
+external solver.
 
 Backend 4 requires solving a Cloudflare Turnstile in a real browser, once.
 Backend 3 avoids that by delegating to a headless solver over the FlareSolverr
