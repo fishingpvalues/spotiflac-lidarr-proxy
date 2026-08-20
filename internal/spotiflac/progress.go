@@ -94,8 +94,11 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 			// which only this buffer has. Reporting one and dropping the
 			// other loses the reason about half the time.
 			errors <- &DownloadError{
-				Message:   event.ErrorMessage,
-				RawOutput: joinNonEmpty(event.Detail, lastNBytes(output.Bytes(), 4096)),
+				Message: event.ErrorMessage,
+				RawOutput: joinNonEmpty(
+					significantLines(event.Detail, 12),
+					significantLines(output.String(), 12),
+				),
 			}
 		case "complete":
 			events <- event
@@ -122,6 +125,54 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 	if err := scanner.Err(); err != nil {
 		errors <- err
 	}
+}
+
+// failureMarkers are the substrings that identify a line worth keeping when a
+// download fails: SpotiFLAC marks each provider's outcome with a cross, and
+// the underlying reasons carry these words.
+var failureMarkers = []string{
+	"\u2717", // ✗, SpotiFLAC's per-provider failure marker
+	"NETWORK_ERROR",
+	"ERROR",
+	"error:",
+	"Failed",
+	"failed",
+	"not available",
+	"Timeout",
+	"timed out",
+	"verification",
+}
+
+// significantLines picks the lines that explain a failure out of a
+// subprocess's console output.
+//
+// A blind tail does not work here. SpotiFLAC prints a large ASCII summary box
+// after the per-provider reasons, so the last 4 KB of a failed album download
+// contained the box and the words "Switching to next extension" and none of
+// the reasons - which is what the whole capture existed to preserve. Keeping
+// marked lines from anywhere in the output preserves them regardless of how
+// much decoration follows.
+func significantLines(output string, maxLines int) string {
+	var kept []string
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		for _, marker := range failureMarkers {
+			if strings.Contains(trimmed, marker) {
+				kept = append(kept, trimmed)
+				break
+			}
+		}
+	}
+	if len(kept) == 0 {
+		return lastNBytes([]byte(output), 2048)
+	}
+	if len(kept) > maxLines {
+		kept = kept[len(kept)-maxLines:]
+	}
+	return strings.Join(kept, " | ")
 }
 
 func joinNonEmpty(parts ...string) string {

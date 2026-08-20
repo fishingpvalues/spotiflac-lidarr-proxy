@@ -543,8 +543,8 @@ func newExitError(context string, err error, stderrBuf, outputBuf *bytes.Buffer)
 	return &DownloadError{
 		Message: fmt.Sprintf("%s: %s", context, err),
 		RawOutput: joinNonEmpty(
-			lastNBytes(stderrBuf.Bytes(), 4096),
-			lastNBytes(outputBuf.Bytes(), 4096),
+			significantLines(stderrBuf.String(), 12),
+			significantLines(outputBuf.String(), 12),
 		),
 	}
 }

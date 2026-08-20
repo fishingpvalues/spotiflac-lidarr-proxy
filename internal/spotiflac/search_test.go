@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,4 +121,35 @@ exit 1
 	require.ErrorAs(t, got, &de)
 	assert.Contains(t, de.RawOutput, "NETWORK_ERROR: Timeout (120s) calling download", "stdout carries the provider cascade's reasons")
 	assert.Contains(t, de.RawOutput, "Browser failed to start within timeout", "stderr carries pydoll's diagnostics")
+}
+
+// TestSignificantLinesSurvivesTrailingDecoration is the regression guard for a
+// capture that preserved everything except the reasons. SpotiFLAC prints a
+// large ASCII summary box after each provider's outcome, so the last 4 KB of a
+// failed album download held the box and "Switching to next extension" and
+// none of the causes.
+func TestSignificantLinesSurvivesTrailingDecoration(t *testing.T) {
+	dir := t.TempDir()
+	noise := strings.Repeat("=== decorative summary box line ===\n", 200)
+	cli := writeScript(t, dir, "spotiflac-cli", `
+echo 'ext:tidal-web: NETWORK_ERROR: Timeout (120s) calling download'
+echo 'ext:amazon: Track not available: not_found_on_amazon'
+`+"cat <<'EOF'\n"+noise+"EOF\nexit 1\n")
+
+	client := spotiflac.NewClient(cli, 30*time.Second, "tidal", "lossless", "", "", "", nil, "/nonexistent/python3", nil)
+	_, errs := client.Download(context.Background(), "https://open.spotify.com/album/x", dir, "tidal", "lossless")
+
+	var got error
+	for e := range errs {
+		if e != nil {
+			got = e
+			break
+		}
+	}
+	require.Error(t, got)
+
+	var de *spotiflac.DownloadError
+	require.ErrorAs(t, got, &de)
+	assert.Contains(t, de.RawOutput, "NETWORK_ERROR: Timeout (120s) calling download")
+	assert.Contains(t, de.RawOutput, "not_found_on_amazon")
 }
