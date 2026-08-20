@@ -82,13 +82,15 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 		}
 		switch event.Type {
 		case "error":
-			raw := event.Detail
-			if raw == "" {
-				raw = lastNBytes(output.Bytes(), 4096)
-			}
+			// Both streams matter and neither is sufficient. The backend's
+			// captured stderr arrives as `detail`, while the provider
+			// cascade prints its per-extension reasons ("ext:tidal-web:
+			// NETWORK_ERROR: Timeout (120s) calling download") to stdout,
+			// which only this buffer has. Reporting one and dropping the
+			// other loses the reason about half the time.
 			errors <- &DownloadError{
 				Message:   event.ErrorMessage,
-				RawOutput: raw,
+				RawOutput: joinNonEmpty(event.Detail, lastNBytes(output.Bytes(), 4096)),
 			}
 		case "complete":
 			events <- event
@@ -115,6 +117,16 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 	if err := scanner.Err(); err != nil {
 		errors <- err
 	}
+}
+
+func joinNonEmpty(parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 func lastNBytes(b []byte, n int) string {
