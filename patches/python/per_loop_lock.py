@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
-"""Make SpotiFLAC's module-level asyncio locks per-event-loop.
+"""Make SpotiFLAC's asyncio locks safe across event loops.
 
-SpotiFLAC 3.0.6 creates `_io_lock = asyncio.Lock()` at import time in
-core/session_memory.py and core/profiles.py. An asyncio.Lock binds to
-whichever loop first awaits it and rejects every other one, and SpotiFLAC
-runs more than one loop per process - its sync entry points each call
-asyncio.run(), and _run_async_sync spins up another in a worker thread. The
-Deezer provider is the one that trips over it:
+SpotiFLAC runs more than one event loop per process. Its sync entry points
+each call asyncio.run(), _run_async_sync starts another in a worker thread,
+and - the one that matters most here - extensions/runtime.py's
+_handle_session_signed_fetch runs every session.signedFetch in "a NEW AND
+ISOLATED asyncio event loop (asyncio.run)", once per request, and says so in
+its own docstring.
 
-    ext:deezer  ·  Failed to resolve Deezer download:
-                   <asyncio.locks.Lock object at 0x...> is bound to a
-                   different event loop
+An asyncio.Lock binds to whichever loop first awaits it and rejects every
+other one, so any lock cached beyond the life of a single loop eventually
+raises or hangs. Two places do that, and both break real downloads:
 
-That is a hard failure for that provider on every download, and there is no
-newer release to upgrade to: 3.0.6 is the latest on PyPI.
+  core/session_memory.py, core/profiles.py
+      `_io_lock = asyncio.Lock()` at import time. Surfaced as
+      "ext:deezer - Failed to resolve Deezer download: <asyncio.locks.Lock
+      object at 0x...> is bound to a different event loop".
 
-The replacement keeps one real lock per running loop, so `async with
-_io_lock:` behaves exactly as intended within any single loop and stops
-raising across loops. Applied at image build against a pinned version, so it
-is deterministic and visible rather than a silent monkeypatch - if the pin
-moves and the shape changes, this fails loudly instead of quietly doing
-nothing.
+  core/signed_session_mobile.py
+      `_AUTH_LOCKS` keyed by namespace only, with a comment asserting that
+      "no download starts its own asyncio.run()" - which the bridge above
+      does, per request. Surfaced as "Bridge timeout for
+      session.signedFetch".
+
+3.0.6 is the newest release on PyPI, so there is nothing to upgrade to.
+
+Applied at image build against a pinned version, and it exits non-zero when a
+pattern is missing, so a future pin bump fails the build loudly instead of
+silently patching nothing.
 """
 
 import pathlib
@@ -35,9 +42,15 @@ class _PerLoopLock:
     """
 
     def __init__(self) -> None:
-        self._locks: dict[object, "asyncio.Lock"] = {}
+        # Weak keys, and keyed by the loop object rather than id(loop):
+        # asyncio.run() frees its loop when it returns and CPython reuses the
+        # address, so an id() key made the next loop collide with the previous
+        # one's entry and hand back a lock bound to a closed loop.
+        import weakref as _weakref
 
-    def _for_current_loop(self) -> "asyncio.Lock":
+        self._locks = _weakref.WeakKeyDictionary()
+
+    def _for_current_loop(self):
         loop = asyncio.get_running_loop()
         lock = self._locks.get(loop)
         if lock is None:
@@ -59,22 +72,71 @@ class _PerLoopLock:
 _io_lock = _PerLoopLock()
 '''
 
-TARGET = "_io_lock = asyncio.Lock()"
+IO_LOCK_TARGET = "_io_lock = asyncio.Lock()"
+
+AUTH_LOCK_OLD = """def _get_auth_lock(namespace: str) -> asyncio.Lock:
+    \"\"\"Return the asyncio.Lock for the given namespace, creating it if absent.\"\"\"
+    lock = _AUTH_LOCKS.get(namespace)
+    if lock is None:
+        lock = asyncio.Lock()
+        _AUTH_LOCKS[namespace] = lock
+    return lock
+"""
+
+AUTH_LOCK_NEW = """import weakref as _sfp_weakref
+
+_AUTH_LOCKS_BY_LOOP = _sfp_weakref.WeakKeyDictionary()
 
 
-def patch(path: pathlib.Path) -> bool:
+def _get_auth_lock(namespace: str) -> asyncio.Lock:
+    \"\"\"Return the asyncio.Lock for this namespace on the running loop.
+
+    Patched by spotiflac-lidarr-proxy: keyed by loop as well as namespace,
+    because extensions/runtime.py runs each session.signedFetch in its own
+    asyncio.run(). Serialization within one loop is unchanged.
+    \"\"\"
+    loop = asyncio.get_running_loop()
+    # Keyed by the loop object, not id(loop): asyncio.run() frees its loop and
+    # CPython reuses the address, so an id() key collides with a previous,
+    # already-closed loop and returns a lock bound to it.
+    per_loop = _AUTH_LOCKS_BY_LOOP.get(loop)
+    if per_loop is None:
+        per_loop = {}
+        _AUTH_LOCKS_BY_LOOP[loop] = per_loop
+    lock = per_loop.get(namespace)
+    if lock is None:
+        lock = asyncio.Lock()
+        per_loop[namespace] = lock
+    return lock
+"""
+
+
+def patch_io_lock(path: pathlib.Path) -> bool:
     text = path.read_text(encoding="utf-8")
     if "_PerLoopLock" in text:
         print(f"already patched: {path}")
         return True
-    if TARGET not in text:
-        print(f"PATTERN NOT FOUND in {path}", file=sys.stderr)
+    if IO_LOCK_TARGET not in text:
+        print(f"PATTERN NOT FOUND (_io_lock) in {path}", file=sys.stderr)
         return False
-    # Drop the original binding and append the shim, so the name resolves to
-    # the per-loop object without disturbing anything above it.
-    text = text.replace(TARGET, "# _io_lock replaced below, see per_loop_lock.py", 1)
+    text = text.replace(
+        IO_LOCK_TARGET, "# _io_lock replaced below, see per_loop_lock.py", 1
+    )
     path.write_text(text + SHIM, encoding="utf-8")
-    print(f"patched: {path}")
+    print(f"patched _io_lock: {path}")
+    return True
+
+
+def patch_auth_locks(path: pathlib.Path) -> bool:
+    text = path.read_text(encoding="utf-8")
+    if "keyed by loop as well as namespace" in text:
+        print(f"already patched: {path}")
+        return True
+    if AUTH_LOCK_OLD not in text:
+        print(f"PATTERN NOT FOUND (_get_auth_lock) in {path}", file=sys.stderr)
+        return False
+    path.write_text(text.replace(AUTH_LOCK_OLD, AUTH_LOCK_NEW, 1), encoding="utf-8")
+    print(f"patched _get_auth_lock: {path}")
     return True
 
 
@@ -83,14 +145,22 @@ def main() -> int:
         print("usage: per_loop_lock.py <site-packages/SpotiFLAC>", file=sys.stderr)
         return 2
     root = pathlib.Path(sys.argv[1])
-    targets = [root / "core" / "session_memory.py", root / "core" / "profiles.py"]
     ok = True
-    for t in targets:
-        if not t.exists():
-            print(f"MISSING {t}", file=sys.stderr)
+
+    for target in (root / "core" / "session_memory.py", root / "core" / "profiles.py"):
+        if not target.exists():
+            print(f"MISSING {target}", file=sys.stderr)
             ok = False
             continue
-        ok = patch(t) and ok
+        ok = patch_io_lock(target) and ok
+
+    mobile = root / "core" / "signed_session_mobile.py"
+    if not mobile.exists():
+        print(f"MISSING {mobile}", file=sys.stderr)
+        ok = False
+    else:
+        ok = patch_auth_locks(mobile) and ok
+
     return 0 if ok else 1
 
 
