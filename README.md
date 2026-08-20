@@ -73,37 +73,112 @@ like a network problem and is not. See Troubleshooting.
 
 ## Configuring Lidarr
 
-Two entries, both pointing at this program. Use the same key for each.
+Two entries, both pointing at this program, both using the same `SPF_API_KEY`.
+Lidarr has to reach the host and port you publish; if the proxy shares a VPN
+sidecar's network namespace, that is the sidecar's name and published port,
+not this container's.
 
-Settings, Download Clients, Add, SABnzbd:
+### 1. The download client
 
-    Host      spotiflac-proxy
-    Port      8484
-    API Key   your SPF_API_KEY
-    Category  music
+Settings, Download Clients, Add, **SABnzbd**:
 
-Settings, Indexers, Add, Newznab:
+| Field | Value |
+|-------|-------|
+| Name | SpotiFLAC |
+| Host | `spotiflac-proxy` |
+| Port | `8484` |
+| URL Base | leave empty |
+| API Key | your `SPF_API_KEY` |
+| Username / Password | leave empty |
+| Category | `music` |
+| Use SSL | off |
+| Client Priority | above your usenet and torrent clients only if you want FLAC preferred |
 
-    URL         http://spotiflac-proxy:8484/api/newznab
-    API Key     your SPF_API_KEY
-    Categories  3010, 3040
+Press **Test**. It must go green. Category is not optional - without it Lidarr
+warns that one is recommended, and every job lands in the default.
 
-Set the download client's category to `music`, or Lidarr's test reports "a
-category is recommended".
+The category is also the download's routing: `music-flac-24` asks for hi-res,
+`music-tidal` pins the provider, `music-qobuz-flac-16` does both. `mode=get_cats`
+lists them all. Plain `music` uses `SPF_DEFAULT_SERVICE` and
+`SPF_DEFAULT_QUALITY`.
 
-Categories carry a name but no directory. Downloads land in
+Categories carry a name but deliberately no directory. Downloads land in
 `SPF_OUTPUT_DIR/<nzo_id>`, never in a per-category subdirectory, and Lidarr
-resolves a relative category dir against `complete_dir` and then checks that the
+resolves a relative category dir against `complete_dir` and then checks the
 result exists inside its own container - so advertising one raises a permanent
 "places downloads in ... but this directory does not appear to exist" health
 error against a working setup.
 
-The indexer answers directed searches only. Lidarr's RSS sync sends a query
-with no artist and no album, and there is nothing to browse, so it returns
-nothing by design. For the same reason Lidarr's indexer Test button reports
-"Query successful, but no results in the configured categories were
-returned". That is expected here and does not stop searches working; the
-button has no way to express "search-only indexer".
+### 2. The indexer
+
+Settings, Indexers, Add, **Newznab** (Custom):
+
+| Field | Value |
+|-------|-------|
+| Name | SpotiFLAC |
+| URL | `http://spotiflac-proxy:8484` |
+| API Path | `/api/newznab` |
+| API Key | your `SPF_API_KEY` |
+| Categories | `3000`, `3010`, `3040` |
+| Additional Parameters | leave empty |
+| Enable RSS Sync | see below |
+| Enable Automatic Search | on |
+| Enable Interactive Search | on |
+
+Categories must include the ones this indexer publishes or Lidarr filters
+every result away. `t=caps` declares the full set; releases are tagged `3000`
+plus `3010` for lossless, or `3000` plus `3040` for hi-res.
+
+### 3. Make the indexer Test pass
+
+Out of the box the Test button reports:
+
+    Query successful, but no results in the configured categories were
+    returned from your indexer.
+
+That is Lidarr's reaction to an empty browse feed, not a fault. This indexer
+resolves Spotify metadata for a named album; it has no notion of "what is
+new", so `t=music` with no artist and no album has nothing to answer with.
+Directed searches - which is all Lidarr does when it actually looks for an
+album - work regardless, and so does grabbing.
+
+To make the button go green, give the browse feed a search to run:
+
+    SPF_RSS_QUERY=new albums
+
+Anything Spotify's search understands works. The results are ordinary album
+releases, so Lidarr ignores every one that does not match an album it is
+monitoring. Leave it unset to keep RSS sync silent and accept the red Test.
+
+### 4. Priorities
+
+Delay profiles decide which client wins when several can serve a release.
+This proxy speaks the usenet protocol, so it competes with your usenet
+clients. A reasonable arrangement:
+
+- real usenet client: priority 1
+- SpotiFLAC: priority 5
+- torrent client: last
+
+Lidarr treats a lower number as higher priority.
+
+### 5. Verify end to end
+
+Pick a monitored album, run an interactive search, and grab a SpotiFLAC
+release. Then check all three views agree:
+
+    # the proxy's own queue
+    curl -s "http://localhost:8484/api?mode=queue&output=json&apikey=$SPF_API_KEY"
+
+    # Lidarr's queue - the row must be here, with a title and a size
+    curl -s -H "X-Api-Key: $LIDARR_KEY" "http://localhost:8686/api/v1/queue"
+
+    # and afterwards
+    curl -s "http://localhost:8484/api?mode=history&output=json&apikey=$SPF_API_KEY"
+
+A queue slot with an empty `filename` means Lidarr cannot track the download
+and will never import it. That was a real defect, fixed - if you see it,
+the image predates the fix.
 
 ### Albums, not tracks
 
@@ -262,6 +337,7 @@ reference in [`docs/API.md`](docs/API.md).
 | `SPF_MAX_CONCURRENT` | 3 | Concurrent downloads |
 | `SPF_JOB_TIMEOUT` | 30m | Ceiling per job |
 | `SPF_HISTORY_RETENTION_COUNT` | 500 | History rows kept |
+| `SPF_RSS_QUERY` | none | Search answering Lidarr's browse feed; also what makes its indexer Test pass |
 | `SPF_LOG_LEVEL` | info | trace, debug, info, warn, error |
 | `SPF_TIDAL_API_URL` | none | Custom Tidal API instance |
 | `SPF_QOBUZ_API_URL` | none | Custom Qobuz API instance |
