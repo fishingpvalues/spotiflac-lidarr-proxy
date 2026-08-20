@@ -27,6 +27,19 @@ pkg/sabnzbd/         Shared SABnzbd JSON types
 tests/integration/   Integration tests (docker-compose)
 ```
 
+### Search (Client.SearchMetadata)
+
+Python backend first, `spotiflac-cli` second, same cascade shape as downloads.
+The order is load-bearing: `spotiflac-cli --search` reports `track_count: 0`
+and `year: ""` for every hit, and `internal/indexer` derives the release size,
+the `files` attr and the release year from exactly those. Lidarr scores a
+0-byte release from year 0 below its album-match threshold and rejects it. The
+Python wrapper's `--search` mode asks `SpotifyMetadataClient` instead, and
+enriches album hits with one extra call each under a time budget.
+
+`parseSearchLine` accepts both shapes the backends emit - the wrapper sends
+`year` as a number, the CLI as a string - see `parseYear`.
+
 ### Download cascade (Client.Download)
 
 The proxy tries backends in priority order, first success wins:
@@ -123,6 +136,25 @@ that read `--service` to simulate per-service behavior.
 ## Docker
 
 Multi-stage build. Stage 1: proxy binary. Stage 2: SpotiFLAC CLI from fork (Go 1.26). Stage 3: alpine:3.21 runtime. Shared volume `/downloads` for Lidarr import.
+
+The runtime user is created with an **explicit** uid/gid (`PUID`/`PGID` build
+args, default 1000), not `adduser -S`. A system user picked id 100:101 while
+deployments run the container as `1000:1000`, so `$HOME` was not writable by
+the running process - and that alone broke the entire Python backend, because
+Chromium cannot create its crashpad database under an unwritable home and
+aborts with SIGTRAP. `chromium`, `nodejs` and `xvfb` are installed in the
+image for the same backend; they used to be absent entirely.
+
+## Lidarr's addfile request carries almost nothing
+
+Lidarr's real grab is `mode=addfile`, and its POST query is only
+`mode=addfile&cat=&priority=&apikey=&output=json` - no `nzbname`, no size, no
+track count. Anything the download client needs about a release therefore has
+to travel inside the synthetic NZB: `internal/indexer.Release` is written by
+`t=get` (which reads `name`, `size` and `tracks` off the download URL that
+`NewznabXML` built) and read back by `handleAddURL`. Leaving `Job.Filename`
+empty marshals the queue slot as `"filename": ""`, and Lidarr keys its tracked
+download off that string - the download completes and Lidarr never sees it.
 
 ## API Compatibility
 

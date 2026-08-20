@@ -41,6 +41,20 @@ along with `checksums.txt`. Running outside a container means supplying
 
 `-v` raises the log level to debug, `-vv` to trace.
 
+### Running as a different user
+
+The image runs as uid/gid **1000**, and `$HOME` (`/home/spotiflac`) belongs to
+that id. Override it at build time if your host needs another:
+
+    docker build --build-arg PUID=1001 --build-arg PGID=1001 .
+
+Do not override it at *run* time with `--user` or compose's `user:` unless
+that id owns `$HOME`. Chromium cannot create its crashpad database under an
+unwritable home directory and dies with SIGTRAP, which surfaces as
+`Browser failed to start within timeout`, then 120-second extension timeouts,
+then every download failing with `exit status 1` - a failure mode that looks
+like a network problem and is not. See Troubleshooting.
+
 ## Configuring Lidarr
 
 Two entries, both pointing at this program. Use the same key for each.
@@ -95,13 +109,15 @@ Each job then goes through up to four backends, in order, first success wins.
 
 | # | Backend | Requires | Human interaction |
 |---|---------|----------|-------------------|
-| 1 | SpotiFLAC Python module | in the image | none |
+| 1 | SpotiFLAC Python module | in the image, plus a writable `$HOME` | none |
 | 2 | `spotiflac-cli` against a custom Tidal or Qobuz API | `SPF_TIDAL_API_URL` or a reachable fallback | none |
 | 3 | `spotiflac-cli` with a captcha solver | `SPOTIFLAC_FSL_URL` | none |
 | 4 | `spotiflac-cli` against the community tier | nothing | solve a captcha in a browser |
 
-Backend 1 handles its own authentication and needs no browser, which is why it
-is tried first. Backends 2 through 4 exist because upstream sources fail often
+Backend 1 handles its own authentication, which is why it is tried first. It
+does drive Chromium under Xvfb for some providers, so the image ships
+`chromium`, `nodejs` and `xvfb`, and the user it runs as needs a writable
+`$HOME`. Backends 2 through 4 exist because upstream sources fail often
 and independently.
 
 Jobs are recorded in SQLite and survive a restart, including ones that had not
@@ -285,6 +301,23 @@ working across Lidarr releases, can be put behind whatever VPN sidecar you
 already run, and cannot take Lidarr down with it.
 
 ## Troubleshooting
+
+**Every download fails with `exit status 1` and the log mentions
+`Browser failed to start within timeout`.** The user the container runs as
+cannot write `$HOME`. Check it directly:
+
+    docker exec <container> sh -c 'id; ls -ld "$HOME"; touch "$HOME/.probe"'
+
+A `Permission denied` there is the whole bug: Chromium aborts with
+`chrome_crashpad_handler: --database is required` followed by
+`Trace/breakpoint trap (core dumped)`, pydoll reports a start timeout, the
+node extensions time out after 120 s, and backend 1 fails for every job. Run
+the image as the uid it was built for, or rebuild with matching `PUID`/`PGID`.
+
+**Search results show 0 tracks, 0 B and no year, and Lidarr rejects them with
+"Album match is not close enough ... [year, country, tracks]".** The Python
+backend is not answering searches, so the numbers come from `spotiflac-cli`,
+which reports none of them. Same check as above.
 
 Repeated failures against one service are usually address-based rate limiting
 rather than an authentication problem; `mode=warnings` will show the breaker
