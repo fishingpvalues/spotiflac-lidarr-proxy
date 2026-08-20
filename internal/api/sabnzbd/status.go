@@ -11,7 +11,7 @@ import (
 )
 
 func (h *Handler) handleVersion(c fiber.Ctx) error {
-	return c.JSON(sabnzbd.VersionResponse{Version: h.version})
+	return c.JSON(sabnzbd.VersionResponse{Version: sabnzbdVersion(h.version)})
 }
 
 func (h *Handler) handleAuth(c fiber.Ctx) error {
