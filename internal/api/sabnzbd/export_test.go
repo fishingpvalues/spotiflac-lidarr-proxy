@@ -1,6 +1,11 @@
 package sabnzbd
 
-import "time"
+import (
+	"time"
+
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
+)
 
 // SetRetryBackoffForTest replaces the retry backoff schedule and returns a
 // function restoring the previous one.
@@ -17,4 +22,11 @@ func SetRetryBackoffForTest(schedule []time.Duration) func() {
 	previous := retryBackoff
 	retryBackoff = schedule
 	return func() { retryBackoff = previous }
+}
+
+// HandleProgressEventForTest applies one non-terminal CLI event to a job, the
+// way a live download does. Exported for the progress tests, which live in
+// the external test package.
+func (h *Handler) HandleProgressEventForTest(job *queue.Job, evt spotiflac.ProgressEvent) {
+	h.handleProgressEvent(job, evt)
 }

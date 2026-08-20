@@ -366,8 +366,19 @@ func (h *Handler) attemptDownload(job *queue.Job, jobDir string) (bool, string) 
 func (h *Handler) handleProgressEvent(job *queue.Job, evt spotiflac.ProgressEvent) {
 	switch evt.Type {
 	case "progress":
-		job.Percentage = evt.Percent
-		job.Sizeleft = int64(float64(job.Size) * (100 - evt.Percent) / 100)
+		// Bytes written is the better signal and the backend reports it:
+		// deriving progress from the finished-file count leaves any
+		// single-track release at 0 % until it is done, so Lidarr's queue
+		// shows a download with no movement. Fall back to the reported
+		// percentage when there is no byte count (or no size to measure
+		// against).
+		if evt.Bytes > 0 && job.Size > 0 {
+			job.Sizeleft = max(job.Size-evt.Bytes, 0)
+			job.Percentage = min(100*float64(evt.Bytes)/float64(job.Size), 99)
+		} else {
+			job.Percentage = evt.Percent
+			job.Sizeleft = int64(float64(job.Size) * (100 - evt.Percent) / 100)
+		}
 		if err := h.queue.Update(job); err != nil {
 			h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("progress update failed")
 		}

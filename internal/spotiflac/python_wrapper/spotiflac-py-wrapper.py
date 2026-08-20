@@ -314,22 +314,49 @@ def resolve_release(url):
     return empty
 
 
+def bytes_on_disk(directory):
+    """Every byte written under the output directory so far.
+
+    Counts all files, not just finished audio ones, so a download in flight
+    under a temporary name still counts toward progress.
+    """
+    total = 0
+    for root, _dirs, files in os.walk(directory):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                continue
+    return total
+
+
 def emit_progress_until(stop, output_dir, expected):
-    """Report progress from files landing on disk.
+    """Report progress from what has landed on disk.
 
     SpotiFLAC's sync entry point is a blocking call with no progress
     callback, so the only observable progress is the output directory
-    filling up. Without this the job sat at 0 % for its entire life and
+    filling up. Without this the job sat at 0 % for its whole life and
     Lidarr's queue showed no movement at all.
+
+    Bytes, not finished files: a single-track release has exactly one file,
+    so a file count is 0 % until it is 100 % - which is no progress bar at
+    all. The byte total moves continuously and Lidarr renders it directly.
     """
-    last = -1
+    last_bytes = -1
     while not stop.wait(2.0):
         done = len(audio_files(output_dir))
-        if done == last:
+        written = bytes_on_disk(output_dir)
+        if written == last_bytes:
             continue
-        last = done
+        last_bytes = written
         percent = 100.0 * done / expected if expected > 0 else 0.0
-        emit("progress", percent=round(min(percent, 99.0), 1), track=str(done))
+        emit(
+            "progress",
+            percent=round(min(percent, 99.0), 1),
+            bytes=written,
+            files=done,
+            track=str(done),
+        )
 
 
 def run_download(args):

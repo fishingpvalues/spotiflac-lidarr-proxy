@@ -26,9 +26,14 @@ type ProgressEvent struct {
 	Detail string `json:"detail,omitempty"`
 	// TrackCount is how many audio files the backend actually produced,
 	// reported on the terminal "complete" event.
-	TrackCount int    `json:"track_count,omitempty"`
-	URL        string `json:"url,omitempty"`
-	CB         string `json:"cb,omitempty"`
+	TrackCount int `json:"track_count,omitempty"`
+	// Bytes is how much has been written to the job directory so far,
+	// reported on "progress". It is what drives Lidarr's progress bar: a
+	// percentage derived from finished files alone sits at 0 until it jumps
+	// to 100 on any single-track release.
+	Bytes int64  `json:"bytes,omitempty"`
+	URL   string `json:"url,omitempty"`
+	CB    string `json:"cb,omitempty"`
 }
 
 type MetadataResult struct {
