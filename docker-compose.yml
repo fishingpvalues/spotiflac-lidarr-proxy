@@ -5,6 +5,11 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8484:8484"
+    # Chromium needs more than Docker's default 64 MB of /dev/shm, and
+    # pydoll launches it without --disable-dev-shm-usage. Measured in a real
+    # container: at 64 MB the same headless Chromium command produces no DOM
+    # at all, and pydoll reports "Command timeout: NetworkMethod.ENABLE".
+    shm_size: "512m"
     environment:
       - SPF_API_KEY=test-integration-key
       - SPF_OUTPUT_DIR=/downloads

@@ -21,10 +21,17 @@ module. There is nothing else to install.
 
     docker run -d \
       -p 8484:8484 \
+      --shm-size=512m \
       -e SPF_API_KEY=$(openssl rand -hex 16) \
       -v /srv/downloads:/downloads \
       -v spotiflac-data:/data \
       ghcr.io/fishingpvalues/spotiflac-lidarr-proxy:latest
+
+`--shm-size` is not optional. Chromium needs more than Docker's default
+64 MB of `/dev/shm`, and pydoll launches it without
+`--disable-dev-shm-usage`; at 64 MB the browser starts and then produces
+nothing, which surfaces as `Command timeout: NetworkMethod.ENABLE` and a
+download that fails after two minutes of apparently working.
 
 Put it on the same Docker network as Lidarr and give both the same downloads
 volume, mounted at the same path, so Lidarr can import what this writes.
@@ -301,6 +308,10 @@ working across Lidarr releases, can be put behind whatever VPN sidecar you
 already run, and cannot take Lidarr down with it.
 
 ## Troubleshooting
+
+**Downloads fail after ~2 minutes and the log mentions
+`Command timeout: NetworkMethod.ENABLE`.** `/dev/shm` is too small. Give the
+container `--shm-size=512m` (or compose's `shm_size: "512m"`).
 
 **Every download fails with `exit status 1` and the log mentions
 `Browser failed to start within timeout`.** The user the container runs as
