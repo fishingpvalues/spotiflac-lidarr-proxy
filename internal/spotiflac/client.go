@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -474,13 +475,41 @@ func (c *Client) CollectPythonResult(pyEvents <-chan ProgressEvent, pyErrs <-cha
 	}
 }
 
+// SearchMetadata resolves a free-text query to releases, Python backend
+// first and spotiflac-cli second.
+//
+// The order matters and is not cosmetic. `spotiflac-cli --search` reports
+// `"track_count": 0` and `"year": ""` for every single hit, and the Newznab
+// indexer derives the release size, the `files` attribute and the release
+// year from exactly those three numbers. Lidarr then scores a 0-byte release
+// with no year below its own album-match threshold and rejects it - "Album
+// match is not close enough: 77.6 % vs 80 % [year, country, tracks]" was on
+// every SpotiFLAC grab in production. The bundled Python module has the real
+// values (SpotifyMetadataClient), so ask it, and fall back to the CLI only
+// when Python is unavailable or answers nothing.
 func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	pythonBin := findPython(c.pythonVenv)
+	if wrapperPath, err := extractPythonWrapper(); err == nil {
+		if _, statErr := os.Stat(pythonBin); statErr == nil {
+			results, err := c.runSearch(ctx, pythonBin, wrapperPath, "--search", query)
+			if err == nil && len(results) > 0 {
+				return results, nil
+			}
+		}
+	}
+	return c.runSearch(ctx, c.cliPath, "--search", query)
+}
+
+// searchTimeout bounds one search invocation. Album enrichment in the Python
+// backend adds one Spotify call per album hit, and it carries its own smaller
+// budget, so this only has to be generous enough not to cut that short.
+const searchTimeout = 60 * time.Second
+
+func (c *Client) runSearch(ctx context.Context, bin string, args ...string) ([]MetadataResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, searchTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.cliPath,
-		"--search", query,
-	)
+	cmd := exec.CommandContext(ctx, bin, args...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -494,53 +523,9 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 	var results []MetadataResult
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
-		var raw struct {
-			Type       string `json:"type"`
-			Entity     string `json:"entity"`
-			Name       string `json:"name"`
-			Artist     string `json:"artist"`
-			Album      string `json:"album"`
-			SpotifyURL string `json:"spotify_url"`
-			CoverURL   string `json:"cover_url"`
-			Year       string `json:"year"`
-			TrackCount int    `json:"track_count"`
-			Title      string `json:"title"`
-			ISRC       string `json:"isrc"`
-			Genre      string `json:"genre"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
+		result, ok := parseSearchLine(scanner.Bytes())
+		if !ok {
 			continue
-		}
-		url := raw.SpotifyURL
-		if url == "" {
-			continue
-		}
-		title := raw.Title
-		if title == "" {
-			title = raw.Name
-		}
-		artist := raw.Artist
-		if artist == "" {
-			artist = raw.Name
-		}
-		album := raw.Album
-		result := MetadataResult{
-			Artist:     artist,
-			Album:      album,
-			Title:      title,
-			SpotifyURL: url,
-			CoverURL:   raw.CoverURL,
-			ISRC:       raw.ISRC,
-			Genre:      raw.Genre,
-			TrackCount: raw.TrackCount,
-			Entity:     raw.Entity,
-		}
-		// An album hit from a CLI that predates the `entity`/`album` fix
-		// carries its title in name and leaves album empty. Recover it, or the
-		// indexer's "an album must have an album name" rule throws away the
-		// only releases Lidarr is able to import.
-		if result.Album == "" && result.EntityKind() == EntityAlbum {
-			result.Album = title
 		}
 		results = append(results, result)
 	}
@@ -550,6 +535,86 @@ func (c *Client) SearchMetadata(ctx context.Context, query string) ([]MetadataRe
 	}
 
 	return results, nil
+}
+
+// parseSearchLine turns one JSON line of search output into a result, or
+// reports that the line carried no usable release.
+func parseSearchLine(line []byte) (MetadataResult, bool) {
+	var raw struct {
+		Type       string          `json:"type"`
+		Entity     string          `json:"entity"`
+		Name       string          `json:"name"`
+		Artist     string          `json:"artist"`
+		Album      string          `json:"album"`
+		SpotifyURL string          `json:"spotify_url"`
+		CoverURL   string          `json:"cover_url"`
+		Year       json.RawMessage `json:"year"`
+		TrackCount int             `json:"track_count"`
+		Title      string          `json:"title"`
+		ISRC       string          `json:"isrc"`
+		Genre      string          `json:"genre"`
+	}
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return MetadataResult{}, false
+	}
+	if raw.SpotifyURL == "" {
+		return MetadataResult{}, false
+	}
+
+	title := raw.Title
+	if title == "" {
+		title = raw.Name
+	}
+	artist := raw.Artist
+	if artist == "" {
+		artist = raw.Name
+	}
+
+	result := MetadataResult{
+		Artist:     artist,
+		Album:      raw.Album,
+		Title:      title,
+		SpotifyURL: raw.SpotifyURL,
+		CoverURL:   raw.CoverURL,
+		ISRC:       raw.ISRC,
+		Genre:      raw.Genre,
+		Year:       parseYear(raw.Year),
+		TrackCount: raw.TrackCount,
+		Entity:     raw.Entity,
+	}
+	// An album hit from the CLI carries its title in `name` and leaves
+	// `album` empty. Recover it, or the indexer's "an album must have an
+	// album name" rule throws away the only releases Lidarr can import.
+	if result.Album == "" && result.EntityKind() == EntityAlbum {
+		result.Album = title
+	}
+	return result, true
+}
+
+// parseYear accepts both shapes the two backends emit: the Python wrapper
+// sends a number, spotiflac-cli sends a string ("2013", "2013-05-17", or ""
+// for unknown). The field was previously read into a local string and then
+// never assigned to the result at all, so every release published year 0.
+func parseYear(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var asInt int
+	if err := json.Unmarshal(raw, &asInt); err == nil {
+		return asInt
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err != nil {
+		return 0
+	}
+	if len(asString) < 4 {
+		return 0
+	}
+	year, err := strconv.Atoi(asString[:4])
+	if err != nil {
+		return 0
+	}
+	return year
 }
 
 // solveVerification sends a community verification challenge URL to Byparr/FlareSolverr.

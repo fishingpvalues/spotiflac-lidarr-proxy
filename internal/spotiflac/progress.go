@@ -20,8 +20,15 @@ type ProgressEvent struct {
 	Size         int64   `json:"size,omitempty"`
 	ISRC         string  `json:"isrc,omitempty"`
 	ErrorMessage string  `json:"message,omitempty"`
-	URL          string  `json:"url,omitempty"`
-	CB           string  `json:"cb,omitempty"`
+	// Detail carries the backend's own explanation of a failure - the
+	// provider cascade's reason lines. Without it a failed download reached
+	// Lidarr as a bare "spotiflac exited: exit status 1".
+	Detail string `json:"detail,omitempty"`
+	// TrackCount is how many audio files the backend actually produced,
+	// reported on the terminal "complete" event.
+	TrackCount int    `json:"track_count,omitempty"`
+	URL        string `json:"url,omitempty"`
+	CB         string `json:"cb,omitempty"`
 }
 
 type MetadataResult struct {
@@ -75,9 +82,13 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 		}
 		switch event.Type {
 		case "error":
+			raw := event.Detail
+			if raw == "" {
+				raw = lastNBytes(output.Bytes(), 4096)
+			}
 			errors <- &DownloadError{
 				Message:   event.ErrorMessage,
-				RawOutput: lastNBytes(output.Bytes(), 4096),
+				RawOutput: raw,
 			}
 		case "complete":
 			events <- event
