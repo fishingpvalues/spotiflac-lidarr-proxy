@@ -189,3 +189,17 @@ func TestDownloadRefusesAServiceTheCLICannotDo(t *testing.T) {
 	assert.Contains(t, got.Error(), "only available through the Python backend")
 	assert.Contains(t, got.Error(), "tidal, qobuz, amazon")
 }
+
+func TestConfiguredPythonIsHonouredOrRefused(t *testing.T) {
+	dir := t.TempDir()
+	cli := writeScript(t, dir, "spotiflac-cli", `
+echo '{"type":"search_result","entity":"album","name":"B","artist":"A","album":"B","spotify_url":"https://open.spotify.com/album/x"}'
+`)
+	// A configured-but-missing interpreter must not fall back to the machine's
+	// own python3, so the search has to come from the CLI mock.
+	client := spotiflac.NewClient(cli, 30*time.Second, "tidal", "lossless", "", "", "", nil, "/nonexistent/python3", nil)
+	results, err := client.SearchMetadata(context.Background(), "a b")
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "https://open.spotify.com/album/x", results[0].SpotifyURL)
+}

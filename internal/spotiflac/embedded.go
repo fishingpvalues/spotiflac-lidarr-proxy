@@ -31,13 +31,26 @@ func extractPythonWrapper() (string, error) {
 	return path, nil
 }
 
-// findPython returns the best available Python binary path.
-// Checks SPOTIFLAC_PYTHON_VENV env, then /venv/bin/python3, then system python3.
+// findPython returns the Python binary to run the wrapper with, or "" when
+// there is none to use.
+//
+// An explicitly configured path is honoured or refused - never silently
+// replaced. It used to fall through to the well-known locations when the
+// configured interpreter was missing, so setting SPF_SPOTIFLAC_PYTHON_VENV to
+// a path that does not exist ran a *different* interpreter instead: the
+// setting looked applied and changed nothing. Verified in a live container -
+// with the venv pointed at /nonexistent/python3, the wrapper still ran under
+// /venv/bin/python3.
+//
+// Refusing is the useful behaviour: an operator naming an interpreter is
+// either pointing at a specific environment or deliberately disabling the
+// Python backend, and a fallback defeats both.
 func findPython(venvPath string) string {
 	if venvPath != "" {
 		if _, err := os.Stat(venvPath); err == nil {
 			return venvPath
 		}
+		return ""
 	}
 
 	// Common locations
