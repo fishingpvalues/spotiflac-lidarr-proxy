@@ -408,6 +408,19 @@ def run_download(args):
             output_dir=args.output_dir,
             services=services,
             quality=quality,
+            # One track at a time, because several of the providers drive a
+            # browser and this container cannot run two at once. Measured
+            # with pydoll directly: on an idle container it starts,
+            # navigates and reads the page; with another browser session
+            # live it starts and then every CDP command times out
+            # (CommandExecutionTimeout), which is exactly the
+            # "NetworkMethod.ENABLE, timeout=60s" the extensions report
+            # before failing with "NETWORK_ERROR: Timeout (120s)".
+            #
+            # SpotiFLAC's default is 2, so an album was self-contending: two
+            # provider browsers plus the Turnstile solver's own, in a
+            # container capped at 2 CPUs.
+            max_concurrent_downloads=args.max_parallel,
         )
     finally:
         builtins.input = original_input
@@ -471,6 +484,7 @@ def main():
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--no-enrich", action="store_true")
     parser.add_argument("--enrich-budget", type=float, default=20.0)
+    parser.add_argument("--max-parallel", type=int, default=1)
     args = parser.parse_args()
 
     if args.resolve:
