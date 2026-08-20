@@ -320,6 +320,14 @@ func (h *Handler) fallbackChain(current string) []string {
 // returns false with the error message and leaves the job untouched for the
 // caller to retry or ultimately fail.
 func (h *Handler) attemptDownload(job *queue.Job, jobDir string) (bool, string) {
+	// A previous download's browser is still running and will stop this one's
+	// from starting at all (see reapStaleBrowsers). Guarded on concurrency
+	// because a sibling job's browser is indistinguishable from a stray, so
+	// this is only safe when there cannot be a sibling.
+	if h.cfg.MaxConcurrent <= 1 {
+		reapStaleBrowsers()
+	}
+
 	ctx := context.Background()
 	events, errs := h.client.Download(ctx, job.SpotifyURL, jobDir, job.Service, job.Quality)
 
