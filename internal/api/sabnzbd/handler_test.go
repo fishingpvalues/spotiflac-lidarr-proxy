@@ -922,3 +922,88 @@ func TestGetConfigCategoriesCarryNoRelativeDir(t *testing.T) {
 		assert.NotEmpty(t, cat.Name)
 	}
 }
+
+// TestAddFileRecoversReleaseNameSizeAndTrackCountFromNZB is the regression
+// guard for the defect that made the whole integration silently useless:
+// Lidarr's mode=addfile POST carries no nzbname at all, so Job.Filename
+// stayed empty, the queue slot marshaled with `"filename": ""`, and Lidarr -
+// which keys its tracked download off exactly that string - never listed the
+// download in its own queue. Measured against production: the proxy reported
+// status "Downloading" while Lidarr's queue held zero SpotiFLAC rows, and its
+// last 100 history records contained not one SpotiFLAC grab.
+func TestAddFileRecoversReleaseNameSizeAndTrackCountFromNZB(t *testing.T) {
+	app, q := setupTestApp(t)
+
+	const spotifyURL = "https://open.spotify.com/album/metatest"
+	nzb, err := indexer.GenerateNZBRelease(indexer.Release{
+		SpotifyURL: spotifyURL,
+		Name:       "Daft Punk - Discovery [FLAC]",
+		Size:       490 * 1024 * 1024,
+		TrackCount: 14,
+		Date:       1700000000,
+	})
+	require.NoError(t, err)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("nzbfile", "Daft Punk - Discovery [FLAC].nzb")
+	require.NoError(t, err)
+	_, err = part.Write(nzb)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req, _ := http.NewRequest("POST", "/api/sabnzbd?mode=addfile&cat=music&apikey=test-key", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+
+	var r sabtypes.AddURLResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&r))
+	require.Len(t, r.NzoIDs, 1)
+
+	job, err := q.Get(r.NzoIDs[0])
+	require.NoError(t, err)
+	assert.Equal(t, "Daft Punk - Discovery [FLAC]", job.Filename, "the release name Lidarr grabbed must survive into the queue slot")
+	assert.Equal(t, int64(490*1024*1024), job.Size, "Lidarr renders 0 B and no progress at all from a zero size")
+	assert.Equal(t, 14, job.TrackCount, "the track count is what lets a partial album be rejected")
+
+	waitForHistory(t, q, r.NzoIDs[0])
+}
+
+// TestAddFileFallsBackToTheUploadedFilename covers an NZB that carries no
+// name meta - an older release fetched before t=get folded one in, or a
+// third-party SABnzbd client. The multipart part's own filename is what
+// Lidarr names the upload after, so it is a usable last resort.
+func TestAddFileFallsBackToTheUploadedFilename(t *testing.T) {
+	app, q := setupTestApp(t)
+
+	nzb := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <head><meta type="spotify_url">https://open.spotify.com/album/nonamemeta</meta></head>
+</nzb>`)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("nzbfile", "Some Artist - Some Album.nzb")
+	require.NoError(t, err)
+	_, err = part.Write(nzb)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req, _ := http.NewRequest("POST", "/api/sabnzbd?mode=addfile&apikey=test-key", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+
+	var r sabtypes.AddURLResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&r))
+	require.Len(t, r.NzoIDs, 1)
+
+	job, err := q.Get(r.NzoIDs[0])
+	require.NoError(t, err)
+	assert.Equal(t, "Some Artist - Some Album", job.Filename, "the .nzb suffix is not part of the release name")
+
+	waitForHistory(t, q, r.NzoIDs[0])
+}

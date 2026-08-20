@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -16,7 +17,8 @@ import (
 )
 
 func (h *Handler) handleAddURL(c fiber.Ctx) error {
-	spotifyURL := resolveSpotifyURL(c)
+	uploaded := uploadedRelease(c)
+	spotifyURL := resolveSpotifyURL(c, uploaded)
 	if spotifyURL == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(sabnzbd.StatusResponse{
 			Status: false,
@@ -30,14 +32,8 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		})
 	}
 
-	nzbName := c.Query("nzbname")
-	if nzbName == "" {
-		nzbName = c.FormValue("nzbname")
-	}
-	cat := c.Query("cat")
-	if cat == "" || cat == "*" {
-		cat = "music-flac-16"
-	}
+	nzbName := resolveReleaseName(c, uploaded)
+	cat := resolveCategory(c)
 	priority := c.Query("priority")
 	if priority == "" {
 		priority = "Normal"
@@ -71,6 +67,12 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		qual = h.cfg.DefaultQuality
 	}
 
+	// Size and TrackCount also come from the NZB. Size is the indexer's
+	// per-track estimate, not a measurement, but Lidarr renders "0 B" and
+	// computes no progress whatsoever from a zero, and the CLI overwrites
+	// it with the real byte count on completion. TrackCount is what lets
+	// handleCompleteEvent reject a partial album instead of handing Lidarr
+	// one file out of thirteen.
 	job := &queue.Job{
 		NzoID:      nzoID,
 		SpotifyURL: spotifyURL,
@@ -79,10 +81,9 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		Filename:   nzbName,
 		Service:    svc,
 		Quality:    qual,
-		// TrackCount left at 0: the CLI's --search flag takes free-text
-		// queries, not a Spotify URL, so no reliable per-URL track count
-		// is available at addurl time. Completion verification in
-		// processDownload only runs when TrackCount > 0.
+		Size:       uploaded.Size,
+		Sizeleft:   uploaded.Size,
+		TrackCount: uploaded.TrackCount,
 	}
 
 	if err := h.queue.Add(job); err != nil {
@@ -100,31 +101,69 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 	})
 }
 
+// resolveReleaseName decides what the job is called.
+//
+// Lidarr's real grab path is mode=addfile, and its POST carries no nzbname at
+// all - verified against production, where the whole query was
+// mode=addfile&cat=music&priority=-100&apikey=...&output=json. The release
+// name therefore has to come out of the NZB we generated ourselves (t=get
+// folds it in), with the uploaded part's own filename as a last resort.
+// Leaving it empty marshals the queue slot with `"filename": ""`, and Lidarr
+// keys its tracked download off that string: the download ran to completion
+// and Lidarr's queue stayed empty, so it never imported and re-grabbed the
+// same album forever.
+func resolveReleaseName(c fiber.Ctx, uploaded uploadedNZB) string {
+	for _, candidate := range []string{
+		c.Query("nzbname"),
+		c.FormValue("nzbname"),
+		uploaded.Name,
+		uploaded.UploadFilename,
+	} {
+		if candidate != "" {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func resolveCategory(c fiber.Ctx) string {
+	cat := c.Query("cat")
+	if cat == "" || cat == "*" {
+		return "music-flac-16"
+	}
+	return cat
+}
+
+// uploadedNZB is what a mode=addfile upload yielded: the release metadata
+// our own synthetic NZB embedded, plus the multipart part's filename as a
+// fallback name. Zero value means there was no usable upload.
+type uploadedNZB struct {
+	indexer.Release
+	UploadFilename string
+}
+
 // resolveSpotifyURL covers both SABnzbd add modes: mode=addurl passes the
 // Spotify URL directly as "name"; mode=addfile (what Lidarr's real grab
 // flow uses) uploads our synthetic NZB's bytes instead, so the URL has to
 // be recovered from its embedded metadata.
-func resolveSpotifyURL(c fiber.Ctx) string {
+func resolveSpotifyURL(c fiber.Ctx, uploaded uploadedNZB) string {
 	if name := c.Query("name"); name != "" {
 		return name
 	}
 	if name := c.FormValue("name"); name != "" {
 		return name
 	}
-	if extracted, ok := extractSpotifyURLFromUpload(c); ok {
-		return extracted
-	}
-	return ""
+	return uploaded.SpotifyURL
 }
 
-// extractSpotifyURLFromUpload looks for an uploaded file in a mode=addfile
-// request (SABnzbd clients vary in which multipart field name they use for
-// the .nzb, so this checks all of them) and, if found, extracts the
-// spotify_url meta our own synthetic NZB embeds (see indexer.GenerateNZB).
-func extractSpotifyURLFromUpload(c fiber.Ctx) (string, bool) {
+// uploadedRelease looks for an uploaded file in a mode=addfile request
+// (SABnzbd clients vary in which multipart field name they use for the .nzb,
+// so this checks all of them) and parses back the metadata our own synthetic
+// NZB embeds (see indexer.GenerateNZBRelease).
+func uploadedRelease(c fiber.Ctx) uploadedNZB {
 	form, err := c.Req().MultipartForm()
 	if err != nil {
-		return "", false
+		return uploadedNZB{}
 	}
 	for _, files := range form.File {
 		for _, fh := range files {
@@ -137,10 +176,15 @@ func extractSpotifyURLFromUpload(c fiber.Ctx) (string, bool) {
 			if err != nil {
 				continue
 			}
-			if spotifyURL, err := indexer.ExtractSpotifyURLFromNZB(data); err == nil {
-				return spotifyURL, true
+			release, err := indexer.ParseNZBMeta(data)
+			if err != nil {
+				continue
+			}
+			return uploadedNZB{
+				Release:        release,
+				UploadFilename: strings.TrimSuffix(fh.Filename, ".nzb"),
 			}
 		}
 	}
-	return "", false
+	return uploadedNZB{}
 }

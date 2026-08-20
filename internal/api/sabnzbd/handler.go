@@ -235,6 +235,10 @@ func (h *Handler) processDownload(job *queue.Job) {
 		if !h.breaker.Allow(fallbackSvc) {
 			continue
 		}
+		if h.outOfTime(job) {
+			h.log.Warn().Str("nzo_id", job.NzoID).Msg("job budget exhausted, not trying further services")
+			break
+		}
 		h.log.Warn().Str("nzo_id", job.NzoID).Str("from_service", job.Service).Str("to_service", fallbackSvc).Msg("falling back to next service")
 		job.Service = fallbackSvc
 		if err := h.queue.Update(job); err != nil {
@@ -257,12 +261,29 @@ func (h *Handler) processDownload(job *queue.Job) {
 	h.failJob(job, lastErr)
 }
 
+// outOfTime reports whether a job has already spent its whole wall-clock
+// budget. Each individual attempt is bounded by SPF_JOB_TIMEOUT, but the
+// retry loop multiplies that by maxAttempts and the fallback chain multiplies
+// it again - at the 30m default a single hopeless job could hold one of
+// SPF_MAX_CONCURRENT slots for hours while Lidarr sat waiting on it. Two
+// timeouts is the budget: enough for one slow attempt plus one retry.
+func (h *Handler) outOfTime(job *queue.Job) bool {
+	if h.cfg.JobTimeout <= 0 || job.TimeAdded.IsZero() {
+		return false
+	}
+	return time.Since(job.TimeAdded) > 2*h.cfg.JobTimeout
+}
+
 // runAttemptsWithRetry runs up to `attempts` tries of the download, sleeping
 // with backoff and clearing the job dir between them. Returns "" on success,
 // the last error otherwise.
 func (h *Handler) runAttemptsWithRetry(job *queue.Job, jobDir string, attempts int) string {
 	var lastErr string
 	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 && h.outOfTime(job) {
+			h.log.Warn().Str("nzo_id", job.NzoID).Int("attempt", attempt).Msg("job budget exhausted, not retrying")
+			return lastErr
+		}
 		ok, errMsg := h.attemptDownload(job, jobDir)
 		if ok {
 			return ""
@@ -322,6 +343,15 @@ func (h *Handler) attemptDownload(job *queue.Job, jobDir string) (bool, string) 
 				var de *spotiflac.DownloadError
 				if errors.As(e, &de) && de.RawOutput != "" {
 					job.CLIOutput = de.RawOutput
+					// The backend's own reason lines are the only
+					// explanation a failure has. Logging just
+					// "spotiflac exited: exit status 1" - which is all
+					// this used to emit - leaves nothing to debug with.
+					h.log.Warn().
+						Str("nzo_id", job.NzoID).
+						Str("service", job.Service).
+						Str("detail", lastLines(de.RawOutput, 12)).
+						Msg("download backend reported a failure")
 				}
 				return false, e.Error()
 			}
@@ -343,6 +373,12 @@ func (h *Handler) handleProgressEvent(job *queue.Job, evt spotiflac.ProgressEven
 		}
 	case "metadata":
 		job.Filename = releaseName(job.Filename, evt)
+		// A mode=addurl job (a script, not Lidarr) arrives with no track
+		// count, so the backend's own resolved count is the only chance to
+		// get one - and without it the partial-album check never runs.
+		if job.TrackCount == 0 && evt.TrackCount > 0 {
+			job.TrackCount = evt.TrackCount
+		}
 		if err := h.queue.Update(job); err != nil {
 			h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("metadata update failed")
 		}
@@ -367,9 +403,21 @@ func (h *Handler) handleProgressEvent(job *queue.Job, evt spotiflac.ProgressEven
 // event: verifies the track count for multi-track albums, records metrics,
 // marks the job Completed, and moves it to history.
 func (h *Handler) handleCompleteEvent(job *queue.Job, evt spotiflac.ProgressEvent) (bool, string) {
+	// evt.TrackCount is what the backend actually wrote; counting the files
+	// itself is the fallback for a backend that does not report one. Either
+	// way a short album is a failure, not a success: handing Lidarr one file
+	// out of thirteen makes it import the single track and then report the
+	// release as "Has missing tracks" forever.
 	if job.TrackCount > 0 {
-		gotCount, cerr := storage.CountAudioFiles(evt.OutputPath)
-		if cerr != nil || gotCount < job.TrackCount {
+		gotCount := evt.TrackCount
+		if gotCount == 0 {
+			var cerr error
+			gotCount, cerr = storage.CountAudioFiles(evt.OutputPath)
+			if cerr != nil {
+				return false, fmt.Sprintf("partial album: could not count tracks in %s: %s", evt.OutputPath, cerr)
+			}
+		}
+		if gotCount < job.TrackCount {
 			return false, fmt.Sprintf("partial album: %d/%d tracks", gotCount, job.TrackCount)
 		}
 	}
@@ -398,26 +446,29 @@ func (h *Handler) handleCompleteEvent(job *queue.Job, evt spotiflac.ProgressEven
 
 // releaseName decides what a job is called in queue and history output.
 //
-// current is whatever the job already carries; at addurl time that is the NZB
-// name Lidarr itself sent, i.e. the exact release title it grabbed. Lidarr
-// matches its tracked download against that string, so an unconditional
-// overwrite from CLI metadata breaks the match: SpotiFLAC reports no album for
-// single tracks, which produced names like "Fred again.., BLANCO - " - a
-// trailing separator and no title - and Lidarr then treated every completed
-// single as an untracked download it could not map back to a grab.
+// current is whatever the job already carries. On Lidarr's real grab path
+// that is the release title it picked, recovered from the synthetic NZB by
+// handleAddURL - Lidarr matches its tracked download against that exact
+// string, so it always wins. CLI metadata only names a job that arrived
+// without one, e.g. a bare mode=addurl call from a script.
 //
-// Metadata therefore only wins when it is strictly better: both artist and
-// album present, or, for a nameless job, artist plus track title.
+// The old order put "artist - album" ahead of current, which meant every
+// Lidarr grab was renamed the moment the CLI reported metadata. For single
+// tracks SpotiFLAC reports no album at all, so that produced names like
+// "Fred again.., BLANCO - " - a trailing separator and no title - and Lidarr
+// then treated every completed download as untracked and imported none of
+// them.
 func releaseName(current string, evt spotiflac.ProgressEvent) string {
+	if c := strings.TrimSpace(current); c != "" {
+		return c
+	}
+
 	artist := strings.TrimSpace(evt.Artist)
 	album := strings.TrimSpace(evt.Album)
 	title := strings.TrimSpace(evt.Title)
 
 	if artist != "" && album != "" {
 		return artist + " - " + album
-	}
-	if strings.TrimSpace(current) != "" {
-		return current
 	}
 	if artist != "" && title != "" {
 		return artist + " - " + title
@@ -426,6 +477,21 @@ func releaseName(current string, evt spotiflac.ProgressEvent) string {
 		return artist
 	}
 	return title
+}
+
+// lastLines returns at most n trailing non-blank lines of s, for logging a
+// subprocess's tail without dumping its whole console output.
+func lastLines(s string, n int) string {
+	lines := []string{}
+	for _, l := range strings.Split(s, "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, strings.TrimSpace(l))
+		}
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, " | ")
 }
 
 func (h *Handler) failJob(job *queue.Job, errMsg string) {

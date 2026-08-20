@@ -21,8 +21,21 @@ func TestReleaseNameKeepsGrabbedTitleForSingleTracks(t *testing.T) {
 	assert.Equal(t, "Fred again.., BLANCO - solo [FLAC]", got)
 }
 
-func TestReleaseNamePrefersFullAlbumMetadata(t *testing.T) {
-	got := releaseName("stale name", spotiflac.ProgressEvent{
+func TestReleaseNameNeverOverwritesTheGrabbedTitle(t *testing.T) {
+	// Whatever Lidarr grabbed is what Lidarr matches on, album metadata
+	// included. Renaming the job to "Eminem - Kamikaze" loses the quality
+	// tag and the edition Lidarr actually chose, and its tracked download
+	// stops matching.
+	got := releaseName("Eminem - Kamikaze (Deluxe) [FLAC]", spotiflac.ProgressEvent{
+		Type:   "complete",
+		Artist: "Eminem",
+		Album:  "Kamikaze",
+	})
+	assert.Equal(t, "Eminem - Kamikaze (Deluxe) [FLAC]", got)
+}
+
+func TestReleaseNameUsesAlbumMetadataForAnUnnamedJob(t *testing.T) {
+	got := releaseName("", spotiflac.ProgressEvent{
 		Type:   "complete",
 		Artist: "Eminem",
 		Album:  "Kamikaze",
