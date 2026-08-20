@@ -449,14 +449,29 @@ func (h *Handler) handleCompleteEvent(job *queue.Job, evt spotiflac.ProgressEven
 	// way a short album is a failure, not a success: handing Lidarr one file
 	// out of thirteen makes it import the single track and then report the
 	// release as "Has missing tracks" forever.
+	// A "complete" event is not proof of anything on its own. spotiflac-cli
+	// emits one even after it has failed - observed verbatim, an error and a
+	// completion for the same track:
+	//
+	//	{"message":"track scared: Unknown service: deezer","type":"error"}
+	//	{"album":"scared","path":"/downloads/spotiflac/SABnzbd_nzo_...",
+	//	 "type":"complete"}
+	//
+	// Taking that at face value hands Lidarr an empty directory as a finished
+	// download, which it then reports as an import failure instead of a
+	// download failure - and the release is blocklisted for the wrong reason.
+	// Files on disk are the only evidence that counts.
+	onDisk, cerr := storage.CountAudioFiles(evt.OutputPath)
+	if cerr != nil {
+		return false, fmt.Sprintf("cannot verify %s: %s", evt.OutputPath, cerr)
+	}
+	if onDisk == 0 {
+		return false, "backend reported completion but wrote no audio files"
+	}
 	if job.TrackCount > 0 {
 		gotCount := evt.TrackCount
 		if gotCount == 0 {
-			var cerr error
-			gotCount, cerr = storage.CountAudioFiles(evt.OutputPath)
-			if cerr != nil {
-				return false, fmt.Sprintf("partial album: could not count tracks in %s: %s", evt.OutputPath, cerr)
-			}
+			gotCount = onDisk
 		}
 		if gotCount < job.TrackCount {
 			return false, fmt.Sprintf("partial album: %d/%d tracks", gotCount, job.TrackCount)

@@ -153,3 +153,39 @@ echo 'ext:amazon: Track not available: not_found_on_amazon'
 	assert.Contains(t, de.RawOutput, "NETWORK_ERROR: Timeout (120s) calling download")
 	assert.Contains(t, de.RawOutput, "not_found_on_amazon")
 }
+
+// TestDownloadRefusesAServiceTheCLICannotDo covers the category vocabulary
+// accepting more services than spotiflac-cli implements. music-deezer is a
+// valid category, Deezer exists only as a Python-backend extension, and the
+// CLI answers "Unknown service: deezer" - then emits a "complete" event for
+// the same track, which makes the failure look like a success.
+func TestDownloadRefusesAServiceTheCLICannotDo(t *testing.T) {
+	dir := t.TempDir()
+	cli := writeScript(t, dir, "spotiflac-cli", `echo '{"type":"complete","path":"/tmp"}'`)
+
+	client := spotiflac.NewClient(cli, 30*time.Second, "tidal", "lossless", "", "", "", nil, "/nonexistent/python3", nil)
+	events, errs := client.Download(context.Background(), "https://open.spotify.com/album/x", dir, "deezer", "lossless")
+
+	var got error
+	for {
+		select {
+		case _, ok := <-events:
+			if !ok {
+				events = nil
+			}
+		case e, ok := <-errs:
+			if !ok {
+				errs = nil
+			} else if e != nil {
+				got = e
+			}
+		}
+		if events == nil && errs == nil {
+			break
+		}
+	}
+
+	require.Error(t, got)
+	assert.Contains(t, got.Error(), "only available through the Python backend")
+	assert.Contains(t, got.Error(), "tidal, qobuz, amazon")
+}

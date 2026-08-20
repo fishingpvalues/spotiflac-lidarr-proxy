@@ -30,3 +30,8 @@ func SetRetryBackoffForTest(schedule []time.Duration) func() {
 func (h *Handler) HandleProgressEventForTest(job *queue.Job, evt spotiflac.ProgressEvent) {
 	h.handleProgressEvent(job, evt)
 }
+
+// HandleCompleteEventForTest finalizes a job from a terminal CLI event.
+func (h *Handler) HandleCompleteEventForTest(job *queue.Job, evt spotiflac.ProgressEvent) (bool, string) {
+	return h.handleCompleteEvent(job, evt)
+}

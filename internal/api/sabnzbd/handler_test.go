@@ -1123,3 +1123,45 @@ func TestCancelJobReportsWhetherSomethingWasRunning(t *testing.T) {
 	assert.False(t, h.CancelJob("SABnzbd_nzo_not_running"),
 		"cancelling an unknown job is a no-op, not a panic")
 }
+
+// TestCompleteWithNoFilesIsNotSuccess guards against a false success.
+// spotiflac-cli emits a "complete" event even after it has failed - observed
+// verbatim, an error and a completion for the same track:
+//
+//	{"message":"track scared: Unknown service: deezer","type":"error"}
+//	{"album":"scared","path":"/downloads/spotiflac/...","type":"complete"}
+//
+// Believing it hands Lidarr an empty directory as a finished download, which
+// it then reports as an import failure rather than a download failure.
+func TestCompleteWithNoFilesIsNotSuccess(t *testing.T) {
+	h, q := newProgressTestHandler(t)
+
+	dir := t.TempDir()
+	job := &queue.Job{NzoID: "SABnzbd_nzo_empty"}
+	require.NoError(t, q.Add(job))
+
+	ok, msg := h.HandleCompleteEventForTest(job, apispotiflac.ProgressEvent{
+		Type:       "complete",
+		OutputPath: dir,
+	})
+
+	assert.False(t, ok, "an empty directory is not a completed download")
+	assert.Contains(t, msg, "wrote no audio files")
+}
+
+func TestCompleteWithFilesSucceeds(t *testing.T) {
+	h, q := newProgressTestHandler(t)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "track.flac"), []byte("data"), 0o644))
+
+	job := &queue.Job{NzoID: "SABnzbd_nzo_hasfiles"}
+	require.NoError(t, q.Add(job))
+
+	ok, msg := h.HandleCompleteEventForTest(job, apispotiflac.ProgressEvent{
+		Type:       "complete",
+		OutputPath: dir,
+	})
+
+	assert.True(t, ok, msg)
+}

@@ -316,7 +316,24 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			}
 		}
 
-		// Backend 2-4: SpotiFLAC CLI
+		// Backend 2-4: SpotiFLAC CLI.
+		//
+		// Not every service the category vocabulary accepts exists here.
+		// spotiflac-cli implements tidal, qobuz and amazon; Deezer lives only
+		// in the Python backend's extensions. Handing it "deezer" produces
+		//
+		//	{"message":"track scared: Unknown service: deezer","type":"error"}
+		//
+		// immediately followed by a "complete" event for the same track, so
+		// the failure is easy to mistake for a success. Say what actually
+		// happened instead of running a command that cannot work.
+		if !cliSupportsService(service) {
+			errs <- fmt.Errorf(
+				"service %q is only available through the Python backend, and that backend failed; spotiflac-cli supports %s",
+				service, strings.Join(cliServices, ", "))
+			return
+		}
+
 		cliQuality := config.SpotiflacQuality(quality)
 
 		args := []string{
@@ -537,6 +554,20 @@ func (c *Client) CollectPythonResult(pyEvents <-chan ProgressEvent, pyErrs <-cha
 // every SpotiFLAC grab in production. The bundled Python module has the real
 // values (SpotifyMetadataClient), so ask it, and fall back to the CLI only
 // when Python is unavailable or answers nothing.
+
+// cliServices are the services spotiflac-cli implements. Deezer is absent on
+// purpose: it exists only as a Python-backend extension.
+var cliServices = []string{"tidal", "qobuz", "amazon"}
+
+// cliSupportsService reports whether spotiflac-cli can handle this service.
+func cliSupportsService(service string) bool {
+	for _, s := range cliServices {
+		if strings.EqualFold(service, s) {
+			return true
+		}
+	}
+	return false
+}
 
 // newExitError reports a non-zero subprocess exit together with what the
 // subprocess actually said.
