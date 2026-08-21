@@ -24,7 +24,11 @@ FROM golang:1.26-alpine AS cli-builder
 # (a failed attempt's process outliving its error event while the next
 # service's CLI starts) turned the 1s flock cap into "ISRC cache: timeout"
 # warnings on every track of the second process (observed live 2026-08-21).
-ARG SPOTIFLAC_COMMIT=0d2a2b97b2db2017195f9a7c7991444f6074e65d
+# 61eb94b fixes the duration validator unit bug: the headless CLI passed
+# Spotify's duration_ms into a seconds parameter, so every full-length CLI
+# download failed validation ("file is 179s, expected about 179000s") and
+# the good file was deleted (observed live 2026-08-21, qobuz backend).
+ARG SPOTIFLAC_COMMIT=61eb94ba8064e5610f1fd2cb65a4d2c8cca26ace
 RUN apk add --no-cache git
 RUN git clone https://github.com/fishingpvalues/SpotiFLAC.git /spotiflac && \
     cd /spotiflac && git checkout ${SPOTIFLAC_COMMIT}
@@ -53,11 +57,16 @@ ARG PGID=1000
 
 # chromium/nodejs/xvfb are what the Python backend actually runs: SpotiFLAC's
 # extensions are node scripts, and its Turnstile solver drives Chromium under
-# Xvfb through pydoll. None of them were in this image, so the published
-# image could not run the backend it makes priority 1 - and a hand-installed
-# `apk add` inside a live container disappears on the next recreate.
+# Xvfb through pydoll. ffmpeg is what the CLI backends need for audio
+# processing after a download lands (probe/transcode/tag steps shell out to
+# it): without it every resolved URL dies with "ffmpeg not found in app
+# directory or system path" the moment the break window lifts and a real
+# transfer becomes possible (observed live 2026-08-21, tidal backend). None
+# of them were in this image, so the published image could not run the
+# backend it makes priority 1 - and a hand-installed `apk add` inside a live
+# container disappears on the next recreate.
 RUN apk add --no-cache \
-        ca-certificates tzdata tini \
+        ca-certificates tzdata tini ffmpeg \
         chromium nodejs xvfb font-noto ttf-freefont && \
     addgroup -g ${PGID} spotiflac && \
     adduser -D -u ${PUID} -G spotiflac spotiflac
