@@ -83,7 +83,7 @@ After the Python→CLI cascade, the Go handler adds its own retry/fallback loop:
 
 ### SpotiFLAC failover patches (patches/python/)
 
-Both patch scripts run at image build against the pinned `SpotiFLAC==3.0.6`
+All patch scripts run at image build against the pinned `SpotiFLAC==3.0.6`
 and fail the build loudly if a pattern is missing:
 
 - `per_loop_lock.py` — per-loop asyncio locks (Deezer "bound to a different
@@ -96,6 +96,11 @@ and fail the build loudly if a pattern is missing:
   skips a failed provider for the rest of the album. A provider hitting its
   cap hands the remaining track budget to the next provider (the stock code
   treats any TimeoutError as track-over; the patch splits that).
+- `download_api_ua.py` — the signed-session client no longer identifies as
+  `SpotiFLAC-Mobile/<ver>`: Cloudflare-fronted download APIs (measured:
+  zarz.moe) 403-block that User-Agent on /bootstrap while serving a solvable
+  Turnstile challenge to a browser UA from the identical IP. The header is
+  now `SPOTIFLAC_DOWNLOAD_API_UA`-overridable, defaulting to desktop Chrome.
 
 Do not raise these ceilings without raising the budgets above them too - the
 ceilings exist so legitimate slow downloads finish, the budgets exist so dead

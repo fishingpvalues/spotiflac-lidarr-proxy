@@ -101,8 +101,17 @@ RUN apk add --no-cache \
 # provider's share of a track (SPOTIFLAC_PROVIDER_BUDGET_S, default 300s)
 # and skips a provider for the rest of the download once it has failed
 # (SPOTIFLAC_PROVIDER_BREAKER_FAILURES, default 1).
+#
+# download_api_ua.py stops the signed-session client identifying itself as
+# "SpotiFLAC-Mobile/<ver>": Cloudflare-fronted download APIs (measured:
+# zarz.moe) answer 403 to that User-Agent on /bootstrap while serving a
+# solvable Turnstile challenge to a browser UA from the identical IP. With
+# the stock header every signed session dies at bootstrap and all extension
+# providers fail regardless of their solving capability. The header becomes
+# SPOTIFLAC_DOWNLOAD_API_UA-overridable, defaulting to desktop Chrome.
 COPY patches/python/per_loop_lock.py /tmp/per_loop_lock.py
 COPY patches/python/provider_breaker.py /tmp/provider_breaker.py
+COPY patches/python/download_api_ua.py /tmp/download_api_ua.py
 RUN apk add --no-cache python3 py3-pip && \
     python3 -m venv /venv && \
     /venv/bin/pip install --no-cache-dir \
@@ -111,7 +120,9 @@ RUN apk add --no-cache python3 py3-pip && \
         /venv/lib/python3.12/site-packages/SpotiFLAC && \
     /venv/bin/python3 /tmp/provider_breaker.py \
         /venv/lib/python3.12/site-packages/SpotiFLAC && \
-    rm -f /tmp/per_loop_lock.py /tmp/provider_breaker.py && \
+    /venv/bin/python3 /tmp/download_api_ua.py \
+        /venv/lib/python3.12/site-packages/SpotiFLAC && \
+    rm -f /tmp/per_loop_lock.py /tmp/provider_breaker.py /tmp/download_api_ua.py && \
     apk del py3-pip && \
     find /venv -name '__pycache__' -type d -prune -exec rm -rf {} +
 

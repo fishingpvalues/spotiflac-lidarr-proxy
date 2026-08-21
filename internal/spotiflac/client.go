@@ -472,16 +472,7 @@ func (c *Client) runCLIBackend(ctx context.Context, events chan<- ProgressEvent,
 	// Determine SPOTIFLAC_VERIFY_RELAY_URL:
 	// 1. Explicit verify_relay_url config takes priority (user-set)
 	// 2. FSL (Byparr/FlareSolverr) auto-construction as fallback
-	relayURL := c.verifyRelayURL
-	if relayURL == "" && c.fslURL != "" && c.relayPort > 0 {
-		addr := c.relayAddress
-		if addr == "" {
-			addr = autoDetectIP()
-		}
-		if addr != "" {
-			relayURL = fmt.Sprintf("http://%s:%d/api/verify-relay", addr, c.relayPort)
-		}
-	}
+	relayURL := resolveRelayURL(c.verifyRelayURL, c.fslURL, c.relayAddress, autoDetectIP(), c.relayPort)
 	if relayURL != "" {
 		cmd.Env = append(cmd.Env, "SPOTIFLAC_VERIFY_RELAY_URL="+relayURL)
 	}
@@ -861,6 +852,45 @@ func (c *Client) solveVerification(challengeURL string) {
 			}
 		}
 	}()
+}
+
+// resolveRelayURL determines the SPOTIFLAC_VERIFY_RELAY_URL handed to the
+// CLI so an external solver (FSL/trawl) can deliver a completed verification
+// grant back to us. An explicit user-set URL always wins; otherwise one is
+// constructed from the configured address when FSL is enabled.
+//
+// The address must be reachable FROM the solver's container. A loopback
+// address (SPOTIFLAC_ADDRESS=127.0.0.1, the common case) only exists inside
+// our own network namespace: the solver solves the challenge, follows the
+// cb= redirect into its own empty loopback, and the grant is silently lost -
+// the CLI then reports "verification timed out" while trawl's logs show
+// "cf_clearance obtained". Measured live on 2026-08-21. When the configured
+// address is loopback (or unset) we therefore prefer the detected LAN
+// address, which is routable between containers on the compose network.
+func resolveRelayURL(explicit, fslURL, configuredAddr, detectedAddr string, port int) string {
+	if explicit != "" {
+		return explicit
+	}
+	if fslURL == "" || port <= 0 {
+		return ""
+	}
+	addr := configuredAddr
+	if addr == "" || isLoopback(addr) {
+		if detectedAddr != "" {
+			addr = detectedAddr
+		}
+	}
+	if addr == "" {
+		return ""
+	}
+	return fmt.Sprintf("http://%s:%d/api/verify-relay", addr, port)
+}
+
+// isLoopback reports whether addr is a loopback literal. Only exact literals
+// are treated as such: a user who explicitly configured a non-loopback
+// address gets it verbatim.
+func isLoopback(addr string) bool {
+	return addr == "127.0.0.1" || addr == "::1" || strings.HasPrefix(addr, "127.")
 }
 
 // autoDetectIP returns the IP of the default route interface.
