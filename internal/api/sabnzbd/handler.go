@@ -207,7 +207,21 @@ func (h *Handler) processDownload(job *queue.Job) {
 	h.sem <- struct{}{}
 	defer func() { <-h.sem }()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// The job context carries the whole wall-clock budget: two JobTimeouts
+	// (one slow attempt plus one retry), measured from TimeAdded rather than
+	// now, so time already spent queued counts against it too. Every phase
+	// below derives its own deadline from this context, so a dead backend can
+	// no longer consume the budget and leave the fallback phases with an
+	// already-expired context - which is exactly how outages used to surface:
+	// Python burned the full 30m, then "start spotiflac: context deadline
+	// exceeded" on the CLI, then "job budget exhausted" on every fallback.
+	parent := context.Background()
+	if h.cfg.JobTimeout > 0 && !job.TimeAdded.IsZero() {
+		var parentCancel context.CancelFunc
+		parent, parentCancel = context.WithDeadline(parent, job.TimeAdded.Add(2*h.cfg.JobTimeout))
+		defer parentCancel()
+	}
+	ctx, cancel := context.WithCancel(parent)
 	h.running.Store(job.NzoID, cancel)
 	defer func() {
 		h.running.Delete(job.NzoID)
@@ -239,7 +253,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 		lastErr = fmt.Sprintf("service %s temporarily unavailable (circuit open)", primarySvc)
 		metrics.RecordJobResult(string(sabnzbd.StatusFailed), primarySvc)
 	} else {
-		lastErr = h.runAttemptsWithRetry(ctx, job, jobDir, maxAttempts)
+		lastErr = h.runAttemptsWithRetry(ctx, job, jobDir, maxAttempts, h.client.Download)
 		if lastErr == "" {
 			return
 		}
@@ -247,12 +261,23 @@ func (h *Handler) processDownload(job *queue.Job) {
 		metrics.RecordJobResult(string(sabnzbd.StatusFailed), primarySvc)
 	}
 
+	// Per-service fallback. When the Python backend is available its internal
+	// cascade has ALREADY tried every configured service for this release,
+	// so re-running it once per fallback service only repeats the same
+	// failures while burning the wall-clock budget. The CLI backends are a
+	// different code path (custom API URLs, hifi adapter, FSL solving) and
+	// are what this loop exists to try - one CLI attempt per service.
+	fallbackDownload := h.client.Download
+	if h.client.HasPythonBackend() {
+		fallbackDownload = h.client.DownloadCLI
+	}
+
 	for _, fallbackSvc := range h.fallbackChain(job.Service) {
 		if !h.breaker.Allow(fallbackSvc) {
 			continue
 		}
 		if ctx.Err() != nil {
-			h.log.Info().Str("nzo_id", job.NzoID).Msg("job cancelled, stopping service fallback")
+			h.log.Info().Str("nzo_id", job.NzoID).Msg("job canceled or budget expired, stopping service fallback")
 			return
 		}
 		if h.outOfTime(job) {
@@ -269,7 +294,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 		} else if _, perr := h.storage.PrepareJobDir(job.NzoID); perr != nil {
 			h.log.Warn().Err(perr).Str("nzo_id", job.NzoID).Msg("failed to recreate job dir before fallback attempt")
 		}
-		if fbErr := h.runAttemptsWithRetry(ctx, job, jobDir, 1); fbErr == "" {
+		if fbErr := h.runAttemptsWithRetry(ctx, job, jobDir, 1, fallbackDownload); fbErr == "" {
 			return
 		} else {
 			lastErr = fbErr
@@ -278,6 +303,9 @@ func (h *Handler) processDownload(job *queue.Job) {
 		}
 	}
 
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		lastErr = fmt.Sprintf("job wall-clock budget (%s) exhausted: %s", 2*h.cfg.JobTimeout, lastErr)
+	}
 	h.failJob(job, lastErr)
 }
 
@@ -294,10 +322,12 @@ func (h *Handler) outOfTime(job *queue.Job) bool {
 	return time.Since(job.TimeAdded) > 2*h.cfg.JobTimeout
 }
 
-// runAttemptsWithRetry runs up to `attempts` tries of the download, sleeping
-// with backoff and clearing the job dir between them. Returns "" on success,
-// the last error otherwise.
-func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobDir string, attempts int) string {
+// runAttemptsWithRetry runs up to `attempts` tries of the download via dl,
+// sleeping with backoff and clearing the job dir between them. Returns ""
+// on success, the last error otherwise.
+type downloadFn func(ctx context.Context, url, outputDir, service, quality string) (<-chan spotiflac.ProgressEvent, <-chan error)
+
+func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobDir string, attempts int, dl downloadFn) string {
 	var lastErr string
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if attempt > 1 && h.outOfTime(job) {
@@ -307,7 +337,7 @@ func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobD
 		if ctx.Err() != nil {
 			return "cancelled"
 		}
-		ok, errMsg := h.attemptDownload(ctx, job, jobDir)
+		ok, errMsg := h.attemptDownload(ctx, job, jobDir, dl)
 		if ok {
 			return ""
 		}
@@ -337,12 +367,12 @@ func (h *Handler) fallbackChain(current string) []string {
 	return chain
 }
 
-// attemptDownload runs a single CLI invocation and reports whether it
+// attemptDownload runs a single backend invocation and reports whether it
 // succeeded. On success it fully updates the job to Completed and moves it
 // to history itself (mirroring the previous inline behavior); on failure it
 // returns false with the error message and leaves the job untouched for the
 // caller to retry or ultimately fail.
-func (h *Handler) attemptDownload(ctx context.Context, job *queue.Job, jobDir string) (bool, string) {
+func (h *Handler) attemptDownload(ctx context.Context, job *queue.Job, jobDir string, dl downloadFn) (bool, string) {
 	// A previous download's browser is still running and will stop this one's
 	// from starting at all (see reapStaleBrowsers). Guarded on concurrency
 	// because a sibling job's browser is indistinguishable from a stray, so
@@ -351,7 +381,7 @@ func (h *Handler) attemptDownload(ctx context.Context, job *queue.Job, jobDir st
 		reapStaleBrowsers()
 	}
 
-	events, errs := h.client.Download(ctx, job.SpotifyURL, jobDir, job.Service, job.Quality)
+	events, errs := dl(ctx, job.SpotifyURL, jobDir, job.Service, job.Quality)
 
 	for {
 		select {

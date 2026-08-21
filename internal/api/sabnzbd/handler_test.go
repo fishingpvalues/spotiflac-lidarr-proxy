@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1164,4 +1165,77 @@ func TestCompleteWithFilesSucceeds(t *testing.T) {
 	})
 
 	assert.True(t, ok, msg)
+}
+
+// TestProcessDownloadFallbackRunsCLIOptionallyWhenPythonAvailable guards the
+// budget-wasting behavior of the old fallback loop: when the Python backend
+// is available its internal cascade has already tried every configured
+// service for the release, so each per-service fallback used to re-run the
+// whole Python->CLI cascade and repeat the same failures while burning the
+// job's wall-clock budget. Fallbacks must now be CLI-only attempts.
+func TestProcessDownloadFallbackRunsCLIOptionallyWhenPythonAvailable(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		OutputDir:        dir,
+		MaxConcurrent:    1,
+		JobTimeout:       30 * time.Second,
+		FallbackServices: []string{"qobuz"},
+	}
+	st := storage.New(dir)
+	q, err := queue.New(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+
+	pythonMarker := filepath.Join(t.TempDir(), "python-invocations")
+	pythonBin := filepath.Join(t.TempDir(), "python3")
+	script := fmt.Sprintf("#!/bin/bash\necho x >> %s\nexit 1\n", pythonMarker)
+	require.NoError(t, os.WriteFile(pythonBin, []byte(script), 0755))
+
+	cliLog := filepath.Join(t.TempDir(), "cli-invocations")
+	cliPath := filepath.Join(t.TempDir(), "spotiflac-cli")
+	cliScript := `#!/bin/bash
+SERVICE=""
+OUTDIR=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --service) SERVICE="$2"; shift 2 ;;
+    --output-dir) OUTDIR="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+echo "$SERVICE" >> ` + cliLog + `
+mkdir -p "$OUTDIR"
+if [[ "$SERVICE" == "tidal" ]]; then
+  echo '{"type":"error","message":"tidal unavailable"}'
+  exit 1
+fi
+touch "$OUTDIR/01.flac"
+echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
+`
+	require.NoError(t, os.WriteFile(cliPath, []byte(cliScript), 0755))
+
+	client := apispotiflac.NewClient(cliPath, 5*time.Second, "tidal", "lossless", "", "", "", nil, pythonBin, []string{"qobuz"})
+	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+
+	job := &queue.Job{NzoID: "SABnzbd_nzo_fbcli001", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/fbcli"}
+	require.NoError(t, q.Add(job))
+	handler.ProcessDownloadSync(job)
+
+	hist, _, err := q.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, hist, 1)
+	assert.Equal(t, sabtypes.StatusCompleted, hist[0].Status)
+	assert.Equal(t, "qobuz", hist[0].Service)
+
+	pyInvocations, err := os.ReadFile(pythonMarker)
+	require.NoError(t, err)
+	pyCount := len(strings.Split(strings.TrimSpace(string(pyInvocations)), "\n"))
+	assert.Equal(t, 3, pyCount,
+		"the Python cascade runs once per PRIMARY attempt (maxAttempts=3) and never again for the qobuz fallback - the old code re-ran it per fallback service")
+
+	cliInvocations, err := os.ReadFile(cliLog)
+	require.NoError(t, err)
+	services := strings.Fields(string(cliInvocations))
+	assert.Equal(t, []string{"tidal", "tidal", "tidal", "qobuz"}, services,
+		"primary attempts hit the CLI after Python fails; the qobuz fallback is a single CLI-only attempt")
 }
