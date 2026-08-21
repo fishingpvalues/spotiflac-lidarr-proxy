@@ -1172,7 +1172,10 @@ func TestCompleteWithFilesSucceeds(t *testing.T) {
 // is available its internal cascade has already tried every configured
 // service for the release, so each per-service fallback used to re-run the
 // whole Python->CLI cascade and repeat the same failures while burning the
-// job's wall-clock budget. Fallbacks must now be CLI-only attempts.
+// job's wall-clock budget. Fallbacks must be CLI-only attempts - and so must
+// PRIMARY RETRIES: the Python cascade's cross-track breaker proves every one
+// of its providers dead for this release inside a single run, so attempt 2+
+// goes straight to the CLI backends (a genuinely different code path).
 func TestProcessDownloadFallbackRunsCLIOptionallyWhenPythonAvailable(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{
@@ -1230,8 +1233,8 @@ echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 	pyInvocations, err := os.ReadFile(pythonMarker)
 	require.NoError(t, err)
 	pyCount := len(strings.Split(strings.TrimSpace(string(pyInvocations)), "\n"))
-	assert.Equal(t, 3, pyCount,
-		"the Python cascade runs once per PRIMARY attempt (maxAttempts=3) and never again for the qobuz fallback - the old code re-ran it per fallback service")
+	assert.Equal(t, 1, pyCount,
+		"the Python cascade runs once (attempt 1); retries and the qobuz fallback are CLI-only because the cascade's own breaker already proved its providers dead")
 
 	cliInvocations, err := os.ReadFile(cliLog)
 	require.NoError(t, err)

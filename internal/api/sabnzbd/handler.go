@@ -253,7 +253,20 @@ func (h *Handler) processDownload(job *queue.Job) {
 		lastErr = fmt.Sprintf("service %s temporarily unavailable (circuit open)", primarySvc)
 		metrics.RecordJobResult(string(sabnzbd.StatusFailed), primarySvc)
 	} else {
-		lastErr = h.runAttemptsWithRetry(ctx, job, jobDir, maxAttempts, h.client.Download)
+		retryDL := h.client.Download
+		if h.client.HasPythonBackend() {
+			// The Python cascade's cross-track breaker has already proven every
+			// one of its providers dead for this release inside ONE run; re-running
+			// the whole Python cascade on retry N repeats the same multi-minute
+			// wall (measured 2026-08-21: ~18 min of provider budgets per attempt
+			// while the upstream APIs were down). Retries therefore go straight to
+			// the CLI backends - a genuinely different code path (custom API URLs,
+			// community tier). Deezer (Python-only) is not retried: attempt 1 still
+			// gets the full cascade, and during an outage the Python providers are
+			// exactly the ones burning the budget.
+			retryDL = h.client.DownloadCLI
+		}
+		lastErr = h.runAttemptsWithRetry(ctx, job, jobDir, maxAttempts, h.client.Download, retryDL)
 		if lastErr == "" {
 			return
 		}
@@ -278,7 +291,14 @@ func (h *Handler) processDownload(job *queue.Job) {
 		}
 		if ctx.Err() != nil {
 			h.log.Info().Str("nzo_id", job.NzoID).Msg("job canceled or budget expired, stopping service fallback")
-			return
+			// Break, never return: returning here skipped failJob and left the
+			// row in Downloading forever - Lidarr saw a pending download that
+			// never moved, the queue slot held its concurrency slot, and only a
+			// container restart (RecoverStuckJobs) ever cleared it. Observed in
+			// production 2026-08-21: a job sat "Downloading" at 0 B/s for hours
+			// after its wall-clock budget expired. Breaking lets the wrap-up
+			// below mark the job Failed and move it to history.
+			break
 		}
 		if h.outOfTime(job) {
 			h.log.Warn().Str("nzo_id", job.NzoID).Msg("job budget exhausted, not trying further services")
@@ -317,9 +337,17 @@ func (h *Handler) outOfTime(job *queue.Job) bool {
 // on success, the last error otherwise.
 type downloadFn func(ctx context.Context, url, outputDir, service, quality string) (<-chan spotiflac.ProgressEvent, <-chan error)
 
-func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobDir string, attempts int, dl downloadFn) string {
+// first and retry may differ: the caller hands the full Python+CLI cascade
+// for attempt 1 and a CLI-only backend for retries (see processDownload),
+// because the Python cascade's own breaker already proved its providers dead
+// for this release by the end of attempt 1.
+func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobDir string, attempts int, first, retry downloadFn) string {
 	var lastErr string
+	dl := first
 	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			dl = retry
+		}
 		if attempt > 1 && h.outOfTime(job) {
 			h.log.Warn().Str("nzo_id", job.NzoID).Int("attempt", attempt).Msg("job budget exhausted, not retrying")
 			return lastErr
@@ -359,7 +387,7 @@ func (h *Handler) tryFallbackService(ctx context.Context, job *queue.Job, jobDir
 	} else if _, perr := h.storage.PrepareJobDir(job.NzoID); perr != nil {
 		h.log.Warn().Err(perr).Str("nzo_id", job.NzoID).Msg("failed to recreate job dir before fallback attempt")
 	}
-	return h.runAttemptsWithRetry(ctx, job, jobDir, 1, dl)
+	return h.runAttemptsWithRetry(ctx, job, jobDir, 1, dl, dl)
 }
 
 // fallbackChain returns the configured fallback services after the given
