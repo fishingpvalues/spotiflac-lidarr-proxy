@@ -53,7 +53,7 @@ ARG PGID=1000
 # image could not run the backend it makes priority 1 - and a hand-installed
 # `apk add` inside a live container disappears on the next recreate.
 RUN apk add --no-cache \
-        ca-certificates tzdata \
+        ca-certificates tzdata tini \
         chromium nodejs xvfb font-noto ttf-freefont && \
     addgroup -g ${PGID} spotiflac && \
     adduser -D -u ${PUID} -G spotiflac spotiflac
@@ -124,4 +124,11 @@ ENV HOME=/home/spotiflac \
     SPF_SPOTIFLAC_PYTHON_VENV=/venv/bin/python3 \
     CHROME_BIN=/usr/bin/chromium-browser
 EXPOSE 8484
-ENTRYPOINT ["server", "serve"]
+# tini, because PID 1 has to reap. Chromium forks a tree of helper processes
+# per browser, and when a solve dies its orphans are reparented to PID 1 -
+# which is this Go server, and a Go binary never calls wait(). Measured in a
+# live container: 47 <defunct> chromium entries after a few hours of jobs,
+# each one holding a PID table slot until the container is recreated. tini
+# reaps them; the server keeps running as its child and still receives
+# signals, so shutdown behaviour is unchanged.
+ENTRYPOINT ["/sbin/tini", "--", "server", "serve"]
