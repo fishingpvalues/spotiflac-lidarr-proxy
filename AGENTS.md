@@ -115,6 +115,27 @@ services fail over.
 - `CollectPythonResult` (exported) — drains Python channels, gates on
   `complete` event. Returns false if Python didn't succeed → CLI fallback.
 
+## Deployment constraint: ALL download traffic MUST stay behind the VPN
+
+**Every download attempt (Python backend, CLI backends, every provider,
+every Tidal/Qobuz mirror) must egress through the VPN tunnel.** On
+potatostack that is why the container runs `network_mode: service:gluetun`
+- do NOT "simplify" it onto the normal bridge network, and do not route
+individual providers or API calls around the tunnel.
+
+Consequences for work on this repo:
+
+- Mirror/API health probes are only valid from INSIDE the container (VPN
+  egress). A 200 from the host's ISP line proves nothing - Cloudflare-fronted
+  services answer differently per source IP (measured 2026-08-21: samidy 200
+  from ISP, degraded/403 from the tunnel).
+- The verify-relay address fix (`resolveRelayURL`) does NOT violate this: it
+  only changes how an EXTERNAL solver (trawl/FSL, outside the tunnel) reaches
+  our inbound `/api/verify-relay` callback over the compose bridge IP. All
+  outbound download traffic still leaves through the tunnel.
+- If a change would make any request leave the container without going
+  through the tunnel, stop and reconsider.
+
 ## Conventions
 
 - **Commits:** Conventional commits — `feat:`, `fix:`, `chore:`, `docs:`, `test:`, `ci:`, `refactor:`

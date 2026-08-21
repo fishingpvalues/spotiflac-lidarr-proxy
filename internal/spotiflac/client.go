@@ -895,24 +895,48 @@ func isLoopback(addr string) bool {
 
 // autoDetectIP returns the IP of the default route interface.
 // Used when SPOTIFLAC_ADDRESS is not explicitly set.
+// autoDetectIP returns the best-guess locally-routable private IP of this
+// network namespace. Preference order:
+//
+//  1. 172.16.0.0/12 - Docker's default bridge space. In the potatostack
+//     deployment the proxy shares gluetun's netns, whose eth0 carries the
+//     compose-bridge address (172.22.x) on exactly this range - and that is
+//     the interface sibling containers (trawl/FSL) can reach, which is all
+//     the verify relay needs.
+//  2. any other RFC1918 address as a last resort.
+//
+// Loopback and non-private addresses are excluded. The previous fib-trie
+// string scan returned the FIRST "172." occurrence anywhere in the file,
+// which in practice was a route prefix (172.16.0.0) rather than a local IP.
 func autoDetectIP() string {
-	addrs, err := os.ReadFile("/proc/net/fib_trie")
+	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return ""
 	}
-	for _, prefix := range []string{"172.", "10.", "192.168."} {
-		if idx := strings.Index(string(addrs), prefix); idx >= 0 {
-			end := idx
-			for end < len(addrs) && (addrs[end] >= '0' && addrs[end] <= '9' || addrs[end] == '.') {
-				end++
-			}
-			ip := string(addrs[idx:end])
-			if len(ip) >= 7 {
-				return ip
-			}
+	fallback := ""
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip := ipNet.IP
+		if ip.IsLoopback() || !ip.IsPrivate() {
+			continue
+		}
+		if inDockerBridgeSpace(ip) {
+			return ip.String()
+		}
+		if fallback == "" {
+			fallback = ip.String()
 		}
 	}
-	return ""
+	return fallback
+}
+
+// inDockerBridgeSpace reports whether ip falls in 172.16.0.0/12.
+func inDockerBridgeSpace(ip net.IP) bool {
+	v4 := ip.To4()
+	return v4 != nil && v4[0] == 172 && v4[1] >= 16 && v4[1] <= 31
 }
 
 // filterOut returns a copy of env without entries whose key (before '=')

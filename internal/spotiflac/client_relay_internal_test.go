@@ -1,9 +1,11 @@
 package spotiflac
 
 import (
+	"net"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestResolveRelayURLExplicitWins(t *testing.T) {
@@ -52,4 +54,41 @@ func TestIsLoopback(t *testing.T) {
 	assert.False(t, isLoopback("172.22.0.31"))
 	assert.False(t, isLoopback("10.0.0.5"))
 	assert.False(t, isLoopback(""))
+}
+
+func TestInDockerBridgeSpace(t *testing.T) {
+	cases := map[string]bool{
+		"172.16.0.1":   true,
+		"172.22.0.31":  true,
+		"172.31.255.1": true,
+		"172.15.0.1":   false,
+		"172.32.0.1":   false,
+		"10.0.0.1":     false,
+		"192.168.1.1":  false,
+		"8.8.8.8":      false,
+		"100.64.0.1":   false, // Tailscale CGNAT - not RFC1918
+	}
+	for ip, want := range cases {
+		assert.Equal(t, want, inDockerBridgeSpace(net.ParseIP(ip)), ip)
+	}
+}
+
+// Smoke test: whatever this machine reports, it must be empty or a valid
+// non-loopback IP - never a network prefix like the old fib-trie scan
+// returned (172.16.0.0).
+func TestAutoDetectIPReturnsHostAddress(t *testing.T) {
+	got := autoDetectIP()
+	if got == "" {
+		t.Skip("no private interface address on this host")
+	}
+	ip := net.ParseIP(got)
+	require.NotNil(t, ip, "parsed %q", got)
+	require.True(t, ip.IsPrivate(), "expected private IP, got %s", got)
+	// A route prefix like 172.16.0.0 (what the old fib-trie scan returned)
+	// has an all-zero host part; a real interface address should not.
+	v4 := ip.To4()
+	require.NotNil(t, v4)
+	if v4[0] == 172 && v4[1] >= 16 && v4[1] <= 31 {
+		assert.NotEqual(t, []byte{0, 0, 0, 0}, v4[2:], "host part should not be all zeros for %s", got)
+	}
 }
