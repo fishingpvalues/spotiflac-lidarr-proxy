@@ -284,23 +284,13 @@ func (h *Handler) processDownload(job *queue.Job) {
 			h.log.Warn().Str("nzo_id", job.NzoID).Msg("job budget exhausted, not trying further services")
 			break
 		}
-		h.log.Warn().Str("nzo_id", job.NzoID).Str("from_service", job.Service).Str("to_service", fallbackSvc).Msg("falling back to next service")
-		job.Service = fallbackSvc
-		if err := h.queue.Update(job); err != nil {
-			h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("record fallback service failed")
-		}
-		if cerr := h.storage.CleanupJob(job.NzoID); cerr != nil {
-			h.log.Warn().Err(cerr).Str("nzo_id", job.NzoID).Msg("failed to clean up job dir before fallback attempt")
-		} else if _, perr := h.storage.PrepareJobDir(job.NzoID); perr != nil {
-			h.log.Warn().Err(perr).Str("nzo_id", job.NzoID).Msg("failed to recreate job dir before fallback attempt")
-		}
-		if fbErr := h.runAttemptsWithRetry(ctx, job, jobDir, 1, fallbackDownload); fbErr == "" {
+		fbErr := h.tryFallbackService(ctx, job, jobDir, fallbackSvc, fallbackDownload)
+		if fbErr == "" {
 			return
-		} else {
-			lastErr = fbErr
-			h.breaker.RecordFailure(fallbackSvc)
-			metrics.RecordJobResult(string(sabnzbd.StatusFailed), fallbackSvc)
 		}
+		lastErr = fbErr
+		h.breaker.RecordFailure(fallbackSvc)
+		metrics.RecordJobResult(string(sabnzbd.StatusFailed), fallbackSvc)
 	}
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -335,7 +325,7 @@ func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobD
 			return lastErr
 		}
 		if ctx.Err() != nil {
-			return "cancelled"
+			return "canceled"
 		}
 		ok, errMsg := h.attemptDownload(ctx, job, jobDir, dl)
 		if ok {
@@ -353,6 +343,23 @@ func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobD
 		}
 	}
 	return lastErr
+}
+
+// tryFallbackService switches the job over to svc, resets its job dir and
+// runs one download attempt through dl. Returns "" on success (the job has
+// been moved to history by attemptDownload), the error otherwise.
+func (h *Handler) tryFallbackService(ctx context.Context, job *queue.Job, jobDir, svc string, dl downloadFn) string {
+	h.log.Warn().Str("nzo_id", job.NzoID).Str("from_service", job.Service).Str("to_service", svc).Msg("falling back to next service")
+	job.Service = svc
+	if err := h.queue.Update(job); err != nil {
+		h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("record fallback service failed")
+	}
+	if cerr := h.storage.CleanupJob(job.NzoID); cerr != nil {
+		h.log.Warn().Err(cerr).Str("nzo_id", job.NzoID).Msg("failed to clean up job dir before fallback attempt")
+	} else if _, perr := h.storage.PrepareJobDir(job.NzoID); perr != nil {
+		h.log.Warn().Err(perr).Str("nzo_id", job.NzoID).Msg("failed to recreate job dir before fallback attempt")
+	}
+	return h.runAttemptsWithRetry(ctx, job, jobDir, 1, dl)
 }
 
 // fallbackChain returns the configured fallback services after the given

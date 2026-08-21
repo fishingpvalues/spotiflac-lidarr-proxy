@@ -1106,7 +1106,7 @@ func TestDeleteCancelsTheInFlightDownload(t *testing.T) {
 	app, q := setupTestApp(t)
 
 	// A CLI that never finishes on its own, so the only way the slot is
-	// released is by cancelling it.
+	// released is by canceling it.
 	require.NoError(t, q.Add(&queue.Job{NzoID: "SABnzbd_nzo_cancelme"}))
 
 	req, _ := http.NewRequest("GET",
@@ -1122,7 +1122,7 @@ func TestDeleteCancelsTheInFlightDownload(t *testing.T) {
 func TestCancelJobReportsWhetherSomethingWasRunning(t *testing.T) {
 	h, _ := newProgressTestHandler(t)
 	assert.False(t, h.CancelJob("SABnzbd_nzo_not_running"),
-		"cancelling an unknown job is a no-op, not a panic")
+		"canceling an unknown job is a no-op, not a panic")
 }
 
 // TestCompleteWithNoFilesIsNotSuccess guards against a false success.
