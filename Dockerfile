@@ -92,14 +92,26 @@ RUN apk add --no-cache \
 # lock is now usable from two consecutive asyncio.run() calls that previously
 # raised. It fails the build loudly if the pattern is gone, rather than
 # quietly doing nothing after a version bump.
+#
+# provider_breaker.py adds fast cross-service failover to the downloader:
+# without it one dead service holds every track for its full per-track budget
+# and is re-tried with a fresh budget on every subsequent track - measured
+# against a real outage, a 2-track album burned the proxy's whole 30m job
+# budget before the Go-side fallback chain could start. The patch caps each
+# provider's share of a track (SPOTIFLAC_PROVIDER_BUDGET_S, default 300s)
+# and skips a provider for the rest of the download once it has failed
+# (SPOTIFLAC_PROVIDER_BREAKER_FAILURES, default 1).
 COPY patches/python/per_loop_lock.py /tmp/per_loop_lock.py
+COPY patches/python/provider_breaker.py /tmp/provider_breaker.py
 RUN apk add --no-cache python3 py3-pip && \
     python3 -m venv /venv && \
     /venv/bin/pip install --no-cache-dir \
         "SpotiFLAC==3.0.6" requests nodriver pydoll-python && \
     /venv/bin/python3 /tmp/per_loop_lock.py \
         /venv/lib/python3.12/site-packages/SpotiFLAC && \
-    rm -f /tmp/per_loop_lock.py && \
+    /venv/bin/python3 /tmp/provider_breaker.py \
+        /venv/lib/python3.12/site-packages/SpotiFLAC && \
+    rm -f /tmp/per_loop_lock.py /tmp/provider_breaker.py && \
     apk del py3-pip && \
     find /venv -name '__pycache__' -type d -prune -exec rm -rf {} +
 
