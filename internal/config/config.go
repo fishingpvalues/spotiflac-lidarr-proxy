@@ -19,6 +19,14 @@ type Config struct {
 	DefaultQuality   string        `mapstructure:"default_quality"`
 	MaxConcurrent    int           `mapstructure:"max_concurrent"`
 	JobTimeout       time.Duration `mapstructure:"job_timeout"`
+
+	// PythonBudget bounds the embedded-Python-backend phase of one download
+	// attempt. It used to share JobTimeout with the CLI phase through a single
+	// context, so a Python run stuck on a dead service consumed the whole
+	// budget and the CLI fallback started into an already-dead context -
+	// "start spotiflac: context deadline exceeded" on every outage.
+	// Clamped to JobTimeout at use time.
+	PythonBudget     time.Duration `mapstructure:"python_budget"`
 	DBPath           string        `mapstructure:"db_path"`
 	LogLevel         string        `mapstructure:"log_level"`
 	FallbackServices []string      `mapstructure:"-"`
@@ -97,7 +105,7 @@ func Load() (*Config, error) {
 	for _, key := range []string{
 		"api_key", "port", "output_dir", "spotiflac_cli_path",
 		"default_service", "default_quality", "max_concurrent", "rss_query",
-		"job_timeout", "db_path", "log_level", "fallback_services",
+		"job_timeout", "python_budget", "db_path", "log_level", "fallback_services",
 		"history_retention_count", "verify_relay_url",
 		"tidal_api_url", "qobuz_api_url", "tidal_api_fallback_urls",
 		"spotiflac_python_venv",
@@ -166,6 +174,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("default_quality", "lossless")
 	v.SetDefault("max_concurrent", 3)
 	v.SetDefault("job_timeout", "30m")
+	// Generous enough for the patched SpotiFLAC cascade to try every
+	// configured service once (worst case ~4 x SPOTIFLAC_PROVIDER_BUDGET_S),
+	// short enough that the CLI phase still gets its own full JobTimeout
+	// afterwards within the job's 2xJobTimeout wall-clock budget.
+	v.SetDefault("python_budget", "20m")
 	v.SetDefault("db_path", "/data/queue.db")
 	v.SetDefault("log_level", "info")
 	v.SetDefault("history_retention_count", 500)

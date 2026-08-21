@@ -34,7 +34,7 @@ func extractPythonWrapper() (string, error) {
 // findPython returns the Python binary to run the wrapper with, or "" when
 // there is none to use.
 //
-// An explicitly configured path is honoured or refused - never silently
+// An explicitly configured path is honored or refused - never silently
 // replaced. It used to fall through to the well-known locations when the
 // configured interpreter was missing, so setting SPF_SPOTIFLAC_PYTHON_VENV to
 // a path that does not exist ran a *different* interpreter instead: the
@@ -42,7 +42,7 @@ func extractPythonWrapper() (string, error) {
 // with the venv pointed at /nonexistent/python3, the wrapper still ran under
 // /venv/bin/python3.
 //
-// Refusing is the useful behaviour: an operator naming an interpreter is
+// Refusing is the useful behavior: an operator naming an interpreter is
 // either pointing at a specific environment or deliberately disabling the
 // Python backend, and a fallback defeats both.
 func findPython(venvPath string) string {

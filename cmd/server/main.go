@@ -106,6 +106,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.SpotiFLACPythonVenv,
 		cfg.FallbackServices,
 	)
+	client.SetPythonBudget(cfg.PythonBudget)
 	client.SetRelayPort(cfg.Port)
 
 	app := fiber.New(fiber.Config{

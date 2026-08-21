@@ -63,6 +63,13 @@ type Client struct {
 	// cascade and the Go-level fallback chain.
 	fallbackServices []string
 
+	// pythonBudget bounds the embedded-Python-backend phase of one attempt.
+	// Zero means "same as timeout" (legacy behavior). The CLI phase always
+	// gets its own full timeout under the job context - the two phases must
+	// never share one deadline, or a Python run stuck on a dead service eats
+	// the whole budget and the CLI starts into an already-dead context.
+	pythonBudget time.Duration
+
 	// log records what the backends did. Without it a Python-backend
 	// failure was invisible: CollectPythonResult drops the error on the
 	// floor so the job can fall through to the CLI, which is correct, but
@@ -74,6 +81,14 @@ type Client struct {
 // SetLogger attaches a logger. Optional: the zero value discards.
 func (c *Client) SetLogger(log zerolog.Logger) {
 	c.log = log
+}
+
+// SetPythonBudget caps how long one attempt may spend in the embedded
+// Python backend before falling through to the CLI backends. Clamped to the
+// CLI timeout at use time. Optional: unset keeps both phases equal to the
+// CLI timeout.
+func (c *Client) SetPythonBudget(d time.Duration) {
+	c.pythonBudget = d
 }
 
 func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, verifyRelayURL, tidalAPIURL, qobuzAPIURL string, tidalAPIFallbacks []string, pythonVenv string, fallbackServices []string) *Client {
@@ -293,22 +308,34 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			close(errs)
 		}()
 
-		ctx, cancel := context.WithTimeout(ctx, c.timeout)
-		defer cancel()
-
 		// Backend priority:
 		//   1. Python wrapper (embedded) — multi-service fallback, no captcha
 		//   2. CLI with custom API URL + hifi-adapter — bypasses community tier
 		//   3. CLI with FSL/Byparr auto-solve — headless captcha solving
 		//   4. CLI community tier (manual/relay verification)
+		//
+		// Phases 1 and 2-4 get SEPARATE deadlines under the caller's context.
+		// They used to share one WithTimeout(c.timeout): a Python run stuck on
+		// a dead service consumed the entire budget, and the CLI phase then
+		// failed instantly with "start spotiflac: context deadline exceeded" -
+		// the fallback the whole cascade exists for could never start during
+		// exactly the outages it is meant to ride out.
+		pyBudget := c.pythonBudget
+		if pyBudget <= 0 || pyBudget > c.timeout {
+			pyBudget = c.timeout
+		}
+		pyCtx, pyCancel := context.WithTimeout(ctx, pyBudget)
+		defer pyCancel()
 
 		// Backend 1: Try Python wrapper first. On any failure (no Python,
 		// no module, download error) fall through to CLI.
+		pythonOK := false
 		pythonBin := findPython(c.pythonVenv)
 		wrapperPath, wrapErr := extractPythonWrapper()
 		if wrapErr == nil {
 			if _, statErr := os.Stat(pythonBin); statErr == nil {
-				pyEvents, pyErrs := c.downloadWithPython(ctx, pythonBin, wrapperPath, url, outputDir, service, quality)
+				pythonOK = true
+				pyEvents, pyErrs := c.downloadWithPython(pyCtx, pythonBin, wrapperPath, url, outputDir, service, quality)
 				if c.CollectPythonResult(pyEvents, pyErrs, events, errs) {
 					return // Python succeeded
 				}
@@ -316,119 +343,185 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 			}
 		}
 
-		// Backend 2-4: SpotiFLAC CLI.
-		//
-		// Not every service the category vocabulary accepts exists here.
-		// spotiflac-cli implements tidal, qobuz and amazon; Deezer lives only
-		// in the Python backend's extensions. Handing it "deezer" produces
-		//
-		//	{"message":"track scared: Unknown service: deezer","type":"error"}
-		//
-		// immediately followed by a "complete" event for the same track, so
-		// the failure is easy to mistake for a success. Say what actually
-		// happened instead of running a command that cannot work.
-		if !cliSupportsService(service) {
-			errs <- fmt.Errorf(
-				"service %q is only available through the Python backend, and that backend failed; spotiflac-cli supports %s",
-				service, strings.Join(cliServices, ", "))
-			return
-		}
-
-		cliQuality := config.SpotiflacQuality(quality)
-
-		args := []string{
-			"--url", url,
-			"--output-dir", outputDir,
-			"--service", service,
-			"--quality", cliQuality,
-		}
-		tidalURL, tidalKind := c.resolveTidalAPIURL()
-		if tidalURL != "" {
-			// A hifi-api instance speaks manifests, not direct URLs, so put
-			// the translating adapter in front of it. If the adapter can't
-			// start, skip the custom API rather than handing spotiflac-cli a
-			// URL whose responses it cannot parse.
-			if tidalKind == apiHiFi {
-				adapterAddr, err := c.startHiFiAdapter(tidalURL)
-				if err != nil {
-					tidalURL = ""
-				} else {
-					tidalURL = adapterAddr
-				}
-			}
-			if tidalURL != "" {
-				args = append(args, "--tidal-api-url", tidalURL)
-			}
-		}
-		if c.qobuzAPIURL != "" {
-			args = append(args, "--qobuz-api-url", c.qobuzAPIURL)
-		}
-		cmd := exec.CommandContext(ctx, c.cliPath, args...)
-
-		// Strip proxy env vars from SpotiFLAC subprocess — Go's HTTP client
-		// handles HTTP_PROXY differently than curl, causing "server gave HTTP
-		// response to HTTPS client" errors through gluetun's proxy.
-		// SpotiFLAC connects to public Spotify/Tidal APIs directly.
-		cmd.Env = filterOut(os.Environ(),
-			"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
-			"NO_PROXY", "no_proxy")
-
-		// Determine SPOTIFLAC_VERIFY_RELAY_URL:
-		// 1. Explicit verify_relay_url config takes priority (user-set)
-		// 2. FSL (Byparr/FlareSolverr) auto-construction as fallback
-		relayURL := c.verifyRelayURL
-		if relayURL == "" && c.fslURL != "" && c.relayPort > 0 {
-			addr := c.relayAddress
-			if addr == "" {
-				addr = autoDetectIP()
-			}
-			if addr != "" {
-				relayURL = fmt.Sprintf("http://%s:%d/api/verify-relay", addr, c.relayPort)
-			}
-		}
-		if relayURL != "" {
-			cmd.Env = append(cmd.Env, "SPOTIFLAC_VERIFY_RELAY_URL="+relayURL)
-		}
-
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			errs <- fmt.Errorf("stdout pipe: %w", err)
-			return
-		}
-
-		// Without this the CLI's stderr goes to /dev/null (exec.Cmd's
-		// default for a nil Stderr), so pydoll's and the extension bridge's
-		// diagnostics were discarded before anyone could read them. Only
-		// this goroutine reads the buffer, and only after Wait returns.
-		var stderrBuf bytes.Buffer
-		cmd.Stderr = &stderrBuf
-
-		if err := cmd.Start(); err != nil {
-			errs <- fmt.Errorf("start spotiflac: %w", err)
-			return
-		}
-
-		var outputBuf bytes.Buffer
-		tee := io.TeeReader(stdout, &outputBuf)
-		parseProgress(tee, events, errs, &outputBuf, func(ev ProgressEvent) {
-			// FSL auto-solving: when Byparr/FlareSolverr is configured and a
-			// verification_required event arrives, send the challenge URL to
-			// Byparr's headless browser for Turnstile solving.
-			if c.fslURL != "" && ev.URL != "" {
-				c.solveVerification(ev.URL)
-			}
-		})
-
-		if err := cmd.Wait(); err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				errs <- fmt.Errorf("spotiflac timed out after %s", c.timeout)
-			} else {
-				errs <- newExitError("cli exited", err, &stderrBuf, &outputBuf)
-			}
-		}
+		// Backends 2-4: SpotiFLAC CLI, with its own fresh budget.
+		cliCtx, cliCancel := context.WithTimeout(ctx, c.timeout)
+		defer cliCancel()
+		c.runCLIBackend(cliCtx, events, errs, url, outputDir, service, quality, pythonOK)
 	}()
 
 	return events, errs
+}
+
+// DownloadCLI runs only the SpotiFLAC CLI backends (custom API URL, FSL
+// auto-solve, community tier) - never the embedded Python wrapper.
+//
+// The handler's per-service fallback loop uses this when the Python backend
+// is available: the wrapper's internal cascade has already tried every
+// configured service for this release, so re-running it once per fallback
+// service would just repeat the same failures and burn the job's wall-clock
+// budget. The CLI is a genuinely different code path (custom Tidal/Qobuz API
+// URLs, hifi adapter, FSL Turnstile solving), which is what the per-service
+// fallback exists to try.
+func (c *Client) DownloadCLI(ctx context.Context, url, outputDir, service, quality string) (<-chan ProgressEvent, <-chan error) {
+	if service == "" {
+		service = c.defaultService
+	}
+	if quality == "" {
+		quality = c.defaultQuality
+	}
+
+	events := make(chan ProgressEvent, 32)
+	errs := make(chan error, 1)
+
+	go func() {
+		defer func() {
+			close(events)
+			close(errs)
+		}()
+
+		cliCtx, cliCancel := context.WithTimeout(ctx, c.timeout)
+		defer cliCancel()
+		c.runCLIBackend(cliCtx, events, errs, url, outputDir, service, quality, false)
+	}()
+
+	return events, errs
+}
+
+// HasPythonBackend reports whether the embedded Python wrapper can run at
+// all: a usable interpreter AND an extractable wrapper script.
+func (c *Client) HasPythonBackend() bool {
+	if _, err := extractPythonWrapper(); err != nil {
+		return false
+	}
+	bin := findPython(c.pythonVenv)
+	_, err := os.Stat(bin)
+	return err == nil
+}
+
+// runCLIBackend executes backends 2-4 (the SpotiFLAC CLI) writing to the
+// given channels. ctx must carry the phase's own deadline; the caller owns
+// closing the channels.
+//
+// sawPython tells the failure message that the Python backend already ran
+// and failed for this service - without it a deezer job reads as if the
+// proxy had never tried its preferred backend at all.
+//
+//nolint:gocyclo // The CLI backend has one branch per failure mode; splitting it would obscure the cascade.
+func (c *Client) runCLIBackend(ctx context.Context, events chan<- ProgressEvent, errs chan<- error, url, outputDir, service, quality string, sawPython bool) {
+	// Not every service the category vocabulary accepts exists here.
+	// spotiflac-cli implements tidal, qobuz and amazon; Deezer lives only
+	// in the Python backend's extensions. Handing it "deezer" produces
+	//
+	//	{"message":"track scared: Unknown service: deezer","type":"error"}
+	//
+	// immediately followed by a "complete" event for the same track, so
+	// the failure is easy to mistake for a success. Say what actually
+	// happened instead of running a command that cannot work.
+	if !cliSupportsService(service) {
+		errMsg := fmt.Errorf(
+			"service %q is only available through the Python backend, and that backend failed; spotiflac-cli supports %s",
+			service, strings.Join(cliServices, ", "))
+		if !sawPython {
+			errMsg = fmt.Errorf(
+				"service %q is only available through the Python backend, which is not available in this deployment; spotiflac-cli supports %s",
+				service, strings.Join(cliServices, ", "))
+		}
+		errs <- errMsg
+		return
+	}
+
+	cliQuality := config.SpotiflacQuality(quality)
+
+	args := []string{
+		"--url", url,
+		"--output-dir", outputDir,
+		"--service", service,
+		"--quality", cliQuality,
+	}
+	tidalURL, tidalKind := c.resolveTidalAPIURL()
+	if tidalURL != "" {
+		// A hifi-api instance speaks manifests, not direct URLs, so put
+		// the translating adapter in front of it. If the adapter can't
+		// start, skip the custom API rather than handing spotiflac-cli a
+		// URL whose responses it cannot parse.
+		if tidalKind == apiHiFi {
+			adapterAddr, err := c.startHiFiAdapter(tidalURL)
+			if err != nil {
+				tidalURL = ""
+			} else {
+				tidalURL = adapterAddr
+			}
+		}
+		if tidalURL != "" {
+			args = append(args, "--tidal-api-url", tidalURL)
+		}
+	}
+	if c.qobuzAPIURL != "" {
+		args = append(args, "--qobuz-api-url", c.qobuzAPIURL)
+	}
+	cmd := exec.CommandContext(ctx, c.cliPath, args...)
+
+	// Strip proxy env vars from SpotiFLAC subprocess — Go's HTTP client
+	// handles HTTP_PROXY differently than curl, causing "server gave HTTP
+	// response to HTTPS client" errors through gluetun's proxy.
+	// SpotiFLAC connects to public Spotify/Tidal APIs directly.
+	cmd.Env = filterOut(os.Environ(),
+		"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+		"NO_PROXY", "no_proxy")
+
+	// Determine SPOTIFLAC_VERIFY_RELAY_URL:
+	// 1. Explicit verify_relay_url config takes priority (user-set)
+	// 2. FSL (Byparr/FlareSolverr) auto-construction as fallback
+	relayURL := c.verifyRelayURL
+	if relayURL == "" && c.fslURL != "" && c.relayPort > 0 {
+		addr := c.relayAddress
+		if addr == "" {
+			addr = autoDetectIP()
+		}
+		if addr != "" {
+			relayURL = fmt.Sprintf("http://%s:%d/api/verify-relay", addr, c.relayPort)
+		}
+	}
+	if relayURL != "" {
+		cmd.Env = append(cmd.Env, "SPOTIFLAC_VERIFY_RELAY_URL="+relayURL)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		errs <- fmt.Errorf("stdout pipe: %w", err)
+		return
+	}
+
+	// Without this the CLI's stderr goes to /dev/null (exec.Cmd's
+	// default for a nil Stderr), so pydoll's and the extension bridge's
+	// diagnostics were discarded before anyone could read them. Only
+	// this goroutine reads the buffer, and only after Wait returns.
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Start(); err != nil {
+		errs <- fmt.Errorf("start spotiflac: %w", err)
+		return
+	}
+
+	var outputBuf bytes.Buffer
+	tee := io.TeeReader(stdout, &outputBuf)
+	parseProgress(tee, events, errs, &outputBuf, func(ev ProgressEvent) {
+		// FSL auto-solving: when Byparr/FlareSolverr is configured and a
+		// verification_required event arrives, send the challenge URL to
+		// Byparr's headless browser for Turnstile solving.
+		if c.fslURL != "" && ev.URL != "" {
+			c.solveVerification(ev.URL)
+		}
+	})
+
+	if err := cmd.Wait(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			errs <- fmt.Errorf("spotiflac timed out after %s", c.timeout)
+		} else {
+			errs <- newExitError("cli exited", err, &stderrBuf, &outputBuf)
+		}
+	}
 }
 
 // downloadWithPython runs the embedded SpotiFLAC Python wrapper.

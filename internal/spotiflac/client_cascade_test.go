@@ -449,3 +449,118 @@ func TestPythonFailureIsLoggedNotSilentlyDropped(t *testing.T) {
 
 	assert.Empty(t, mainErrs, "the error must not fail the job, only be recorded")
 }
+
+// TestDownloadCLIGetsFreshBudgetAfterPythonTimeout guards the production
+// outage failure mode: one shared deadline for the whole cascade meant a
+// Python run stuck on a dead service consumed the entire budget, and the CLI
+// phase then died instantly with "start spotiflac: context deadline
+// exceeded" - the fallback never ran during exactly the outages it exists
+// for. The phases now get separate deadlines under the caller's context.
+func TestDownloadCLIGetsFreshBudgetAfterPythonTimeout(t *testing.T) {
+	// Python hangs past every budget (simulating a dead service) and is
+	// killed; it must not be able to starve the CLI of its own time.
+	// Pure-bash busy loop on purpose: a forked child (sleep) would inherit
+	// the stdout pipe and keep it open after the parent is killed, so
+	// cmd.Wait() would block until the child exits regardless of context.
+	pythonBin := filepath.Join(t.TempDir(), "python3")
+	require.NoError(t, os.WriteFile(pythonBin,
+		[]byte("#!/bin/bash\nend=$((SECONDS+60))\nwhile [ $SECONDS -lt $end ]; do :; done\nexit 1\n"), 0755))
+
+	cliPath := mockCLIForCascade(t, []string{
+		`{"type":"complete","path":"/tmp/out/01.flac","size":12345}`,
+	}, 0)
+
+	client := spotiflac.NewClient(cliPath, 10*time.Second, "tidal", "lossless", "", "", "", nil, pythonBin, nil)
+	client.SetPythonBudget(2 * time.Second)
+
+	outputDir := t.TempDir()
+	start := time.Now()
+	events, errs := client.Download(context.Background(),
+		"https://open.spotify.com/album/test", outputDir, "", "")
+
+	var sawComplete bool
+	var gotErr error
+	for sawComplete == false || errs != nil {
+		select {
+		case evt, ok := <-events:
+			if !ok {
+				events = nil
+				continue
+			}
+			if evt.Type == "complete" {
+				sawComplete = true
+			}
+		case e, ok := <-errs:
+			if !ok {
+				errs = nil
+				continue
+			}
+			gotErr = e
+		}
+		if events == nil && errs == nil {
+			break
+		}
+	}
+	elapsed := time.Since(start)
+
+	assert.True(t, sawComplete, "the CLI phase must still succeed after the Python phase burned its budget (err=%v)", gotErr)
+	assert.Less(t, elapsed, 8*time.Second,
+		"CLI must start within its own fresh budget, not into an expired shared context (took %s)", elapsed)
+}
+
+// TestDownloadCLISkipsPythonBackend asserts DownloadCLI never invokes the
+// Python wrapper even when one is available - the handler's per-service
+// fallback loop uses it precisely because the Python cascade already tried
+// every service for the release.
+func TestDownloadCLISkipsPythonBackend(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "python-invoked")
+	pythonBin := filepath.Join(t.TempDir(), "python3")
+	require.NoError(t, os.WriteFile(pythonBin,
+		[]byte("#!/bin/bash\ntouch "+marker+"\nexit 1\n"), 0755))
+
+	cliPath := mockCLIForCascade(t, []string{
+		`{"type":"complete","path":"/tmp/out/01.flac","size":12345}`,
+	}, 0)
+
+	client := spotiflac.NewClient(cliPath, 10*time.Second, "tidal", "lossless", "", "", "", nil, pythonBin, nil)
+
+	outputDir := t.TempDir()
+	events, errs := client.DownloadCLI(context.Background(),
+		"https://open.spotify.com/album/test", outputDir, "", "")
+
+	var sawComplete bool
+	for {
+		select {
+		case evt, ok := <-events:
+			if !ok {
+				events = nil
+			} else if evt.Type == "complete" {
+				sawComplete = true
+			}
+			if events == nil && errs == nil {
+				goto done
+			}
+		case _, ok := <-errs:
+			if !ok {
+				errs = nil
+			}
+			if events == nil && errs == nil {
+				goto done
+			}
+		}
+	}
+done:
+	assert.True(t, sawComplete)
+	assert.NoFileExists(t, marker, "DownloadCLI must not touch the Python backend")
+}
+
+// TestHasPythonBackend covers both halves of the check: an existing
+// interpreter plus the embedded wrapper, and a missing interpreter.
+func TestHasPythonBackend(t *testing.T) {
+	pythonBin := mockPython(t, nil, 0)
+	client := spotiflac.NewClient("echo", time.Second, "tidal", "lossless", "", "", "", nil, pythonBin, nil)
+	assert.True(t, client.HasPythonBackend())
+
+	dead := spotiflac.NewClient("echo", time.Second, "tidal", "lossless", "", "", "", nil, "/nonexistent/python3", nil)
+	assert.False(t, dead.HasPythonBackend())
+}
