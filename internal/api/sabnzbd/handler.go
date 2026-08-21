@@ -356,6 +356,13 @@ func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobD
 			return "canceled"
 		}
 		ok, errMsg := h.attemptDownload(ctx, job, jobDir, dl)
+		if !ok {
+			// A failed attempt's backend process can outlive its terminal
+			// error event (still waiting on a verification callback or
+			// finishing remaining tracks). Left alone it races the next
+			// attempt - same job dir, shared bolt state files - so kill it.
+			h.client.AbortActive(jobDir)
+		}
 		if ok {
 			return ""
 		}

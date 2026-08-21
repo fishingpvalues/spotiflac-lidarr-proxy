@@ -20,7 +20,11 @@ FROM golang:1.26-alpine AS cli-builder
 # the process. Verified on the target deployment - the pinned build exits 1
 # after one stdout line for an album URL, a74d185 runs on to the provider
 # cascade. Album downloads through backends 2-4 had never worked.
-ARG SPOTIFLAC_COMMIT=a74d1856d3159477dd131cd58067f2089e936a24
+# 0d2a2b9 raises the bbolt lock timeout 1s -> 10s: overlapping CLI processes
+# (a failed attempt's process outliving its error event while the next
+# service's CLI starts) turned the 1s flock cap into "ISRC cache: timeout"
+# warnings on every track of the second process (observed live 2026-08-21).
+ARG SPOTIFLAC_COMMIT=0d2a2b97b2db2017195f9a7c7991444f6074e65d
 RUN apk add --no-cache git
 RUN git clone https://github.com/fishingpvalues/SpotiFLAC.git /spotiflac && \
     cd /spotiflac && git checkout ${SPOTIFLAC_COMMIT}

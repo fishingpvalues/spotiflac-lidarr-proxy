@@ -76,6 +76,17 @@ type Client struct {
 	// it also meant the only way to find out why backend 1 failed was to
 	// run the wrapper by hand.
 	log zerolog.Logger
+
+	// activeCmds maps outputDir -> the backend subprocess currently running
+	// for that job dir (CLI or Python wrapper). AbortActive uses it to kill
+	// a backend that outlived its terminal error event - which it does:
+	// the handler returns on the first error line while the process keeps
+	// waiting on a verification callback or finishing remaining tracks.
+	activeCmds sync.Map
+
+	// abortedActive records AbortActive kills, for tests.
+	abortedMu     sync.Mutex
+	abortedActive []string
 }
 
 // SetLogger attaches a logger. Optional: the zero value discards.
@@ -341,6 +352,42 @@ func (c *Client) SetRelayPort(port int) {
 	c.relayPort = port
 }
 
+// AbortActive terminates the backend subprocess registered for outputDir,
+// if one is still running. Called after a FAILED attempt: the backend can
+// outlive its terminal error event (waiting on a verification callback,
+// processing remaining tracks), and a lingering process races the next
+// attempt - same job dir, shared bolt state files (the "ISRC cache:
+// timeout" warnings observed live 2026-08-21 came from exactly this
+// overlap). No-op when nothing is registered; success paths never abort,
+// so a finishing backend is never cut off mid-flush.
+func (c *Client) AbortActive(outputDir string) {
+	v, ok := c.activeCmds.Load(outputDir)
+	if !ok {
+		return
+	}
+	cmd, _ := v.(*exec.Cmd)
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = cmd.Process.Kill()
+	c.abortedMu.Lock()
+	c.abortedActive = append(c.abortedActive, outputDir)
+	c.abortedMu.Unlock()
+}
+
+// AbortedActiveForTest reports whether AbortActive killed a backend for
+// outputDir. Exported for the handler tests.
+func (c *Client) AbortedActiveForTest(outputDir string) bool {
+	c.abortedMu.Lock()
+	defer c.abortedMu.Unlock()
+	for _, d := range c.abortedActive {
+		if d == outputDir {
+			return true
+		}
+	}
+	return false
+}
+
 // LookupUpstreamCB returns the upstream_cb URL stored for the given
 // verification state parameter. Used by the verify callback handler
 // to forward grants back to SpotiFLAC's local callback server.
@@ -523,6 +570,8 @@ func (c *Client) runCLIBackend(ctx context.Context, events chan<- ProgressEvent,
 		args = append(args, "--qobuz-api-url", c.qobuzAPIURL)
 	}
 	cmd := exec.CommandContext(ctx, c.cliPath, args...)
+	c.activeCmds.Store(outputDir, cmd)
+	defer c.activeCmds.Delete(outputDir)
 
 	// Strip proxy env vars from SpotiFLAC subprocess — Go's HTTP client
 	// handles HTTP_PROXY differently than curl, causing "server gave HTTP
@@ -604,6 +653,8 @@ func (c *Client) downloadWithPython(ctx context.Context, pythonBin, wrapperPath,
 		}
 
 		cmd := exec.CommandContext(ctx, pythonBin, args...)
+		c.activeCmds.Store(outputDir, cmd)
+		defer c.activeCmds.Delete(outputDir)
 		cmd.Env = os.Environ() // passes HTTP_PROXY through
 
 		stdout, err := cmd.StdoutPipe()
