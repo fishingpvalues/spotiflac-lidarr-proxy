@@ -177,6 +177,46 @@ func probeAPI(baseURL string) apiKind {
 	return apiSpotiFLAC
 }
 
+// trackProbeID is a sentinel Tidal track id used to verify that a candidate
+// API can actually resolve tracks. The root response proves only that the
+// process is up: monochrome-api.samidy.com answered 200 {"version":"2.3"}
+// while every /track/ call failed with "Token refresh failed: 403 from
+// auth.tidal.com" (Tidal blocking the instance's OAuth credentials, observed
+// 2026-08-20..21). Handing such an instance to spotiflac-cli as
+// --tidal-api-url turns every track into a hard failure, after which the CLI
+// falls through to the community tier and burns minutes on verification.
+const trackProbeID = "1"
+
+// probeHiFiTrack verifies that a hifi-api candidate whose root looks alive
+// can actually serve a track request. Only non-2xx responses other than 404
+// mark it dead: a 404 means the credentials work and the sentinel simply does
+// not exist, and a 202 queue ticket means the instance is busy but functional.
+// LOW quality keeps the probe cheap in the unlikely case the sentinel exists.
+func probeHiFiTrack(baseURL string) (bool, string) {
+	req, err := http.NewRequest("GET", baseURL+"/track/?id="+trackProbeID+"&quality=LOW", nil)
+	if err != nil {
+		return false, "build probe request: " + err.Error()
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "spotiflac-lidarr-proxy/1.0")
+
+	resp, err := (&http.Client{Timeout: probeTimeout}).Do(req)
+	if err != nil {
+		return false, err.Error()
+	}
+	defer resp.Body.Close()
+
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return true, "" // manifest or queued ticket
+	case resp.StatusCode == http.StatusNotFound:
+		return true, "" // auth worked; the sentinel id is simply unknown
+	default:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return false, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, snippet(body))
+	}
+}
+
 // startHiFiAdapter starts a local HTTP server that translates between
 // hifi-api manifest format and SpotiFLAC-compatible direct URL format.
 // Returns the address (host:port) to pass as --tidal-api-url.
@@ -233,12 +273,22 @@ func (c *Client) startHiFiAdapter(upstream string) (string, error) {
 func (c *Client) resolveTidalAPIURL() (string, apiKind) {
 	// If no fallbacks are configured, the single explicit URL is the
 	// operator's deliberate choice - use it without second-guessing, but
-	// still classify it so the hifi-adapter gets wired up when needed.
+	// still classify it so the hifi-adapter gets wired up when needed, and
+	// verify it can actually resolve tracks (a hifi root answers 200 even
+	// while its Tidal OAuth is broken - see probeHiFiTrack).
 	if len(c.tidalAPIFallbacks) == 0 {
 		if c.tidalAPIURL == "" {
 			return "", apiDead
 		}
-		return c.tidalAPIURL, probeAPI(c.tidalAPIURL)
+		kind := probeAPI(c.tidalAPIURL)
+		if kind == apiHiFi {
+			if ok, reason := probeHiFiTrack(c.tidalAPIURL); !ok {
+				c.log.Warn().Str("url", c.tidalAPIURL).Str("reason", reason).
+					Msg("tidal API root answers but cannot resolve tracks; treating as dead")
+				return "", apiDead
+			}
+		}
+		return c.tidalAPIURL, kind
 	}
 
 	c.tidalMu.Lock()
@@ -261,10 +311,23 @@ func (c *Client) resolveTidalAPIURL() (string, apiKind) {
 
 	c.resolvedTidalAPI, c.resolvedTidalKind = "", apiDead
 	for _, u := range candidates {
-		if kind := probeAPI(u); kind != apiDead {
-			c.resolvedTidalAPI, c.resolvedTidalKind = u, kind
-			break
+		kind := probeAPI(u)
+		if kind == apiDead {
+			continue
 		}
+		// A live root is not a working API: hifi instances keep answering /
+		// with their version banner while Tidal blocks their OAuth token,
+		// and every real track then fails. Verify the track path before
+		// handing the candidate to spotiflac-cli.
+		if kind == apiHiFi {
+			if ok, reason := probeHiFiTrack(u); !ok {
+				c.log.Warn().Str("url", u).Str("reason", reason).
+					Msg("tidal API candidate root answers but cannot resolve tracks; skipping")
+				continue
+			}
+		}
+		c.resolvedTidalAPI, c.resolvedTidalKind = u, kind
+		break
 	}
 	c.resolvedTidalCheck = time.Now()
 
@@ -859,6 +922,14 @@ func (c *Client) solveVerification(challengeURL string) {
 // grant back to us. An explicit user-set URL always wins; otherwise one is
 // constructed from the configured address when FSL is enabled.
 //
+// One exception where NO relay is built at all: an FSL reachable only via
+// loopback lives in our own network namespace, so its browser reaches the
+// CLI's own callback listener directly. Setting a relay would rewrite the
+// challenge's cb= to a routable address, which spotbye's verify server
+// rejects (it validates cb as loopback-only - measured 2026-08-21: a
+// bridge-IP cb loads a 400 SPA error page, so the solver solves nothing).
+// In that case the CLI must keep its own loopback cb.
+//
 // The address must be reachable FROM the solver's container. A loopback
 // address (SPOTIFLAC_ADDRESS=127.0.0.1, the common case) only exists inside
 // our own network namespace: the solver solves the challenge, follows the
@@ -872,6 +943,9 @@ func resolveRelayURL(explicit, fslURL, configuredAddr, detectedAddr string, port
 		return explicit
 	}
 	if fslURL == "" || port <= 0 {
+		return ""
+	}
+	if fslSharesOurNetns(fslURL) {
 		return ""
 	}
 	addr := configuredAddr
@@ -891,6 +965,20 @@ func resolveRelayURL(explicit, fslURL, configuredAddr, detectedAddr string, port
 // address gets it verbatim.
 func isLoopback(addr string) bool {
 	return addr == "127.0.0.1" || addr == "::1" || strings.HasPrefix(addr, "127.")
+}
+
+// fslSharesOurNetns reports whether the FSL URL points at loopback, i.e.
+// whether the solver runs in the same network namespace as us. Such a
+// solver's browser can reach our loopback listeners directly, so no relay
+// hop is needed - and for spotbye a relay hop is actively harmful (see
+// resolveRelayURL).
+func fslSharesOurNetns(fslURL string) bool {
+	u, err := url.Parse(fslURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || isLoopback(host)
 }
 
 // autoDetectIP returns the IP of the default route interface.

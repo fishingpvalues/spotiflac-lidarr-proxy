@@ -32,6 +32,22 @@ func TestResolveRelayURLUnsetUsesDetected(t *testing.T) {
 	assert.Equal(t, "http://172.22.0.31:8485/api/verify-relay", got)
 }
 
+// A loopback FSL address can only exist inside our own network namespace:
+// the solver's browser reaches our loopback directly, so the CLI's own
+// callback listener is reachable from it and no relay hop is needed. The hop
+// is actively harmful for spotbye - its verify server rejects non-loopback
+// cb values with a 400 SPA error page (measured 2026-08-21), so building a
+// relay here would make the solver load the error page and solve nothing.
+// This is the potatostack deployment shape (SPOTIFLAC_FSL_URL=
+// http://127.0.0.1:8191, trawl sharing gluetun's netns).
+func TestResolveRelayURLLoopbackFSLMeansNoRelay(t *testing.T) {
+	assert.Empty(t, resolveRelayURL("", "http://127.0.0.1:8191", "127.0.0.1", "172.22.0.31", 8485))
+	assert.Empty(t, resolveRelayURL("", "http://localhost:8191", "", "172.22.0.31", 8485))
+	// An explicit user-set relay still wins over the shared-netns shortcut.
+	got := resolveRelayURL("http://tailscale-host:8485/api/verify-relay", "http://127.0.0.1:8191", "127.0.0.1", "172.22.0.31", 8485)
+	assert.Equal(t, "http://tailscale-host:8485/api/verify-relay", got)
+}
+
 // A non-loopback configured address is used verbatim even when detection
 // finds something else - explicit configuration wins over heuristics.
 func TestResolveRelayURLNonLoopbackKeptVerbatim(t *testing.T) {
@@ -54,6 +70,16 @@ func TestIsLoopback(t *testing.T) {
 	assert.False(t, isLoopback("172.22.0.31"))
 	assert.False(t, isLoopback("10.0.0.5"))
 	assert.False(t, isLoopback(""))
+}
+
+func TestFslSharesOurNetns(t *testing.T) {
+	assert.True(t, fslSharesOurNetns("http://127.0.0.1:8191"))
+	assert.True(t, fslSharesOurNetns("http://localhost:8191"))
+	assert.True(t, fslSharesOurNetns("http://[::1]:8191"))
+	assert.False(t, fslSharesOurNetns("http://trawl:8191"))
+	assert.False(t, fslSharesOurNetns("http://gluetun:8191"))
+	assert.False(t, fslSharesOurNetns(""))
+	assert.False(t, fslSharesOurNetns("not a url"))
 }
 
 func TestInDockerBridgeSpace(t *testing.T) {
