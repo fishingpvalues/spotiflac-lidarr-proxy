@@ -57,13 +57,49 @@ The proxy tries backends in priority order, first success wins:
 
 4. **CLI community tier** — Manual/relay verification.
 
+**Phase budgets are separate.** Phase 1 gets `SPF_PYTHON_BUDGET` (default 20m,
+clamped to `SPF_JOB_TIMEOUT`); phases 2-4 get their own full `SPF_JOB_TIMEOUT`
+under the job context. They used to share one deadline, so a Python run stuck
+on a dead service consumed the whole budget and the CLI started into an
+already-dead context (`start spotiflac: context deadline exceeded`) - the
+fallback never ran during outages. `Client.DownloadCLI` exposes phases 2-4
+alone; `Client.HasPythonBackend()` reports whether phase 1 can run at all.
+
 ### Go-level retry & fallback (processDownload)
 
 After the Python→CLI cascade, the Go handler adds its own retry/fallback loop:
 - Primary service: 3 attempts with 5s/15s backoff, clearing job dir between retries
-- Fallback chain (`SPF_FALLBACK_SERVICES`): each service gets 1 attempt
+- Fallback chain (`SPF_FALLBACK_SERVICES`): each service gets 1 attempt, and it is
+  **CLI-only when the Python backend is available** (`h.client.DownloadCLI`) -
+  the wrapper's internal cascade already tried every service for the release,
+  so re-running it per fallback only repeated failures while burning budget.
+  Without Python, the full cascade runs per service as before.
+- The job context carries a wall-clock deadline of `2×SPF_JOB_TIMEOUT` measured
+  from `job.TimeAdded`; every phase derives its deadline from it, so queued time
+  counts against the budget and an expired budget kills in-flight subprocesses
+  instead of letting them run on.
 - Per-service circuit breaker: opens after 5 consecutive failures for 10 minutes
 - Circuit breaker failures are attributed to the primary service, not the fallback
+
+### SpotiFLAC failover patches (patches/python/)
+
+Both patch scripts run at image build against the pinned `SpotiFLAC==3.0.6`
+and fail the build loudly if a pattern is missing:
+
+- `per_loop_lock.py` — per-loop asyncio locks (Deezer "bound to a different
+  event loop") plus the extension-bridge timeout raises (120s→900s call/
+  provider timeouts, 60s→600s bridge wait, 10s→60s Turnstile poll).
+- `provider_breaker.py` — fast cross-service failover in `downloader.py`:
+  per-provider budget cap (`SPOTIFLAC_PROVIDER_BUDGET_S`, default 300s) so a
+  dead service cannot starve the ones behind it within a track, and a
+  cross-track breaker (`SPOTIFLAC_PROVIDER_BREAKER_FAILURES`, default 1) that
+  skips a failed provider for the rest of the album. A provider hitting its
+  cap hands the remaining track budget to the next provider (the stock code
+  treats any TimeoutError as track-over; the patch splits that).
+
+Do not raise these ceilings without raising the budgets above them too - the
+ceilings exist so legitimate slow downloads finish, the budgets exist so dead
+services fail over.
 
 ### Key types
 
