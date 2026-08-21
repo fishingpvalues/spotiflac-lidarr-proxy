@@ -132,7 +132,11 @@ Consequences for work on this repo:
 - The verify-relay address fix (`resolveRelayURL`) does NOT violate this: it
   only changes how an EXTERNAL solver (trawl/FSL, outside the tunnel) reaches
   our inbound `/api/verify-relay` callback over the compose bridge IP. All
-  outbound download traffic still leaves through the tunnel.
+  outbound download traffic still leaves through the tunnel. A loopback FSL
+  address (solver sharing our netns, e.g. trawl behind gluetun at
+  `http://127.0.0.1:8191`) builds NO relay at all - the solver's browser
+  reaches the CLI's own loopback callback directly, which is also the only
+  cb shape spotbye's verify server accepts.
 - If a change would make any request leave the container without going
   through the tunnel, stop and reconsider.
 
