@@ -55,6 +55,7 @@ func (h *Handler) handleHistory(c fiber.Ctx) error {
 			Name:         job.Filename,
 			Size:         job.Size,
 			Cat:          job.Category,
+			Category:     job.Category,
 			DownloadTime: downloadTime,
 			Storage:      job.OutputPath,
 			Path:         job.OutputPath,

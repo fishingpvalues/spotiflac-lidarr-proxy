@@ -345,6 +345,55 @@ func TestHistory(t *testing.T) {
 	assert.Equal(t, "0.1.0-test", h.History.Version)
 }
 
+// Regression test for the history slot's "category" key (2026-08-22).
+// Real SABnzbd sends "cat" in queue slots but "category" in history slots
+// (sabnzbd/api.py: queue slot["cat"], history entry["category"]). Lidarr's
+// SabnzbdHistoryItem.Category binds to JSON "category" with no property
+// override, so a slot that only carries "cat" deserializes with Category
+// null and GetItems() drops every history item whose category does not
+// equal the configured music category - completed AND failed jobs then
+// never reach import/failure processing: tracked downloads sit at
+// "grabbed" forever and finished jobs vanish from Lidarr's queue without
+// any error or history event.
+func TestHistorySlotCarriesCategoryField(t *testing.T) {
+	app, q := setupTestApp(t)
+
+	job := &queue.Job{
+		NzoID:      "SABnzbd_nzo_histcat",
+		Filename:   "Artist - Album [FLAC]",
+		Category:   "music",
+		Service:    "tidal",
+		Status:     sabtypes.StatusCompleted,
+		SpotifyURL: "https://open.spotify.com/album/histcat",
+	}
+	require.NoError(t, q.Add(job))
+	now := time.Now()
+	job.CompletedAt = &now
+	require.NoError(t, q.Update(job))
+	require.NoError(t, q.MoveToHistory(job.NzoID))
+
+	req, _ := http.NewRequest("GET", "/api/sabnzbd?mode=history&apikey=test-key", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var payload struct {
+		History struct {
+			Slots []map[string]any `json:"slots"`
+		} `json:"history"`
+	}
+	require.NoError(t, json.Unmarshal(body, &payload))
+	require.Len(t, payload.History.Slots, 1)
+
+	slot := payload.History.Slots[0]
+	assert.Equal(t, "music", slot["cat"], "queue-style cat key must stay")
+	assert.Equal(t, "music", slot["category"],
+		"Lidarr's SabnzbdHistoryItem reads \"category\"; without it the client's category filter drops every history item")
+}
+
 func TestAuthRejected(t *testing.T) {
 	app, _ := setupTestApp(t)
 

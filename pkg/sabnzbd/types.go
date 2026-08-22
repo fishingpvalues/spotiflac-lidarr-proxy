@@ -112,8 +112,20 @@ type HistorySlot struct {
 	// verified against Lidarr's actual source. Getting this wrong doesn't
 	// crash anything, it just silently reports every completed download
 	// as 0 bytes to Lidarr.
-	Size         int64  `json:"bytes"`
-	Cat          string `json:"cat"`
+	Size int64  `json:"bytes"`
+	Cat  string `json:"cat"`
+	// Real SABnzbd sends "category" (not "cat") in history slots - the
+	// queue uses "cat", the history endpoint uses "category" (sabnzbd/api.py:
+	// queue slot["cat"], history entry["category"]). Lidarr's
+	// SabnzbdHistoryItem.Category binds to JSON "category" with no property
+	// override, so a history slot that only carries "cat" deserializes with
+	// Category=null. GetItems() then drops every history item whose category
+	// doesn't equal the configured music category - completed AND failed jobs
+	// silently never reach import/failure processing, tracked downloads sit
+	// at "grabbed" forever, and finished jobs vanish from Lidarr's queue with
+	// no error. Send both keys: "category" is what Lidarr reads, "cat" stays
+	// for other consumers.
+	Category     string `json:"category"`
 	Completed    int64  `json:"completed"`
 	DownloadTime int    `json:"download_time"`
 	Script       string `json:"script"`
