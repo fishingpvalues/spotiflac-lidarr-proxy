@@ -370,17 +370,24 @@ func (h *Handler) processDownload(job *queue.Job) {
 		metrics.RecordJobResult(string(sabnzbd.StatusFailed), fallbackSvc)
 	}
 
+	h.concludeFailedAttempts(ctx, job, lastErr)
+}
+
+// concludeFailedAttempts decides what a job that survived every backend
+// without succeeding actually becomes: requeued, or failed.
+//
+// If the last error came from upstream telling us to back off - an announced
+// scheduled break, or a 429 - the queue is parked and the job goes BACK.
+// Failing it would be a lie: the release was never tried against a working
+// API, and once the item is in Lidarr's history only an external re-grab cycle
+// brings it back. Observed 2026-08-22: a 47-job burst triggered a 104-minute
+// break and the whole backlog failed into history; later the same day one job
+// burned ~25 min of the single concurrency slot retrying into 429s while the
+// drain flatlined.
+func (h *Handler) concludeFailedAttempts(ctx context.Context, job *queue.Job, lastErr string) {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		lastErr = fmt.Sprintf("job wall-clock budget (%s) exhausted: %s", 2*h.cfg.JobTimeout, lastErr)
 	}
-	// If the failure came from upstream telling us to back off - an announced
-	// scheduled break, or a 429 - park the queue and put THIS job back rather
-	// than failing it. Failing it is a lie: the release was never tried
-	// against a working API, and once it is in Lidarr's history only an
-	// external re-grab cycle brings it back (observed 2026-08-22: a 47-job
-	// burst triggered a 104-minute break and the whole backlog failed into
-	// history; and later, one job burned ~25 min of the single concurrency
-	// slot retrying into 429s while the drain flatlined).
 	if cooldown, isCooldown := h.breakGate.cooldownFor(lastErr); isCooldown {
 		h.breakGate.extend(cooldown)
 		if h.requeueAfterCooldown(job, cooldown, lastErr) {
