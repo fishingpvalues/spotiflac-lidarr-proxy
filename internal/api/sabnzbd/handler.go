@@ -32,6 +32,7 @@ type Handler struct {
 	log         zerolog.Logger
 	sem         chan struct{}
 	breaker     *breaker.Breaker
+	breakGate   *upstreamBreakGate
 	verifyStore *verify.Store
 
 	// running maps an nzo_id to the cancel func of its in-flight download.
@@ -45,14 +46,15 @@ type Handler struct {
 
 func NewHandler(q *queue.SQLiteQueue, client *spotiflac.Client, s *storage.Storage, cfg *config.Config, version string) *Handler {
 	h := &Handler{
-		queue:   q,
-		client:  client,
-		storage: s,
-		cfg:     cfg,
-		version: version,
-		log:     zerolog.Nop(),
-		sem:     make(chan struct{}, maxConcurrent),
-		breaker: breaker.New(5, 10*time.Minute),
+		queue:     q,
+		client:    client,
+		storage:   s,
+		cfg:       cfg,
+		version:   version,
+		log:       zerolog.Nop(),
+		sem:       make(chan struct{}, maxConcurrent),
+		breaker:   breaker.New(5, 10*time.Minute),
+		breakGate: newUpstreamBreakGate(zerolog.Nop()),
 	}
 	if cfg.MaxConcurrent > 0 {
 		h.sem = make(chan struct{}, cfg.MaxConcurrent)
@@ -70,6 +72,7 @@ func (h *Handler) SetVerifyStore(store *verify.Store) {
 
 func (h *Handler) SetLogger(log zerolog.Logger) {
 	h.log = log
+	h.breakGate.setLogger(log)
 }
 
 func (h *Handler) RegisterRoutes(app *fiber.App) {
@@ -199,11 +202,26 @@ func (h *Handler) ResumeQueuedJobs() int {
 	return len(jobs)
 }
 
+// parkForUpstreamBreak holds the job in its Queued state until the upstream
+// community break window has elapsed. The job stays Queued while parked,
+// which is what it is - Lidarr sees a pending download, not a failure.
+func (h *Handler) parkForUpstreamBreak(job *queue.Job) {
+	if r := h.breakGate.remaining(); r > 0 {
+		h.log.Info().Str("nzo_id", job.NzoID).Dur("pause", r).Msg("upstream community break active; holding job in queue")
+	}
+	h.breakGate.wait()
+}
+
 const maxAttempts = 3
 
 var retryBackoff = []time.Duration{5 * time.Second, 15 * time.Second}
 
 func (h *Handler) processDownload(job *queue.Job) {
+	// Upstream community break gate: if the shared spotbye infra announced a
+	// scheduled cooldown ("try again in about N minute(s)"), park BEFORE
+	// taking a concurrency slot - a wait inside the semaphore would hold one
+	// of SPF_MAX_CONCURRENT slots for the whole break and wedge the queue.
+	h.parkForUpstreamBreak(job)
 	h.sem <- struct{}{}
 	defer func() { <-h.sem }()
 
@@ -332,6 +350,12 @@ func (h *Handler) processDownload(job *queue.Job) {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		lastErr = fmt.Sprintf("job wall-clock budget (%s) exhausted: %s", 2*h.cfg.JobTimeout, lastErr)
 	}
+	// If the failure carries a scheduled-break announcement, pause the queue
+	// until the stated time so the backlog stops walking every job through
+	// the dead infra (observed 2026-08-22: 47-job burst triggered a 104-min
+	// break; without the gate the whole backlog failed into Lidarr history
+	// and only external re-grab cycles could retry it).
+	h.breakGate.record(lastErr)
 	h.failJob(job, lastErr)
 }
 

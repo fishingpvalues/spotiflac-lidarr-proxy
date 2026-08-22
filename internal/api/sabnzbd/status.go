@@ -134,6 +134,14 @@ func (h *Handler) handleRetry(c fiber.Ctx) error {
 
 func (h *Handler) handleWarnings(c fiber.Ctx) error {
 	var warnings []sabnzbd.Warning
+	if text := h.breakGate.summarize(); text != "" {
+		warnings = append(warnings, sabnzbd.Warning{
+			Time: time.Now().Unix(),
+			Type: "WARNING",
+			Text: text,
+			ID:   "upstream_break",
+		})
+	}
 	for service, state := range h.breaker.Status() {
 		if !state.Open {
 			continue

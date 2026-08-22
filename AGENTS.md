@@ -87,11 +87,23 @@ After the Python→CLI cascade, the Go handler adds its own retry/fallback loop:
   so re-running it per fallback only repeated failures while burning budget.
   Without Python, the full cascade runs per service as before.
 - The job context carries a wall-clock deadline of `2×SPF_JOB_TIMEOUT` measured
-  from `job.TimeAdded`; every phase derives its deadline from it, so queued time
-  counts against the budget and an expired budget kills in-flight subprocesses
-  instead of letting them run on.
+  from PROCESSING START (not `job.TimeAdded` - queue wait must not consume the
+  budget; jobs queued through an outage used to arrive already expired, 2026-08-22);
+  every phase derives its deadline from it, so an expired budget kills in-flight
+  subprocesses instead of letting them run on.
 - Per-service circuit breaker: opens after 5 consecutive failures for 10 minutes
 - Circuit breaker failures are attributed to the primary service, not the fallback
+- Breaker input is real service failures only: a dead job context (budget expiry,
+  cancellation) marks the job failed but does NOT feed `RecordFailure` - budget
+  deaths once opened the breaker right after an outage lifted and fast-failed
+  healthy-API jobs with "circuit open" (2026-08-22)
+- Upstream community break gate (`upstream_break.go`): when a final job error
+  carries the spotbye infra's scheduled-cooldown message ("short break ... try
+  again in about N minute(s)"), the queue parks until now+N BEFORE jobs take a
+  concurrency slot - jobs stay Queued, zero requests hit the dead infra during
+  the window, and the backlog drains serially when the break lifts. In-memory
+  only: a container restart during a break loses the window (one round of
+  hammering re-arms it). Visible via SABnzbd `mode=warnings` (`upstream_break`).
 
 ### SpotiFLAC failover patches (patches/python/)
 
