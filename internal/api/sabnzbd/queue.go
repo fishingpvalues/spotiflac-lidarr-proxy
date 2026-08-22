@@ -18,7 +18,7 @@ func (h *Handler) handleQueue(c fiber.Ctx) error {
 		Start:    start,
 		Limit:    limit,
 		Search:   c.Query("search", ""),
-		Category: c.Query("cat", ""),
+		Category: firstQuery(c, "cat", "category"),
 		Status:   c.Query("status", ""),
 	}
 

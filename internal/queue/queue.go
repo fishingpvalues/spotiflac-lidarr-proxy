@@ -207,6 +207,14 @@ func (q *SQLiteQueue) List(params ListParams) ([]*Job, int, error) {
 		where = append(where, "status = ?")
 		args = append(args, params.Status)
 	}
+	// Category used to be silently dropped here: ListParams carries it and
+	// handleQueue passes it, but the WHERE clause never referenced it, so a
+	// queue poll filtered by category (Lidarr sends ?category=music on every
+	// poll) returned every job regardless of category.
+	if params.Category != "" {
+		where = append(where, "category = ?")
+		args = append(args, params.Category)
+	}
 
 	whereClause := ""
 	if len(where) > 0 {

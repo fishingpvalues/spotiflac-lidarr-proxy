@@ -36,6 +36,9 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 	cat := resolveCategory(c)
 	priority := c.Query("priority")
 	if priority == "" {
+		priority = c.FormValue("priority")
+	}
+	if priority == "" {
 		priority = "Normal"
 	}
 
@@ -127,7 +130,13 @@ func resolveReleaseName(c fiber.Ctx, uploaded uploadedNZB) string {
 }
 
 func resolveCategory(c fiber.Ctx) string {
+	// Query first (what Lidarr's Sabnzbd client sends), then the multipart
+	// form - real SABnzbd accepts both, and a caller that posts cat as a
+	// form field must not silently fall back to the default category.
 	cat := c.Query("cat")
+	if cat == "" {
+		cat = c.FormValue("cat")
+	}
 	if cat == "" || cat == "*" {
 		return "music-flac-16"
 	}

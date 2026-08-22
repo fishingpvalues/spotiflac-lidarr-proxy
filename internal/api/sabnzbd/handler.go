@@ -138,7 +138,12 @@ func (h *Handler) handleQueueDispatch(c fiber.Ctx) error {
 
 func (h *Handler) handleChangeCat(c fiber.Ctx) error {
 	nzoID := c.Query("value")
+	// Real SABnzbd names the new category "cat"; value2 is kept for
+	// backwards compatibility with earlier callers.
 	newCat := c.Query("value2")
+	if newCat == "" {
+		newCat = c.Query("cat")
+	}
 	if nzoID == "" || newCat == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(sabnzbd.StatusResponse{
 			Status: false, Error: "missing value/value2",
@@ -720,4 +725,17 @@ func splitComma(s string) []string {
 		}
 	}
 	return result
+}
+
+// firstQuery returns the first non-empty value among the named query params.
+// Lidarr's Sabnzbd client sends the queue category filter as "category" while
+// real SABnzbd callers (and our own docs) use "cat"; accept both so a queue
+// poll filtered by either name behaves identically.
+func firstQuery(c fiber.Ctx, names ...string) string {
+	for _, n := range names {
+		if v := c.Query(n); v != "" {
+			return v
+		}
+	}
+	return ""
 }

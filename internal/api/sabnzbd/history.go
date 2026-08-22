@@ -10,6 +10,13 @@ import (
 )
 
 func (h *Handler) handleHistory(c fiber.Ctx) error {
+	// mode=history&name=delete is Lidarr's RemoveFromHistory call - the
+	// "history" mode is overloaded with the delete sub-action exactly like
+	// "queue" is. Without this branch every RemoveFromHistory silently
+	// returned the history list instead of deleting anything.
+	if c.Query("name") == "delete" {
+		return h.handleHistoryDelete(c)
+	}
 	start, _ := strconv.Atoi(c.Query("start", "0"))
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
 
@@ -72,4 +79,29 @@ func (h *Handler) handleHistory(c fiber.Ctx) error {
 	}
 
 	return c.JSON(resp)
+}
+
+// handleHistoryDelete implements mode=history&name=delete (Lidarr's
+// RemoveFromHistory). Real SABnzbd either archives or hard-deletes the entry;
+// this flat model has no archive table, so both paths delete the row.
+// del_files additionally removes the on-disk job directory.
+func (h *Handler) handleHistoryDelete(c fiber.Ctx) error {
+	nzoID := c.Query("value")
+	if nzoID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(sabnzbd.StatusResponse{
+			Status: false, Error: "missing nzo_id",
+		})
+	}
+	delFiles := c.Query("del_files") == "1"
+	if err := h.queue.Delete(nzoID, delFiles); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(sabnzbd.StatusResponse{
+			Status: false, Error: err.Error(),
+		})
+	}
+	if delFiles {
+		if err := h.storage.CleanupJob(nzoID); err != nil {
+			h.log.Warn().Err(err).Str("nzo_id", nzoID).Msg("failed to cleanup history job files")
+		}
+	}
+	return c.JSON(sabnzbd.StatusResponse{Status: true, NzoIDs: []string{nzoID}})
 }
