@@ -1,6 +1,7 @@
 package sabnzbd
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -85,9 +86,13 @@ func TestWaitReturnsImmediatelyWithoutBreak(t *testing.T) {
 }
 
 func TestWaitBlocksUntilFakeClockPasses(t *testing.T) {
-	var now time.Time
+	// The fake clock is read by wait()'s goroutine and advanced by this one,
+	// so it has to be synchronized: a plain time.Time variable here is a real
+	// data race and `go test -race ./...` fails on it, which is one of the two
+	// reasons CI has been red on main since v3.1.2.
+	var now atomic.Int64 // unix nanos
 	g := newUpstreamBreakGate(zerolog.Nop())
-	g.now = func() time.Time { return now }
+	g.now = func() time.Time { return time.Unix(0, now.Load()) }
 	g.poll = 50 * time.Millisecond // don't make the test sleep the production 15 s tick
 	g.record(breakMsgTidal)        // until = now + 104m
 
@@ -108,7 +113,7 @@ func TestWaitBlocksUntilFakeClockPasses(t *testing.T) {
 	}
 
 	// Advance the fake clock past the window.
-	now = now.Add(105 * time.Minute)
+	now.Add(int64(105 * time.Minute))
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

@@ -76,7 +76,15 @@ func TestCommunitySessionValid(t *testing.T) {
 		writeSessionFile(t, expiry)
 		valid, got := communitySessionValid()
 		assert.True(t, valid)
-		assert.Equal(t, expiry, got)
+		// Compare instants, not struct fields. communitySessionValid parses
+		// RFC3339, so `got` carries whatever zone the string names (UTC on a
+		// UTC host, a fixed offset elsewhere), while `expiry` came from
+		// time.Now() and carries time.Local. assert.Equal on time.Time is a
+		// reflect.DeepEqual over the struct including its *Location, so it
+		// fails on equal instants in different zones - which is why CI has
+		// been red on `go test -race ./...` since v3.1.2 while the release
+		// workflow, which does not run the tests, stayed green.
+		assert.True(t, expiry.Equal(got), "expiry %s != %s", expiry, got)
 	})
 }
 
