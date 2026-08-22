@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,6 +71,11 @@ type Client struct {
 	// the whole budget and the CLI starts into an already-dead context.
 	pythonBudget time.Duration
 
+	// skipPythonWithSession gates the session-aware Python-phase skip in
+	// Download(): when true and a valid CLI community session exists, jobs
+	// whose service the CLI implements go straight to the CLI backends.
+	skipPythonWithSession bool
+
 	// log records what the backends did. Without it a Python-backend
 	// failure was invisible: CollectPythonResult drops the error on the
 	// floor so the job can fall through to the CLI, which is correct, but
@@ -100,6 +106,21 @@ func (c *Client) SetLogger(log zerolog.Logger) {
 // CLI timeout.
 func (c *Client) SetPythonBudget(d time.Duration) {
 	c.pythonBudget = d
+}
+
+// SetSkipPythonWhenSessionPresent enables the session-aware Python-phase
+// skip: while the CLI's community session store holds a session that has
+// not expired, download attempts for CLI-implemented services (tidal,
+// qobuz, amazon) skip the embedded Python backend and go straight to the
+// CLI backends. The Python extensions authenticate with their own zarz
+// mobile sessions against the same spotbye infrastructure the desktop
+// session signs for, so with a valid session they only burn wall-clock time
+// (measured 2026-08-22: ~10 min per job during an upstream outage). Deezer
+// primaries are exempt: the Python backend is the only one that implements
+// deezer. Enabled by default; set false for the legacy always-try-Python
+// order.
+func (c *Client) SetSkipPythonWhenSessionPresent(b bool) {
+	c.skipPythonWithSession = b
 }
 
 func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQuality, verifyRelayURL, tidalAPIURL, qobuzAPIURL string, tidalAPIFallbacks []string, pythonVenv string, fallbackServices []string) *Client {
@@ -444,12 +465,21 @@ func (c *Client) Download(ctx context.Context, url, outputDir, service, quality 
 		wrapperPath, wrapErr := extractPythonWrapper()
 		if wrapErr == nil {
 			if _, statErr := os.Stat(pythonBin); statErr == nil {
-				pythonOK = true
-				pyEvents, pyErrs := c.downloadWithPython(pyCtx, pythonBin, wrapperPath, url, outputDir, service, quality)
-				if c.CollectPythonResult(pyEvents, pyErrs, events, errs) {
-					return // Python succeeded
+				if skip, reason := c.skipPythonPhase(service); skip {
+					// A valid CLI community session means the CLI tier needs no
+					// verification at all, and the Python extensions (zarz mobile
+					// sessions, same spotbye infrastructure) can only repeat the
+					// outcome with a multi-minute provider-budget burn attached.
+					c.log.Info().Str("service", service).Str("reason", reason).
+						Msg("skipping python backend, going straight to CLI")
+				} else {
+					pythonOK = true
+					pyEvents, pyErrs := c.downloadWithPython(pyCtx, pythonBin, wrapperPath, url, outputDir, service, quality)
+					if c.CollectPythonResult(pyEvents, pyErrs, events, errs) {
+						return // Python succeeded
+					}
+					// Python failed — fall through to CLI
 				}
-				// Python failed — fall through to CLI
 			}
 		}
 
@@ -765,6 +795,73 @@ func cliSupportsService(service string) bool {
 		}
 	}
 	return false
+}
+
+// communitySessionFile returns the path of the CLI's community session store.
+// The CLI writes it after exchanging a verification grant; while its
+// expires_at is in the future the CLI community tier downloads without any
+// verification at all. SPF_COMMUNITY_SESSION_FILE overrides the default
+// ($HOME/.spotiflac/community_session.json) - tests use it.
+func communitySessionFile() string {
+	if p := os.Getenv("SPF_COMMUNITY_SESSION_FILE"); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".spotiflac", "community_session.json")
+}
+
+// sessionSkew is how far before its nominal expiry a community session stops
+// counting as valid: HMAC windows roll every 300 s and a session that dies
+// mid-download just turns a healthy grab into a re-verification race.
+const sessionSkew = 120 * time.Second
+
+type communitySession struct {
+	ExpiresAt string `json:"expires_at"`
+}
+
+// communitySessionValid reports whether the CLI's community session store
+// holds a session whose expiry is still more than sessionSkew in the future,
+// and when that expiry is. A missing or unreadable store is NOT an error:
+// no session is the normal state on a fresh container.
+func communitySessionValid() (bool, time.Time) {
+	path := communitySessionFile()
+	if path == "" {
+		return false, time.Time{}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, time.Time{}
+	}
+	var s communitySession
+	if err := json.Unmarshal(data, &s); err != nil || s.ExpiresAt == "" {
+		return false, time.Time{}
+	}
+	exp, err := time.Parse(time.RFC3339, s.ExpiresAt)
+	if err != nil {
+		return false, time.Time{}
+	}
+	return time.Now().Add(sessionSkew).Before(exp), exp
+}
+
+// skipPythonPhase reports whether the embedded-Python phase should be skipped
+// for this service because a valid CLI community session makes it dead
+// weight (see SetSkipPythonWhenSessionPresent). The second return is the
+// reason for logs and tests; empty when the Python phase runs as usual.
+func (c *Client) skipPythonPhase(service string) (bool, string) {
+	if !c.skipPythonWithSession {
+		return false, ""
+	}
+	if !cliSupportsService(service) {
+		return false, fmt.Sprintf("service %q is Python-only", service)
+	}
+	valid, exp := communitySessionValid()
+	if !valid {
+		return false, "no valid CLI community session"
+	}
+	return true, "valid CLI community session until " + exp.Format(time.RFC3339)
 }
 
 // newExitError reports a non-zero subprocess exit together with what the

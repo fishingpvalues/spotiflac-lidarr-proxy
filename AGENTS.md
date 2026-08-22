@@ -65,6 +65,18 @@ already-dead context (`start spotiflac: context deadline exceeded`) - the
 fallback never ran during outages. `Client.DownloadCLI` exposes phases 2-4
 alone; `Client.HasPythonBackend()` reports whether phase 1 can run at all.
 
+**Session-aware phase-1 skip (default on).** When the CLI's community session
+store (`$HOME/.spotiflac/community_session.json`, override with
+`SPF_COMMUNITY_SESSION_FILE`) holds a session whose `expires_at` is more than
+120 s in the future AND the job's service is CLI-implemented (tidal/qobuz/
+amazon), `Download()` skips phase 1 entirely and goes straight to the CLI
+backends. The Python extensions authenticate with their own zarz mobile
+sessions against the same spotbye infrastructure the desktop session signs
+for, so with a valid session they can only repeat the outcome after burning
+~10 min of provider budgets per job (measured 2026-08-22). Deezer primaries
+keep phase 1: it is the only backend that implements deezer. Disable with
+`SPF_SKIP_PYTHON_WHEN_SESSION_PRESENT=false`.
+
 ### Go-level retry & fallback (processDownload)
 
 After the Python→CLI cascade, the Go handler adds its own retry/fallback loop:

@@ -107,6 +107,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.FallbackServices,
 	)
 	client.SetPythonBudget(cfg.PythonBudget)
+	client.SetSkipPythonWhenSessionPresent(cfg.SkipPythonWhenSessionPresent)
 	client.SetRelayPort(cfg.Port)
 
 	app := fiber.New(fiber.Config{

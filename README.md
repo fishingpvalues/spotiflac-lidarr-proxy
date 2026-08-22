@@ -336,6 +336,8 @@ reference in [`docs/API.md`](docs/API.md).
 | `SPF_FALLBACK_SERVICES` | none | Services tried after the primary fails |
 | `SPF_MAX_CONCURRENT` | 3 | Concurrent downloads |
 | `SPF_JOB_TIMEOUT` | 30m | Ceiling per job |
+| `SPF_PYTHON_BUDGET` | 20m | Ceiling for the Python-backend phase of one attempt (clamped to `SPF_JOB_TIMEOUT`) |
+| `SPF_SKIP_PYTHON_WHEN_SESSION_PRESENT` | true | Skip the Python phase when a valid CLI community session exists (CLI-implemented services only) |
 | `SPF_HISTORY_RETENTION_COUNT` | 500 | History rows kept |
 | `SPF_RSS_QUERY` | none | Search answering Lidarr's browse feed; also what makes its indexer Test pass |
 | `SPF_LOG_LEVEL` | info | trace, debug, info, warn, error |

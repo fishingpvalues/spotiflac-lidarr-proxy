@@ -26,10 +26,23 @@ type Config struct {
 	// budget and the CLI fallback started into an already-dead context -
 	// "start spotiflac: context deadline exceeded" on every outage.
 	// Clamped to JobTimeout at use time.
-	PythonBudget     time.Duration `mapstructure:"python_budget"`
-	DBPath           string        `mapstructure:"db_path"`
-	LogLevel         string        `mapstructure:"log_level"`
-	FallbackServices []string      `mapstructure:"-"`
+	PythonBudget time.Duration `mapstructure:"python_budget"`
+
+	// SkipPythonWhenSessionPresent makes a download attempt skip the embedded
+	// Python backend phase entirely when a valid CLI community session is
+	// present AND the job's service is one spotiflac-cli implements (tidal,
+	// qobuz, amazon). The Python extensions authenticate with their own zarz
+	// mobile sessions and hit the same spotbye community infrastructure the
+	// CLI session signs for; while a desktop session is valid they can add
+	// nothing but wall-clock time (measured 2026-08-22: ~10 min per job of
+	// provider budgets before the CLI ever ran during an upstream outage).
+	// Deezer primaries keep the Python phase: it is the only backend that
+	// implements deezer. Default true.
+	SkipPythonWhenSessionPresent bool `mapstructure:"skip_python_when_session_present"`
+
+	DBPath           string   `mapstructure:"db_path"`
+	LogLevel         string   `mapstructure:"log_level"`
+	FallbackServices []string `mapstructure:"-"`
 
 	HistoryRetentionCount int `mapstructure:"history_retention_count"`
 
@@ -105,7 +118,8 @@ func Load() (*Config, error) {
 	for _, key := range []string{
 		"api_key", "port", "output_dir", "spotiflac_cli_path",
 		"default_service", "default_quality", "max_concurrent", "rss_query",
-		"job_timeout", "python_budget", "db_path", "log_level", "fallback_services",
+		"job_timeout", "python_budget", "skip_python_when_session_present",
+		"db_path", "log_level", "fallback_services",
 		"history_retention_count", "verify_relay_url",
 		"tidal_api_url", "qobuz_api_url", "tidal_api_fallback_urls",
 		"spotiflac_python_venv",
@@ -179,6 +193,7 @@ func setDefaults(v *viper.Viper) {
 	// short enough that the CLI phase still gets its own full JobTimeout
 	// afterwards within the job's 2xJobTimeout wall-clock budget.
 	v.SetDefault("python_budget", "20m")
+	v.SetDefault("skip_python_when_session_present", true)
 	v.SetDefault("db_path", "/data/queue.db")
 	v.SetDefault("log_level", "info")
 	v.SetDefault("history_retention_count", 500)
