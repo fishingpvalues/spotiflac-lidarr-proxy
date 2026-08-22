@@ -35,6 +35,15 @@ type Handler struct {
 	breakGate   *upstreamBreakGate
 	verifyStore *verify.Store
 
+	// requeues counts, per nzo_id, how many times a job has been put back
+	// into the queue because upstream asked us to back off (scheduled break
+	// or 429) rather than because the release itself failed. In-memory and
+	// process-lifetime only: a restart resets it, and ResumeQueuedJobs
+	// re-dispatches whatever is still Queued, so the worst case after a
+	// restart is one more round of requeues.
+	requeueMu sync.Mutex
+	requeues  map[string]int
+
 	// running maps an nzo_id to the cancel func of its in-flight download.
 	// Deleting a job used to remove the row and leave the goroutine running,
 	// so it kept its concurrency slot - with SPF_MAX_CONCURRENT=1 a single
@@ -227,6 +236,15 @@ func (h *Handler) processDownload(job *queue.Job) {
 	// taking a concurrency slot - a wait inside the semaphore would hold one
 	// of SPF_MAX_CONCURRENT slots for the whole break and wedge the queue.
 	h.parkForUpstreamBreak(job)
+
+	// Community-session renewal, before the slot is taken. The community tier
+	// is what actually delivers audio while the custom Tidal APIs are down,
+	// and it needs a desktop session minted by solving a Turnstile challenge.
+	// Until this hook existed, an expired session meant every job failed its
+	// verification tier until a human ran a solver by hand. No-op unless
+	// SPF_SESSION_RENEW_CMD is configured, and rate-limited inside the client.
+	h.client.EnsureCommunitySession()
+
 	h.sem <- struct{}{}
 	defer func() { <-h.sem }()
 
@@ -355,13 +373,71 @@ func (h *Handler) processDownload(job *queue.Job) {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		lastErr = fmt.Sprintf("job wall-clock budget (%s) exhausted: %s", 2*h.cfg.JobTimeout, lastErr)
 	}
-	// If the failure carries a scheduled-break announcement, pause the queue
-	// until the stated time so the backlog stops walking every job through
-	// the dead infra (observed 2026-08-22: 47-job burst triggered a 104-min
-	// break; without the gate the whole backlog failed into Lidarr history
-	// and only external re-grab cycles could retry it).
-	h.breakGate.record(lastErr)
+	// If the failure came from upstream telling us to back off - an announced
+	// scheduled break, or a 429 - park the queue and put THIS job back rather
+	// than failing it. Failing it is a lie: the release was never tried
+	// against a working API, and once it is in Lidarr's history only an
+	// external re-grab cycle brings it back (observed 2026-08-22: a 47-job
+	// burst triggered a 104-minute break and the whole backlog failed into
+	// history; and later, one job burned ~25 min of the single concurrency
+	// slot retrying into 429s while the drain flatlined).
+	if cooldown, isCooldown := h.breakGate.cooldownFor(lastErr); isCooldown {
+		h.breakGate.extend(cooldown)
+		if h.requeueAfterCooldown(job, cooldown, lastErr) {
+			return
+		}
+	}
 	h.failJob(job, lastErr)
+}
+
+// maxCooldownRequeues bounds how often one job may be put back for an
+// upstream cooldown before it is failed for real. Unbounded requeueing would
+// hide a permanently broken release as an eternally pending download, which
+// is the failure mode ResumeQueuedJobs exists to clean up.
+const maxCooldownRequeues = 3
+
+// requeueAfterCooldown returns the job to Queued and re-dispatches it, so it
+// waits out the park window in parkForUpstreamBreak - which runs BEFORE the
+// concurrency semaphore, so a waiting job holds no slot. Reports whether the
+// job was requeued; false means the caller should fail it.
+func (h *Handler) requeueAfterCooldown(job *queue.Job, cooldown time.Duration, lastErr string) bool {
+	n := h.bumpRequeue(job.NzoID)
+	if n > maxCooldownRequeues {
+		h.log.Warn().Str("nzo_id", job.NzoID).Int("requeues", n-1).
+			Msg("upstream cooldown requeue budget exhausted; failing job for real")
+		return false
+	}
+	job.Status = sabnzbd.StatusQueued
+	job.ErrorMessage = ""
+	job.Percentage = 0
+	job.CompletedAt = nil
+	if err := h.queue.Update(job); err != nil {
+		h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("requeue after cooldown: update failed")
+		return false
+	}
+	h.log.Warn().Str("nzo_id", job.NzoID).Int("requeue", n).Dur("cooldown", cooldown).
+		Str("upstream_error", lastErr).Msg("upstream asked us to back off; requeuing job instead of failing it")
+	go h.ProcessDownloadSync(job)
+	return true
+}
+
+// bumpRequeue increments and returns the requeue count for an nzo_id.
+func (h *Handler) bumpRequeue(nzoID string) int {
+	h.requeueMu.Lock()
+	defer h.requeueMu.Unlock()
+	if h.requeues == nil {
+		h.requeues = make(map[string]int)
+	}
+	h.requeues[nzoID]++
+	return h.requeues[nzoID]
+}
+
+// clearRequeues drops the requeue counter for a job that reached a terminal
+// state, so the map does not grow for the process lifetime.
+func (h *Handler) clearRequeues(nzoID string) {
+	h.requeueMu.Lock()
+	defer h.requeueMu.Unlock()
+	delete(h.requeues, nzoID)
 }
 
 // runAttemptsWithRetry runs up to `attempts` tries of the download via dl,
@@ -581,6 +657,7 @@ func (h *Handler) handleCompleteEvent(job *queue.Job, evt spotiflac.ProgressEven
 		}
 	}
 	h.breaker.RecordSuccess(job.Service)
+	h.clearRequeues(job.NzoID)
 	metrics.RecordJobResult(string(sabnzbd.StatusCompleted), job.Service)
 	if !job.TimeAdded.IsZero() {
 		metrics.RecordDownloadDuration(job.Service, job.Quality, time.Since(job.TimeAdded).Seconds())
@@ -654,6 +731,7 @@ func lastLines(s string, n int) string {
 }
 
 func (h *Handler) failJob(job *queue.Job, errMsg string) {
+	h.clearRequeues(job.NzoID)
 	job.Status = sabnzbd.StatusFailed
 	job.ErrorMessage = errMsg
 	now := time.Now()

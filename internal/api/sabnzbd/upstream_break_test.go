@@ -24,6 +24,9 @@ import (
 // infra. Observed 2026-08-22 without this: a 47-job burst triggered a
 // 104-minute break and every queued job still burned ~90 s of requests
 // against the dead API before failing into Lidarr history.
+//
+// The job that DISCOVERS the break is requeued too, not failed - see
+// requeueAfterCooldown. An announced break says nothing about the release.
 func TestUpstreamBreakParksQueue(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{
@@ -46,17 +49,21 @@ exit 1
 	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "", nil, "", nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
 
-	// Job 1 hits the break announcement and fails; its final error carries
-	// the message, which arms the gate for ~2 minutes.
+	// Job 1 hits the break announcement, which arms the gate for ~2 minutes.
+	// It is requeued rather than failed: the release was never tried against
+	// a working API, so failing it would put it in Lidarr's history where
+	// only an external re-grab cycle could ever bring it back.
 	job1 := &queue.Job{NzoID: "SABnzbd_nzo_break001", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/break1"}
 	require.NoError(t, q.Add(job1))
 	handler.ProcessDownloadSync(job1)
 
 	hist, _, err := q.History(queue.ListParams{Limit: 10})
 	require.NoError(t, err)
-	require.Len(t, hist, 1)
-	assert.Equal(t, sabtypes.StatusFailed, hist[0].Status)
-	assert.Contains(t, hist[0].ErrorMessage, "short break")
+	assert.Empty(t, hist, "an announced break must not fail the job into history")
+
+	back, err := q.Get("SABnzbd_nzo_break001")
+	require.NoError(t, err, "the job that discovered the break must stay in the queue")
+	assert.Equal(t, sabtypes.StatusQueued, back.Status)
 
 	// Job 2 arrives while the break window is active: it must stay Queued
 	// (parked at the gate, holding no slot) rather than start downloading.
