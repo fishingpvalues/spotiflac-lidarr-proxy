@@ -208,17 +208,22 @@ func (h *Handler) processDownload(job *queue.Job) {
 	defer func() { <-h.sem }()
 
 	// The job context carries the whole wall-clock budget: two JobTimeouts
-	// (one slow attempt plus one retry), measured from TimeAdded rather than
-	// now, so time already spent queued counts against it too. Every phase
-	// below derives its own deadline from this context, so a dead backend can
-	// no longer consume the budget and leave the fallback phases with an
-	// already-expired context - which is exactly how outages used to surface:
-	// Python burned the full 30m, then "start spotiflac: context deadline
-	// exceeded" on the CLI, then "job budget exhausted" on every fallback.
+	// (one slow attempt plus one retry), measured from PROCESSING START
+	// rather than TimeAdded, so time spent queued does not count against it.
+	// Measuring from TimeAdded meant a job that sat queued through an outage
+	// arrived at its slot already out of time and failed instantly - observed
+	// 2026-08-22: a ~30-job backlog drained into mass "budget exhausted"
+	// failures minutes after the API recovered. The budget still bounds what
+	// it protects: ACTIVE slot occupancy. Every phase below derives its own
+	// deadline from this context, so a dead backend can no longer consume the
+	// budget and leave the fallback phases with an already-expired context -
+	// which is exactly how outages used to surface: Python burned the full
+	// 30m, then "start spotiflac: context deadline exceeded" on the CLI, then
+	// "job budget exhausted" on every fallback.
 	parent := context.Background()
-	if h.cfg.JobTimeout > 0 && !job.TimeAdded.IsZero() {
+	if h.cfg.JobTimeout > 0 {
 		var parentCancel context.CancelFunc
-		parent, parentCancel = context.WithDeadline(parent, job.TimeAdded.Add(2*h.cfg.JobTimeout))
+		parent, parentCancel = context.WithDeadline(parent, time.Now().Add(2*h.cfg.JobTimeout))
 		defer parentCancel()
 	}
 	ctx, cancel := context.WithCancel(parent)
@@ -270,7 +275,17 @@ func (h *Handler) processDownload(job *queue.Job) {
 		if lastErr == "" {
 			return
 		}
-		h.breaker.RecordFailure(primarySvc)
+		if ctx.Err() == nil {
+			// Live context: the backend itself failed - a real service signal.
+			h.breaker.RecordFailure(primarySvc)
+		} else {
+			// The job's own budget/cancellation ended it, not the service.
+			// Recording these tripped the breaker right after an outage
+			// lifted (observed 2026-08-22: five budget-exhausted jobs opened
+			// the tidal breaker and fast-failed 36 fresh jobs with "circuit
+			// open" while the API was healthy).
+			h.log.Warn().Str("nzo_id", job.NzoID).Str("service", primarySvc).Msg("job ended by budget/cancel; not recording service failure")
+		}
 		metrics.RecordJobResult(string(sabnzbd.StatusFailed), primarySvc)
 	}
 
@@ -300,16 +315,17 @@ func (h *Handler) processDownload(job *queue.Job) {
 			// below mark the job Failed and move it to history.
 			break
 		}
-		if h.outOfTime(job) {
-			h.log.Warn().Str("nzo_id", job.NzoID).Msg("job budget exhausted, not trying further services")
-			break
-		}
 		fbErr := h.tryFallbackService(ctx, job, jobDir, fallbackSvc, fallbackDownload)
 		if fbErr == "" {
 			return
 		}
 		lastErr = fbErr
-		h.breaker.RecordFailure(fallbackSvc)
+		if ctx.Err() == nil {
+			// Same rule as the primary path above: a dead context means the
+			// job's own budget/cancellation ended the attempt, not a service
+			// failure - do not feed it to the breaker.
+			h.breaker.RecordFailure(fallbackSvc)
+		}
 		metrics.RecordJobResult(string(sabnzbd.StatusFailed), fallbackSvc)
 	}
 
@@ -317,19 +333,6 @@ func (h *Handler) processDownload(job *queue.Job) {
 		lastErr = fmt.Sprintf("job wall-clock budget (%s) exhausted: %s", 2*h.cfg.JobTimeout, lastErr)
 	}
 	h.failJob(job, lastErr)
-}
-
-// outOfTime reports whether a job has already spent its whole wall-clock
-// budget. Each individual attempt is bounded by SPF_JOB_TIMEOUT, but the
-// retry loop multiplies that by maxAttempts and the fallback chain multiplies
-// it again - at the 30m default a single hopeless job could hold one of
-// SPF_MAX_CONCURRENT slots for hours while Lidarr sat waiting on it. Two
-// timeouts is the budget: enough for one slow attempt plus one retry.
-func (h *Handler) outOfTime(job *queue.Job) bool {
-	if h.cfg.JobTimeout <= 0 || job.TimeAdded.IsZero() {
-		return false
-	}
-	return time.Since(job.TimeAdded) > 2*h.cfg.JobTimeout
 }
 
 // runAttemptsWithRetry runs up to `attempts` tries of the download via dl,
@@ -348,11 +351,10 @@ func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobD
 		if attempt > 1 {
 			dl = retry
 		}
-		if attempt > 1 && h.outOfTime(job) {
-			h.log.Warn().Str("nzo_id", job.NzoID).Int("attempt", attempt).Msg("job budget exhausted, not retrying")
-			return lastErr
-		}
 		if ctx.Err() != nil {
+			if attempt > 1 {
+				h.log.Warn().Str("nzo_id", job.NzoID).Int("attempt", attempt).Msg("job budget exhausted, not retrying")
+			}
 			return "canceled"
 		}
 		ok, errMsg := h.attemptDownload(ctx, job, jobDir, dl)
