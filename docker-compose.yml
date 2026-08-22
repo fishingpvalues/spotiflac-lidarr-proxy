@@ -42,6 +42,17 @@ services:
       # the Turnstile callback that byparr's browser redirects to).
       # Auto-detected from the default route interface if left empty.
       - SPOTIFLAC_ADDRESS=${SPOTIFLAC_ADDRESS:-}
+      # --- Community-session renewal (see README, "Session renewal") ---
+      # Run when the community session store holds nothing valid, before the
+      # job takes a slot. Off unless set: from a datacenter or VPN egress
+      # Cloudflare may refuse every attempt regardless of how correct the
+      # solving is, and each attempt costs wall-clock time and model tokens.
+      # - SPF_SESSION_RENEW_CMD=python3 /opt/solver/turnstile-llm-solve.py 10
+      # - TURNSTILE_LLM_API_KEY=${TURNSTILE_LLM_API_KEY:-}
+      # - SPF_SESSION_RENEW_MIN_INTERVAL_S=3600
+      # - SPF_SESSION_RENEW_TIMEOUT_S=600
+      # How long a community-API 429 parks the whole queue.
+      # - SPF_RATE_LIMIT_PARK_S=90
       # Tidal API fallback URLs (comma-separated, tried in order)
       - SPF_TIDAL_API_FALLBACK_URLS=${SPF_TIDAL_API_FALLBACK_URLS:-}
       # HTTP/HTTPS forward proxy (Go's http.Client auto-respects these)

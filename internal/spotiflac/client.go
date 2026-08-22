@@ -33,8 +33,22 @@ type Client struct {
 	tidalAPIURL    string
 	qobuzAPIURL    string
 	fslURL         string
-	relayAddress   string
-	relayPort      int
+
+	// Community-session renewal. The community tier needs a desktop session
+	// that is minted by solving a Cloudflare Turnstile challenge, and the
+	// session expires. renewCmd is an external solver invoked when no valid
+	// session exists; it is expected to write the CLI's session store itself
+	// (that is what the shipped scripts/solver/turnstile-llm-solve.py does).
+	// Empty disables renewal entirely, which is the default: a solver that
+	// cannot beat the challenge from this egress costs wall-clock time and
+	// LLM tokens for nothing, so enabling it is a deployment decision.
+	renewCmd      string
+	renewTimeout  time.Duration
+	renewInterval time.Duration
+	renewMu       sync.Mutex
+	lastRenewAt   time.Time
+	relayAddress  string
+	relayPort     int
 
 	// pythonVenv is the path to a Python venv binary (e.g. /venv/bin/python3).
 	// When set, the proxy tries the Python wrapper first (embedded),
@@ -128,6 +142,9 @@ func NewClient(cliPath string, timeout time.Duration, defaultService, defaultQua
 	relayAddress := os.Getenv("SPOTIFLAC_ADDRESS")
 
 	return &Client{
+		renewCmd:          os.Getenv("SPF_SESSION_RENEW_CMD"),
+		renewTimeout:      envDuration("SPF_SESSION_RENEW_TIMEOUT_S", defaultRenewTimeout),
+		renewInterval:     envDuration("SPF_SESSION_RENEW_MIN_INTERVAL_S", defaultRenewInterval),
 		cliPath:           cliPath,
 		timeout:           timeout,
 		defaultService:    defaultService,
@@ -1221,4 +1238,99 @@ func fslRequest(fslBase, targetURL string, timeout time.Duration) error {
 		return fmt.Errorf("fsl returned HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
+}
+
+// Session-renewal defaults. The timeout is generous because a real solver
+// drives a browser through a challenge; the interval is long because the
+// Cloudflare wall means most attempts fail, and retrying a wall in a tight
+// loop just burns wall-clock time and LLM tokens.
+const (
+	defaultRenewTimeout  = 10 * time.Minute
+	defaultRenewInterval = time.Hour
+)
+
+// envDuration reads a whole number of seconds from an env var, falling back
+// to def for unset, unparseable and non-positive values.
+func envDuration(name string, def time.Duration) time.Duration {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs <= 0 {
+		return def
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// EnsureCommunitySession runs the configured external solver when the CLI's
+// community session store holds nothing usable, so a session expiry stops
+// being a thing a human has to notice and fix.
+//
+// It is a no-op unless SPF_SESSION_RENEW_CMD is set, and it never runs more
+// often than SPF_SESSION_RENEW_MIN_INTERVAL_S. The mutex is held for the whole
+// run on purpose: two solvers driving two browsers at the same challenge
+// infrastructure interfere with each other, and the second one would in any
+// case only repeat the first one's outcome.
+//
+// The solver is expected to write the session store itself. This function
+// only reports what happened; a failed renewal is not an error for the caller,
+// because the download path still has its own verification tier (FSL/trawl)
+// and its own failure handling.
+func (c *Client) EnsureCommunitySession() {
+	if c.renewCmd == "" {
+		return
+	}
+	if valid, _ := communitySessionValid(); valid {
+		return
+	}
+
+	c.renewMu.Lock()
+	defer c.renewMu.Unlock()
+
+	// Re-check under the lock: while we waited, another goroutine's renewal
+	// may already have written a session.
+	if valid, _ := communitySessionValid(); valid {
+		return
+	}
+	if !c.lastRenewAt.IsZero() && time.Since(c.lastRenewAt) < c.renewInterval {
+		c.log.Debug().Dur("since_last", time.Since(c.lastRenewAt)).Dur("interval", c.renewInterval).
+			Msg("community session renewal skipped: inside the minimum interval")
+		return
+	}
+	c.lastRenewAt = time.Now()
+
+	// A dedicated timeout rather than the caller's job context: the session
+	// is a process-wide resource, and a job that gives up mid-solve should
+	// not abort a renewal that the next job needs.
+	ctx, cancel := context.WithTimeout(context.Background(), c.renewTimeout)
+	defer cancel()
+
+	c.log.Warn().Str("cmd", c.renewCmd).Dur("timeout", c.renewTimeout).
+		Msg("no valid community session; running the configured session renewer")
+
+	started := time.Now()
+	out, err := exec.CommandContext(ctx, "sh", "-c", c.renewCmd).CombinedOutput()
+	valid, expiry := communitySessionValid()
+
+	ev := c.log.Warn()
+	if valid {
+		ev = c.log.Info()
+	}
+	ev.Dur("took", time.Since(started)).
+		Bool("session_valid_after", valid).
+		Time("expires_at", expiry).
+		Err(err).
+		Str("tail", tailLines(string(out), 8)).
+		Msg("session renewer finished")
+}
+
+// tailLines returns at most n trailing lines of s, so a solver that logs
+// thousands of CDP frames contributes a readable amount to our own log.
+func tailLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, " | ")
 }

@@ -203,7 +203,7 @@ Each job then goes through up to four backends, in order, first success wins.
 | 1 | SpotiFLAC Python module + bundled Chromium | in the image, plus a writable `$HOME` | none |
 | 2 | `spotiflac-cli` against a custom Tidal or Qobuz API | `SPF_TIDAL_API_URL` or a reachable fallback | none |
 | 3 | `spotiflac-cli` with a captcha solver | `SPOTIFLAC_FSL_URL` | none |
-| 4 | `spotiflac-cli` against the community tier | nothing | solve a captcha in a browser |
+| 4 | `spotiflac-cli` against the community tier | nothing | none with `SPF_SESSION_RENEW_CMD`, otherwise solve a captcha in a browser once per session |
 
 Backend 1 handles its own authentication, which is why it is tried first. Its
 providers are Node extensions and some of them drive Chromium under Xvfb, all
@@ -218,6 +218,31 @@ assumed from a successful request. A per-service circuit breaker stops sending
 work to a service after five consecutive failures and reopens after ten
 minutes; `SPF_FALLBACK_SERVICES` lets a job try another service instead of
 failing.
+
+### Backpressure: when upstream says wait
+
+Two upstream answers mean "stop asking", not "this release is broken":
+
+- a scheduled break - `The server is taking a scheduled short break. Please
+  try again in about 104 minute(s).` - which the shared community
+  infrastructure returns to every caller under load, and
+- a rate limit - `Tidal community API rate limited (429)`.
+
+Both park the whole queue instead of being retried. The park lasts the
+announced duration for a break, and `SPF_RATE_LIMIT_PARK_S` (default 90s) for
+a 429, and it is taken BEFORE the concurrency semaphore, so parked jobs hold
+no slot. `mode=warnings` reports the remaining time.
+
+The job that ran into the answer is put **back into the queue**, not failed.
+Failing it would be a lie Lidarr cannot recover from on its own: the release
+was never tried against a working API, and once the item is in Lidarr's
+history only a fresh search brings it back. A job may be requeued three times
+this way; after that it fails for real, so a permanently broken release cannot
+masquerade as a download that is forever about to start.
+
+Measured, without this: a 47-job burst triggered a 104-minute break and the
+whole backlog failed into history; and later, with a single concurrency slot,
+one job spent ~25 minutes retrying into 429s while six more queued behind it.
 
 ### Public Tidal API mirrors
 
@@ -293,6 +318,39 @@ This path is best-effort. The challenge page is itself behind Cloudflare and
 sometimes rejects headless browsers outright. Backends 1 and 2 need none of
 this, and are the ones to prefer.
 
+### Session renewal
+
+Backend 4's session expires. When it does, every job that needs the community
+tier fails its verification step until something mints a new one, so the
+renewal is worth automating rather than watching for.
+
+Set `SPF_SESSION_RENEW_CMD` and the server runs it whenever the community
+session store holds nothing valid, before the job takes its concurrency slot:
+
+    SPF_SESSION_RENEW_CMD=python3 /opt/solver/turnstile-llm-solve.py 10
+    TURNSTILE_LLM_API_KEY=<key for a vision model>
+
+`/opt/solver/turnstile-llm-solve.py` ships in the image. It drives the
+bundled Chromium under Xvfb through a freshly minted challenge, uses a vision
+model as a state judge (screenshot plus the live iframe text: click, wait or
+done) and the accessibility tree for aim, then exchanges the resulting grant
+and writes both session stores - the one the Go CLI reads and the one the
+Python extensions read. It is stdlib-only, because this image's `python3` has
+no third-party packages.
+
+Renewal is serialized and rate-limited: one run at a time (two browsers at the
+same challenge interfere), and never more often than
+`SPF_SESSION_RENEW_MIN_INTERVAL_S` (default one hour), bounded by
+`SPF_SESSION_RENEW_TIMEOUT_S` (default ten minutes). The outcome is logged
+with whether a valid session actually appeared afterwards.
+
+It is off unless you set the variable, deliberately. Cloudflare's decision is
+made largely on the reputation of the address the browser connects from, and
+from a datacenter or VPN egress a solve attempt can fail every time no matter
+how correct the clicking is - in which case each attempt costs wall-clock time
+and model tokens for nothing. Any other command works here too; the contract
+is just "write a valid session store, exit".
+
 ## Running behind a VPN
 
 Every backend talks to third-party servers that will log the connecting
@@ -349,6 +407,14 @@ reference in [`docs/API.md`](docs/API.md).
 | `SPF_VERIFY_RELAY_URL` | none | This program's reachable `/verify/callback` URL |
 | `SPF_VERIFY_NOTIFY_URL` | none | Webhook posted to when verification is needed |
 | `SPF_VERIFY_NOTIFY_TITLE` | SpotiFLAC verification needed | `Title` header for that webhook |
+| `SPF_RATE_LIMIT_PARK_S` | 90 | How long a community-API 429 parks the queue |
+| `SPF_SESSION_RENEW_CMD` | none | Command run when the community session store holds nothing valid |
+| `SPF_SESSION_RENEW_MIN_INTERVAL_S` | 3600 | Floor between two renewal attempts |
+| `SPF_SESSION_RENEW_TIMEOUT_S` | 600 | Ceiling for one renewal attempt |
+| `TURNSTILE_LLM_API_KEY` | none | Vision-model key for the shipped solver (`MITTWALD_API_KEY` also accepted) |
+| `TURNSTILE_LLM_BASE` | mittwald endpoint | OpenAI-compatible base URL for that model |
+| `TURNSTILE_LLM_MODEL` | Qwen3.5-122B-A10B-FP8 | Model id, must do vision and tool calls |
+| `TURNSTILE_INSTALL_ID` | from the session store | spotbye install id to mint challenges for |
 | `SPOTIFLAC_FSL_URL` | none | FlareSolverr-compatible solver |
 | `SPOTIFLAC_ADDRESS` | auto | Address the solver can reach this program on |
 

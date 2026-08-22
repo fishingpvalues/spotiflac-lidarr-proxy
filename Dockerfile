@@ -141,6 +141,12 @@ RUN apk add --no-cache python3 py3-pip && \
 
 COPY --from=builder /out/server /usr/local/bin/server
 COPY --from=cli-builder /out/spotiflac-cli /usr/local/bin/spotiflac-cli
+# Turnstile solver, for SPF_SESSION_RENEW_CMD. Shipped in the image rather
+# than docker-exec'd from the host so a container recreate cannot lose it -
+# it lived in /tmp for a week and was gone after every recreate. Stdlib-only
+# by design: this image's python3 has no third-party packages, and chromium
+# plus Xvfb are already here for the Python download extensions.
+COPY scripts/solver/turnstile-llm-solve.py /opt/solver/turnstile-llm-solve.py
 RUN mkdir -p /downloads /data /home/spotiflac/.spotiflac /home/spotiflac/.cache/spotiflac && \
     chown -R spotiflac:spotiflac /downloads /data /home/spotiflac /venv
 USER spotiflac
