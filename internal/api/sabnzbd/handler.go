@@ -219,11 +219,42 @@ func (h *Handler) ResumeQueuedJobs() int {
 // parkForUpstreamBreak holds the job in its Queued state until the upstream
 // community break window has elapsed. The job stays Queued while parked,
 // which is what it is - Lidarr sees a pending download, not a failure.
+// Logged at debug, not info: with SPF_MAX_CONCURRENT=1 a deep backlog walks
+// this function one job after another while parked, and at info level each
+// job wrote its own line every few seconds - observed 2026-08-27: ~50 queued
+// jobs produced one line per job per poll cycle and buried the events worth
+// finding. The break window is itself a single event: the gate logs it when
+// it opens or extends, mode=warnings carries the remaining pause for
+// machine and human consumers, and /health mirrors both the break window
+// and the session expiry.
 func (h *Handler) parkForUpstreamBreak(job *queue.Job) {
 	if r := h.breakGate.remaining(); r > 0 {
-		h.log.Info().Str("nzo_id", job.NzoID).Dur("pause", r).Msg("upstream community break active; holding job in queue")
+		h.log.Debug().Str("nzo_id", job.NzoID).Dur("pause", r).Msg("upstream community break active; holding job in queue")
 	}
 	h.breakGate.wait()
+}
+
+// HealthExtras reports the two states that decide whether a queued backlog
+// can drain at all, as machine-readable fields for /health: the remaining
+// upstream community break pause (epoch seconds, 0 when not paused) and the
+// CLI community session's expiry (RFC3339, null when no valid session).
+// Before this, neither was visible anywhere except mode=warnings - and even
+// there the session expiry was absent - so a healthy container could sit on
+// a full queue behind an upstream break with an expired session and nothing
+// in its health output explained it.
+func (h *Handler) HealthExtras() map[string]interface{} {
+	resp := map[string]interface{}{}
+	if r := h.breakGate.remaining(); r > 0 {
+		resp["break_until"] = time.Now().Add(r).Unix()
+	} else {
+		resp["break_until"] = int64(0)
+	}
+	var sessionExpiry interface{}
+	if valid, exp := spotiflac.SessionState(); valid {
+		sessionExpiry = exp.UTC().Format(time.RFC3339)
+	}
+	resp["session_expires_at"] = sessionExpiry
+	return resp
 }
 
 const maxAttempts = 3

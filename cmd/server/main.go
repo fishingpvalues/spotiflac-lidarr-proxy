@@ -127,17 +127,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Immutable: true,
 	})
 
-	app.Get("/health", func(c fiber.Ctx) error {
-		result := health.Check(q.DB(), cfg.SpotiflacCLIPath, st)
-		if !result.Healthy {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"status": "unhealthy",
-				"failed": result.FailedChecks,
-			})
-		}
-		return c.JSON(fiber.Map{"status": "ok"})
-	})
-
 	app.Get("/metrics", func(c fiber.Ctx) error {
 		refreshQueueDepthMetrics(q)
 		return fiberadaptor.HTTPHandler(metrics.PromHTTPHandler())(c)
@@ -161,6 +150,31 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	verifyStore := verify.NewStore()
 	sabHandler.SetVerifyStore(verifyStore)
+
+	// /health stays beyond the binary checks (DB, CLI, disk) and reports the
+	// two states that decide whether a queued backlog can drain at all: the
+	// upstream community break pause and the CLI community session's expiry.
+	// Machine-readable: break_until is epoch seconds (0 when not paused),
+	// session_expires_at is RFC3339 (null when no valid session). Registered
+	// below the handler construction so the break gate and session store it
+	// reads are already wired.
+	app.Get("/health", func(c fiber.Ctx) error {
+		result := health.Check(q.DB(), cfg.SpotiflacCLIPath, st)
+		resp := fiber.Map{}
+		if !result.Healthy {
+			resp["status"] = "unhealthy"
+			resp["failed"] = result.FailedChecks
+		} else {
+			resp["status"] = "ok"
+		}
+		for k, v := range sabHandler.HealthExtras() {
+			resp[k] = v
+		}
+		if !result.Healthy {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(resp)
+		}
+		return c.JSON(resp)
+	})
 
 	// Pick up anything left Queued by a previous process. Without this a
 	// restart strands those jobs forever - they are only ever dispatched

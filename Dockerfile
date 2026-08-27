@@ -153,7 +153,9 @@ USER spotiflac
 ENV HOME=/home/spotiflac \
     SPF_SPOTIFLAC_PYTHON_VENV=/venv/bin/python3 \
     CHROME_BIN=/usr/bin/chromium-browser
-EXPOSE 8484
+# The server binds SPF_PORT (default 8485); EXPOSE is documentation
+# for `docker run -P` port mappings and must track it.
+EXPOSE 8485
 # tini, because PID 1 has to reap. Chromium forks a tree of helper processes
 # per browser, and when a solve dies its orphans are reparented to PID 1 -
 # which is this Go server, and a Go binary never calls wait(). Measured in a

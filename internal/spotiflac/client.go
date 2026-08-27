@@ -843,6 +843,14 @@ type communitySession struct {
 // holds a session whose expiry is still more than sessionSkew in the future,
 // and when that expiry is. A missing or unreadable store is NOT an error:
 // no session is the normal state on a fresh container.
+//
+// SessionState is the exported wrapper that operator-facing status output
+// (the SABnzbd handler's mode=warnings and /health) uses to report how much
+// session lifetime a queued backlog actually has.
+func SessionState() (bool, time.Time) {
+	return communitySessionValid()
+}
+
 func communitySessionValid() (bool, time.Time) {
 	path := communitySessionFile()
 	if path == "" {
