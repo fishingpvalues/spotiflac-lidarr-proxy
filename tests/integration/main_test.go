@@ -45,9 +45,32 @@ func TestIntegration_ProxyHealth(t *testing.T) {
 
 	assert.Equal(t, 200, resp.StatusCode)
 
-	var body map[string]string
+	// map[string]any, not map[string]string: the field set is diagnostic
+	// and mixed-type - status is a string, break_until is a JSON number
+	// (epoch seconds, 0 when no upstream break), session_expires_at is an
+	// RFC3339 string or JSON null. A string-only map breaks the moment a
+	// non-string field is added (measured 2026-08-27: the integration run
+	// failed with "cannot unmarshal number into Go value of type string"
+	// the day the operator fields landed).
+	var body map[string]any
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Equal(t, "ok", body["status"])
+
+	// Pin the operator-facing shape at the HTTP level too: break_until is
+	// always present and numeric; session_expires_at is present and
+	// either a string or null (json decodes null to nil).
+	assert.Contains(t, body, "break_until")
+	_, ok := body["break_until"].(float64)
+	assert.True(t, ok, "break_until must be a number, got %T", body["break_until"])
+	assert.Contains(t, body, "session_expires_at")
+	switch v := body["session_expires_at"].(type) {
+	case string:
+		assert.True(t, len(v) > 0, "session_expires_at string must not be empty")
+	case nil:
+		// no valid community session - expected in CI's fresh container
+	default:
+		t.Errorf("session_expires_at must be string or null, got %T", v)
+	}
 }
 
 func TestIntegration_SABnzbdVersion(t *testing.T) {
