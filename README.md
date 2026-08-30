@@ -1,3 +1,5 @@
+
+
 # spotiflac-lidarr-proxy
 
 A download client and indexer for Lidarr, backed by SpotiFLAC.
@@ -439,7 +441,7 @@ Three endpoints are deliberately unauthenticated:
 
 - `/health` reports which internal checks failed.
 - `/metrics` exposes Prometheus counters and queue depth.
-- `/api/verify-relay` receives the captcha grant, which arrives as a browser
+- `/verify/callback` receives the captcha grant, which arrives as a browser
   redirect carrying no API key. Its forwarding target is taken from the
   state-to-callback mapping this program recorded when it dispatched the
   challenge, never from the request. An unrecognised state falls back to the
