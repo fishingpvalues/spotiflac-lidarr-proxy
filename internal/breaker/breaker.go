@@ -55,6 +55,30 @@ func (b *Breaker) Allow(key string) bool {
 	return false
 }
 
+// RetryAfter reports how long the caller must wait before key is allowed
+// again. It returns 0 when the key is allowed right now, so a caller can
+// use it as "is this open, and for how long".
+//
+// This exists so an open circuit can PARK a job instead of failing it. A
+// breaker protects the upstream; failing the work it was protecting turns a
+// ten-minute provider hiccup into a permanent Lidarr failure. Measured
+// 2026-09-10: 151 of 161 proxy failures in the retained history carried
+// "circuit open" as their whole error - no download had been attempted.
+func (b *Breaker) RetryAfter(key string) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	e, ok := b.entries[key]
+	if !ok || e.consecutiveFailures < b.threshold {
+		return 0
+	}
+	remaining := b.cooldown - time.Since(e.openedAt)
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining
+}
+
 func (b *Breaker) RecordFailure(key string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -92,6 +92,16 @@ After the Python→CLI cascade, the Go handler adds its own retry/fallback loop:
   every phase derives its deadline from it, so an expired budget kills in-flight
   subprocesses instead of letting them run on.
 - Per-service circuit breaker: opens after 5 consecutive failures for 10 minutes
+- **An open circuit PARKS the job (`parkForOpenCircuits`), it does not fail it.**
+  When every candidate service's breaker is open the job waits, outside the
+  concurrency semaphore, until one closes (cap `maxCircuitPark`, 45 min). Live
+  measurement 2026-09-10: 151 of 161 retained failures were "circuit open" and
+  nothing had been downloaded - with MAX_CONCURRENT=1 a 10 min hiccup emptied
+  the backlog into Lidarr's failed history. Same shape as the upstream break
+  gate below, and for the same reason it parks before taking a slot.
+- **`fallbackChain` drops services this build cannot serve** (`Client.SupportsService`).
+  Without the Python backend that is deezer; leaving it in cost a fallback slot
+  per job and produced an unretryable "not available in this deployment" error.
 - Circuit breaker failures are attributed to the primary service, not the fallback
 - Breaker input is real service failures only: a dead job context (budget expiry,
   cancellation) marks the job failed but does NOT feed `RecordFailure` - budget

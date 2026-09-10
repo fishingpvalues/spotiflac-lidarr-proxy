@@ -267,6 +267,9 @@ func (h *Handler) processDownload(job *queue.Job) {
 	// taking a concurrency slot - a wait inside the semaphore would hold one
 	// of SPF_MAX_CONCURRENT slots for the whole break and wedge the queue.
 	h.parkForUpstreamBreak(job)
+	// Same rule for an open circuit breaker: park outside the semaphore
+	// rather than fast-failing the job.
+	h.parkForOpenCircuits(job)
 
 	// Community-session renewal, before the slot is taken. The community tier
 	// is what actually delivers audio while the custom Tidal APIs are down,
@@ -326,10 +329,20 @@ func (h *Handler) processDownload(job *queue.Job) {
 	// a chance. Only treat "attempted and failed" primaries as a breaker
 	// failure to record; an open breaker we skipped isn't a new failure.
 	var lastErr string
-	if !h.breaker.Allow(primarySvc) {
+	switch {
+	case !h.client.SupportsService(primarySvc):
+		// A service this build cannot serve is a config fact, not a
+		// download result: attempting it only produces the same
+		// "Python backend not available" string every time. Skip
+		// straight to the fallback loop, which is already filtered to
+		// services that exist here.
+		lastErr = fmt.Sprintf("service %s is not available in this deployment", primarySvc)
+		h.log.Warn().Str("nzo_id", job.NzoID).Str("service", primarySvc).
+			Msg("primary service unsupported by this build; going straight to fallbacks")
+	case !h.breaker.Allow(primarySvc):
 		lastErr = fmt.Sprintf("service %s temporarily unavailable (circuit open)", primarySvc)
 		metrics.RecordJobResult(string(sabnzbd.StatusFailed), primarySvc)
-	} else {
+	default:
 		retryDL := h.client.Download
 		if h.client.HasPythonBackend() {
 			// The Python cascade's cross-track breaker has already proven every
@@ -543,16 +556,103 @@ func (h *Handler) tryFallbackService(ctx context.Context, job *queue.Job, jobDir
 }
 
 // fallbackChain returns the configured fallback services after the given
-// current service, preserving configured order, excluding the current one.
+// current service, preserving configured order, excluding the current one
+// and excluding anything this deployment cannot serve at all.
+//
+// The exclusion matters: SPF_FALLBACK_SERVICES here is "qobuz,deezer,amazon"
+// while the image ships no Python backend, so deezer consumed a fallback
+// slot and returned a deployment fact ("only available through the Python
+// backend") dressed up as a download failure. Measured 2026-09-10: 7 such
+// failures in the retained history, every one of them unretryable by
+// construction.
 func (h *Handler) fallbackChain(current string) []string {
 	var chain []string
 	for _, svc := range h.cfg.FallbackServices {
-		if svc != current {
-			chain = append(chain, svc)
+		if svc == current {
+			continue
 		}
+		if !h.client.SupportsService(svc) {
+			continue
+		}
+		chain = append(chain, svc)
 	}
 	return chain
 }
+
+// candidateServices is every service this job could still be served by, in
+// attempt order: the primary first, then the surviving fallback chain.
+func (h *Handler) candidateServices(job *queue.Job) []string {
+	out := make([]string, 0, len(h.cfg.FallbackServices)+1)
+	if h.client.SupportsService(job.Service) {
+		out = append(out, job.Service)
+	}
+	return append(out, h.fallbackChain(job.Service)...)
+}
+
+// maxCircuitPark bounds how long a job may sit parked waiting for a circuit
+// to close. The breaker cooldown is 10 minutes, so a park normally resolves
+// well inside this; the cap only exists so a pathological breaker cannot
+// hold a job forever without ever reaching a real attempt.
+var maxCircuitPark = 45 * time.Minute
+
+// parkForOpenCircuits holds the job in Queued while EVERY service it could
+// use has an open breaker, and returns once at least one is allowed again.
+//
+// Without this an open circuit was terminal: processDownload skipped the
+// primary, found every fallback breaker open too, and fell straight through
+// to failJob with "service tidal temporarily unavailable (circuit open)" as
+// the entire error. With SPF_MAX_CONCURRENT=1 and a backlog, a ten-minute
+// provider hiccup therefore drained the whole queue into Lidarr's failed
+// history in seconds. Measured 2026-09-10 over the retained 500-slot
+// history: 151 of 161 failures were exactly that, in bursts (34 on 08-27,
+// 46 on 08-31, 33 on 09-04) - none of them a download that was attempted
+// and lost.
+//
+// A breaker protects the upstream. Parking honours that (zero requests
+// reach the open service) while keeping the job honest to Lidarr: it stays
+// Queued, which is what it is. Same shape as parkForUpstreamBreak, and for
+// the same reason it runs BEFORE the concurrency semaphore - waiting inside
+// the semaphore would wedge the single slot for the whole cooldown.
+func (h *Handler) parkForOpenCircuits(job *queue.Job) {
+	deadline := time.Now().Add(maxCircuitPark)
+	logged := false
+	for {
+		candidates := h.candidateServices(job)
+		if len(candidates) == 0 {
+			// Nothing this deployment can serve; let the normal path
+			// produce the (permanent, honest) error.
+			return
+		}
+		wait := maxCircuitPark
+		for _, svc := range candidates {
+			d := h.breaker.RetryAfter(svc)
+			if d <= 0 {
+				return // at least one service is available right now
+			}
+			if d < wait {
+				wait = d
+			}
+		}
+		if time.Now().After(deadline) {
+			h.log.Warn().Str("nzo_id", job.NzoID).Dur("parked_for", maxCircuitPark).
+				Msg("circuit park cap reached; attempting anyway")
+			return
+		}
+		if !logged {
+			h.log.Info().Str("nzo_id", job.NzoID).Strs("services", candidates).Dur("retry_in", wait).
+				Msg("every candidate service circuit is open; holding job in queue")
+			logged = true
+		}
+		if wait > circuitParkPoll {
+			wait = circuitParkPoll
+		}
+		time.Sleep(wait)
+	}
+}
+
+// circuitParkPoll caps a single park sleep so a breaker that closes early
+// (RecordSuccess from another job) is noticed promptly.
+var circuitParkPoll = 15 * time.Second
 
 // attemptDownload runs a single backend invocation and reports whether it
 // succeeded. On success it fully updates the job to Completed and moves it

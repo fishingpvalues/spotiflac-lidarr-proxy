@@ -555,6 +555,23 @@ func (c *Client) HasPythonBackend() bool {
 	return err == nil
 }
 
+// SupportsService reports whether this deployment can download `service` at
+// all. spotiflac-cli implements tidal, qobuz and amazon; deezer exists only
+// as a Python-backend extension, so an image built without the Python
+// wrapper can never serve it.
+//
+// Callers use this to keep an impossible service out of the fallback chain.
+// Leaving it in costs a real fallback slot and produces a failure whose
+// message ("only available through the Python backend, which is not
+// available in this deployment") is a deployment fact, not a download
+// result - it will be identical on every retry forever.
+func (c *Client) SupportsService(service string) bool {
+	if cliSupportsService(service) {
+		return true
+	}
+	return c.HasPythonBackend()
+}
+
 // runCLIBackend executes backends 2-4 (the SpotiFLAC CLI) writing to the
 // given channels. ctx must carry the phase's own deadline; the caller owns
 // closing the channels.

@@ -219,6 +219,21 @@ work to a service after five consecutive failures and reopens after ten
 minutes; `SPF_FALLBACK_SERVICES` lets a job try another service instead of
 failing.
 
+**An open circuit parks a job, it never fails it.** If every service the job
+could use has an open breaker, the job stays `Queued` (which is what it is -
+Lidarr sees a pending download) until the first breaker closes, capped at 45
+minutes. Fast-failing instead was measured on a live instance on 2026-09-10:
+151 of the 161 retained failures carried "circuit open" as their whole error
+message, arriving in bursts of 34, 46 and 33 in a single day, because with
+`SPF_MAX_CONCURRENT=1` a ten-minute provider hiccup drained the entire backlog
+into Lidarr's failed history in seconds. None of those was a download that had
+been attempted and lost.
+
+A service this build cannot run is also dropped from the chain rather than
+tried: without the Python backend, `deezer` in `SPF_FALLBACK_SERVICES`
+consumed a real fallback slot and returned a deployment fact identical on
+every retry.
+
 ### Backpressure: when upstream says wait
 
 Two upstream answers mean "stop asking", not "this release is broken":

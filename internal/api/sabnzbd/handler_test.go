@@ -691,6 +691,7 @@ exit 1
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
 	client := apispotiflac.NewClient(scriptPath, 5*time.Second, "tidal", "lossless", "", "", "", nil, "", nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+	defer sabnzbd.SetRetryBackoffForTest([]time.Duration{10 * time.Millisecond, 10 * time.Millisecond})()
 
 	for i := 0; i < 5; i++ {
 		job := &queue.Job{
@@ -702,24 +703,20 @@ exit 1
 		handler.ProcessDownloadSync(job)
 	}
 
-	// A fresh job targeting "tidal" alone (no fallback configured this time,
-	// same handler/breaker) must short-circuit: proof that tidal's own
-	// breaker recorded all 5 failures above, not just amazon's.
-	cfg.FallbackServices = nil
-	job := &queue.Job{NzoID: "SABnzbd_nzo_primaryfail_check", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/check"}
-	require.NoError(t, q.Add(job))
-	handler.ProcessDownloadSync(job)
-
-	hist, _, err := q.History(queue.ListParams{Limit: 20})
-	require.NoError(t, err)
-	var found bool
-	for _, j := range hist {
-		if j.NzoID == "SABnzbd_nzo_primaryfail_check" {
-			found = true
-			assert.Contains(t, j.ErrorMessage, "circuit open", "primary service's breaker should have opened from its own recorded failures during the fallback runs")
-		}
-	}
-	assert.True(t, found)
+	// tidal's own breaker must now be open: proof that all 5 failures above
+	// were recorded against tidal and not only against the fallback amazon.
+	//
+	// This used to be observed by running one more tidal-only job and
+	// asserting its error said "circuit open". That stopped being a valid
+	// probe when an open circuit started PARKING the job instead of failing
+	// it (see TestProcessDownloadParksInsteadOfFailingWhenBreakerOpen) - the
+	// extra job simply waited out the 10-minute cooldown and blew the
+	// package's test timeout. Asking the breaker is the same assertion
+	// without the detour.
+	assert.True(t, handler.BreakerOpenForTest("tidal"),
+		"primary service's breaker should have opened from its own recorded failures during the fallback runs")
+	assert.False(t, handler.BreakerOpenForTest("qobuz"),
+		"an untouched service must not be dragged open with it")
 }
 
 // TestProcessDownloadClearsStaleFilesAcrossServiceFallback guards against a
@@ -789,7 +786,15 @@ echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 	assert.Contains(t, names, "01.flac")
 }
 
-func TestProcessDownloadShortCircuitsWhenBreakerOpen(t *testing.T) {
+// An open circuit must PARK the job, never fail it. The breaker exists to
+// protect the upstream; failing the work it was protecting turned a
+// ten-minute provider hiccup into a permanent Lidarr failure, and with
+// SPF_MAX_CONCURRENT=1 an entire backlog drained into failed history in
+// seconds. Measured on the live proxy 2026-09-10: 151 of 161 retained
+// failures carried "circuit open" as their whole error message, in bursts
+// of 34/46/33 on single days - not one of them a download that was
+// attempted and lost.
+func TestProcessDownloadParksInsteadOfFailingWhenBreakerOpen(t *testing.T) {
 	app, q := setupTestApp(t)
 	_ = app
 
@@ -797,6 +802,9 @@ func TestProcessDownloadShortCircuitsWhenBreakerOpen(t *testing.T) {
 	st := storage.New(cfg.OutputDir)
 	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, noPython, nil)
 	handler := sabnzbd.NewHandler(q, client, st, cfg, "0.1.0-test")
+	handler.SetBreakerForTest(5, 700*time.Millisecond)
+	defer sabnzbd.SetCircuitParkPollForTest(20 * time.Millisecond)()
+	defer sabnzbd.SetMaxCircuitParkForTest(30 * time.Second)()
 
 	// Force the breaker open by feeding 5 consecutive failures for "tidal".
 	for i := 0; i < 5; i++ {
@@ -805,20 +813,53 @@ func TestProcessDownloadShortCircuitsWhenBreakerOpen(t *testing.T) {
 		handler.ProcessDownloadSync(job) // "echo" exits 0 with no "complete" event -> fails
 	}
 
-	job := &queue.Job{NzoID: "SABnzbd_nzo_shortcircuit", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/x"}
+	job := &queue.Job{NzoID: "SABnzbd_nzo_parked", Service: "tidal", SpotifyURL: "https://open.spotify.com/album/x"}
 	require.NoError(t, q.Add(job))
-	handler.ProcessDownloadSync(job)
 
+	done := make(chan struct{})
+	go func() {
+		handler.ProcessDownloadSync(job)
+		close(done)
+	}()
+
+	// While parked the job must not have reached history at all: Lidarr sees
+	// a pending download, which is the truth.
+	time.Sleep(200 * time.Millisecond)
+	assert.False(t, inHistory(t, q, "SABnzbd_nzo_parked"),
+		"a job whose only obstacle is an open circuit must stay queued, not fail")
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("parked job never resumed after the breaker cooldown elapsed")
+	}
+
+	// Once the cooldown lifts the job is really attempted. "echo" cannot
+	// produce a complete event, so it fails - but on a download result, not
+	// on the breaker.
 	hist, _, err := q.History(queue.ListParams{Limit: 20})
 	require.NoError(t, err)
 	var found bool
 	for _, j := range hist {
-		if j.NzoID == "SABnzbd_nzo_shortcircuit" {
+		if j.NzoID == "SABnzbd_nzo_parked" {
 			found = true
-			assert.Contains(t, j.ErrorMessage, "circuit open")
+			assert.NotContains(t, j.ErrorMessage, "circuit open",
+				"after parking, the failure must describe the download, not the breaker")
 		}
 	}
-	assert.True(t, found)
+	assert.True(t, found, "job must reach history once it has actually been attempted")
+}
+
+func inHistory(t *testing.T, q *queue.SQLiteQueue, nzoID string) bool {
+	t.Helper()
+	hist, _, err := q.History(queue.ListParams{Limit: 50})
+	require.NoError(t, err)
+	for _, j := range hist {
+		if j.NzoID == nzoID {
+			return true
+		}
+	}
+	return false
 }
 
 // TestProcessDownloadFallsBackWhenPrimaryBreakerAlreadyOpen guards against a
