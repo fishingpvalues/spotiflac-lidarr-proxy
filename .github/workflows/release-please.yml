@@ -3,6 +3,9 @@ name: Release Please
 on:
   push:
     branches: [main]
+  # Manual re-run, for when a release PR needs regenerating without a new
+  # commit - e.g. after fixing the repo setting that lets Actions open PRs.
+  workflow_dispatch:
 
 permissions:
   contents: write
