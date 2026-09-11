@@ -102,11 +102,16 @@ type Attr struct {
 // ("no results in the configured categories") is emitted whenever the result set
 // is empty, and Lidarr tests with a browse query - no artist, no album - which
 // this indexer answers with zero items by design. See README.
-func newznabCategories(quality string) []string {
-	if quality == "hires" {
-		return []string{"3000", "3040"}
-	}
-	return []string{"3000", "3010"}
+//
+// Both qualities are 3040, Audio/Lossless. Everything this proxy serves is
+// FLAC; 16-bit and 24-bit differ in the release title, which is where Lidarr's
+// QualityParser reads quality from anyway. 16-bit used to be tagged 3010,
+// which in the Newznab standard - and in Lidarr's own dropdown - is
+// Audio/MP3. That made the one category a lossless-only setup would obviously
+// tick, "Lossless (3040)", filter away every 16-bit FLAC this indexer
+// published, with no error to say why.
+func newznabCategories(string) []string {
+	return []string{"3000", "3040"}
 }
 
 // qualityTag returns a release-title suffix Lidarr's QualityParser will
@@ -263,6 +268,13 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality s
 // requests. It was absent, so Lidarr fell back to its own default rather than
 // being told; declaring it costs nothing and removes the guess. 100 matches
 // what the search path actually returns.
+// Only the subcategories newznabCategories can actually emit are declared.
+// Ticking a category in Lidarr is a FILTER - it sends cat= and drops every
+// release whose categories do not intersect it - so a category that no release
+// ever carries is a silent zero-result setting. Earlier versions also offered
+// 3050 "FLAC 16-bit" and 3060-3063 per provider; nothing was ever tagged with
+// them, so anyone who selected one got an indexer that returned nothing and no
+// error to say why.
 func CapsXML(serverURL, version string) []byte {
 	xmlStr := `<?xml version="1.0" encoding="UTF-8"?>
 <caps>
@@ -275,13 +287,7 @@ func CapsXML(serverURL, version string) []byte {
   </searching>
   <categories>
     <category id="3000" name="Audio">
-      <subcat id="3010" name="Lossless"/>
-      <subcat id="3040" name="FLAC 24-bit"/>
-      <subcat id="3050" name="FLAC 16-bit"/>
-      <subcat id="3060" name="Tidal"/>
-      <subcat id="3061" name="Qobuz"/>
-      <subcat id="3062" name="Amazon"/>
-      <subcat id="3063" name="Deezer"/>
+      <subcat id="3040" name="Lossless"/>
     </category>
   </categories>
 </caps>`

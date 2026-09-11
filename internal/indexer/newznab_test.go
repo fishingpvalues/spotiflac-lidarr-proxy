@@ -1,6 +1,7 @@
 package indexer_test
 
 import (
+	"regexp"
 	"strconv"
 	"testing"
 
@@ -108,18 +109,16 @@ func TestNewznabXMLIncludesCategoryAttrs(t *testing.T) {
 		{Artist: "A", Album: "B", SpotifyURL: "https://open.spotify.com/album/x", TrackCount: 3},
 	}
 
-	lossless, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key", "lossless")
-	require.NoError(t, err)
-	assert.Contains(t, string(lossless), `name="category" value="3000"`)
-	assert.Contains(t, string(lossless), `name="category" value="3010"`,
-		"lossless releases must carry the Lossless subcategory advertised in caps")
-
-	hires, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key", "hires")
-	require.NoError(t, err)
-	assert.Contains(t, string(hires), `name="category" value="3000"`)
-	assert.Contains(t, string(hires), `name="category" value="3040"`,
-		"hires releases must carry the FLAC 24-bit subcategory advertised in caps")
-	assert.NotContains(t, string(hires), `name="category" value="3010"`)
+	for _, quality := range []string{"lossless", "hires"} {
+		feed, err := indexer.NewznabXML(results, "http://localhost:8484", "test-key", quality)
+		require.NoError(t, err)
+		assert.Contains(t, string(feed), `name="category" value="3000"`)
+		assert.Contains(t, string(feed), `name="category" value="3040"`,
+			"%s releases must carry Audio/Lossless, the category a FLAC-only setup ticks", quality)
+		// 3010 is Audio/MP3 in the Newznab standard and in Lidarr's own
+		// dropdown. Nothing here is ever MP3.
+		assert.NotContains(t, string(feed), `name="category" value="3010"`)
+	}
 }
 
 func TestNewznabXMLCarriesReleaseNameSizeAndTracksOnTheDownloadURL(t *testing.T) {
@@ -176,4 +175,28 @@ func TestNewznabXMLSizesHiResFromTheHiResPerTrackEstimate(t *testing.T) {
 	out, err := indexer.NewznabXML(results, "http://localhost:8484", "k", "hires")
 	require.NoError(t, err)
 	assert.Contains(t, string(out), `name="size" value="`+strconv.FormatInt(indexer.EstimateSizeBytes(10, "hires"), 10)+`"`)
+}
+
+// Every subcategory caps declares must be one some release can actually
+// carry. A category is a filter on Lidarr's side, so an undeliverable one is
+// an indexer that returns nothing with no error to explain it.
+func TestCapsDeclaresOnlyEmittableCategories(t *testing.T) {
+	caps := string(indexer.CapsXML("http://x", "v0"))
+
+	emitted := map[string]bool{}
+	for _, quality := range []string{"lossless", "hires"} {
+		feed, err := indexer.NewznabXML([]spotiflac.MetadataResult{
+			{Artist: "Artist", Album: "Album", SpotifyURL: "https://open.spotify.com/album/x", Entity: "album"},
+		}, "http://x", "k", quality)
+		require.NoError(t, err)
+		for _, m := range regexp.MustCompile(`name="category" value="(\d+)"`).FindAllStringSubmatch(string(feed), -1) {
+			emitted[m[1]] = true
+		}
+	}
+	require.NotEmpty(t, emitted)
+
+	for _, m := range regexp.MustCompile(`<(?:sub)?cat(?:egory)? id="(\d+)"`).FindAllStringSubmatch(caps, -1) {
+		assert.True(t, emitted[m[1]],
+			"caps declares category %s but no release is ever tagged with it", m[1])
+	}
 }

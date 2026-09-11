@@ -198,9 +198,12 @@ func TestNewznabCapsContractForLidarr(t *testing.T) {
 	// Categories. Lidarr filters results against the categories configured on
 	// the indexer; anything outside the declared set is dropped silently, so
 	// the audio categories this proxy tags releases with must be declared.
-	for _, cat := range []string{`id="3000"`, `id="3010"`, `id="3040"`} {
+	for _, cat := range []string{`id="3000"`, `id="3040"`} {
 		require.Contains(t, xml, cat, "caps does not declare category %s", cat)
 	}
+	// 3010 is Audio/MP3, and this proxy serves no MP3. Declaring it offered a
+	// tick box that filtered away every release it was supposed to select.
+	require.NotContains(t, xml, `id="3010"`)
 
 	// music-search must declare the fields Lidarr sends. It builds a query
 	// with artist and album; an indexer that declares neither gets a plain

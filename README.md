@@ -59,18 +59,68 @@ Indexer — Settings › Indexers › Add › Newznab (Custom):
 | URL | `http://spotiflac-proxy:8484` |
 | API Path | `/api/newznab` |
 | API Key | `$SPF_API_KEY` |
-| Categories | `3000`, `3010`, `3040` |
+| Categories | `Music (3000)` and `Lossless (3040)` |
 
 ### Categories
 
-Set one. Without it every job lands in Lidarr's default.
+A category name is `music[-service][-quality]`, matched by substring. The
+download client sends it with every job, and it is what selects the provider
+and the bit depth.
 
-The category also selects service and quality: `music-flac-24` requests
-hi-res, `music-tidal` pins the provider, `music-qobuz-flac-16` does both.
-`mode=get_cats` lists them.
+| Category | Provider | Quality |
+|----------|----------|---------|
+| `music` | `SPF_DEFAULT_SERVICE` | `SPF_DEFAULT_QUALITY` |
+| `music-flac-16`, `music-lossless` | `SPF_DEFAULT_SERVICE` | 16-bit |
+| `music-flac-24` | `SPF_DEFAULT_SERVICE` | 24-bit |
+| `music-tidal`, `music-qobuz`, `music-amazon`, `music-deezer` | that one | `SPF_DEFAULT_QUALITY` |
+| `music-tidal-flac-24`, `music-qobuz-flac-16`, ... | that one | as named |
 
-Categories carry no directory. Advertising one makes Lidarr raise a permanent
-"this directory does not appear to exist" health error.
+Any half you leave out falls back to the matching default, so `music` is the
+whole setup for most people. `mode=get_cats` lists the full set.
+
+`music-mp3` exists because Lidarr offers it; it downloads FLAC like the rest.
+There is no lossy path.
+
+Two things a category does not do. It does not pin the provider against
+failure: a service that errors or refuses hands the job to
+`SPF_FALLBACK_SERVICES` anyway, which is the behaviour you want and the reason
+to set that variable. And it carries no directory - advertising one makes
+Lidarr raise a permanent "this directory does not appear to exist" health
+error, so every category here is directory-less and downloads land in
+`SPF_OUTPUT_DIR`.
+
+### Recommended settings
+
+```
+SPF_DEFAULT_SERVICE=tidal
+SPF_DEFAULT_QUALITY=lossless
+SPF_FALLBACK_SERVICES=qobuz,amazon,deezer
+```
+
+with `music` as the Lidarr download client category, and `FLAC` in the quality
+profile.
+
+For 24-bit, change `SPF_DEFAULT_QUALITY` to `hires` and add `FLAC 24bit` to
+the profile above `FLAC`. Leave the category at `music`.
+
+Set the quality on the variable, not on the category, because the two halves
+of this proxy read different sources and only the variable moves both:
+
+| | reads |
+|---|---|
+| what the indexer advertises - the `[FLAC]` / `[FLAC 24-bit]` tag in the release title, which is where Lidarr reads quality from | `SPF_DEFAULT_QUALITY` |
+| what the download actually fetches | the client's category |
+
+Lidarr grabs on the first and stores the second. Set the client category to
+`music-flac-24` while `SPF_DEFAULT_QUALITY` stays `lossless` and every release
+still advertises `[FLAC]`, so Lidarr scores 24-bit files as 16-bit and will
+keep trying to upgrade them. Category `music` cannot drift that way.
+
+`SPF_FALLBACK_SERVICES` is empty by default, which makes the primary service
+the only one that is ever tried. Three names cost nothing and are what turns a
+provider outage into a slower download instead of a failed one. Services the
+running build cannot serve are dropped from the chain; without the Python
+backend that is `deezer`.
 
 ### Indexer Test is red until `SPF_RSS_QUERY` is set
 
@@ -145,9 +195,6 @@ Full table in [`docs/API.md`](docs/API.md).
 | `SPF_TIDAL_API_URL` | none | Your own Tidal API instance |
 | `SPF_LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, `error` |
 | `SPF_METRICS_REQUIRE_AUTH` | `true` | Require the API key on `/metrics` |
-
-Services the running build cannot serve are dropped from the fallback chain.
-Without the Python backend that is `deezer`.
 
 ### Exposure
 
