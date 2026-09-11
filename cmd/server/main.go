@@ -110,6 +110,42 @@ func runServe(cmd *cobra.Command, args []string) error {
 	client.SetSkipPythonWhenSessionPresent(cfg.SkipPythonWhenSessionPresent)
 	client.SetRelayPort(cfg.Port)
 
+	app := buildApp(cfg, q, client, st, log, version)
+
+	log.Info().Int("port", cfg.Port).Str("version", version).Msg("starting server")
+
+	go func() {
+		addr := fmt.Sprintf(":%d", cfg.Port)
+		if err := app.Listen(addr); err != nil {
+			log.Fatal().Err(err).Msg("server failed")
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Info().Msg("shutting down")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return app.ShutdownWithContext(shutdownCtx)
+}
+
+// buildApp wires every route and its auth middleware and returns the app
+// without listening. It is split out of runServe so the REAL route table can
+// be tested: the failure this guards against is an endpoint added to the
+// server and silently reachable without the API key, which is invisible to a
+// test that constructs its own app with its own routes.
+// See cmd/server/auth_coverage_test.go.
+func buildApp(
+	cfg *config.Config,
+	q *queue.SQLiteQueue,
+	client *spotiflac.Client,
+	st *storage.Storage,
+	log zerolog.Logger,
+	version string,
+) *fiber.App {
 	app := fiber.New(fiber.Config{
 		AppName:      "spotiflac-lidarr-proxy",
 		ServerHeader: "spotiflac-lidarr-proxy",
@@ -234,24 +270,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	nznbGroup.Use(api.APIKeyAuth(cfg.APIKey, nil, []string{"caps"}))
 	nznbHandler.RegisterRoutesOnGroup(nznbGroup)
 
-	log.Info().Int("port", cfg.Port).Str("version", version).Msg("starting server")
-
-	go func() {
-		addr := fmt.Sprintf(":%d", cfg.Port)
-		if err := app.Listen(addr); err != nil {
-			log.Fatal().Err(err).Msg("server failed")
-		}
-	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	log.Info().Msg("shutting down")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return app.ShutdownWithContext(shutdownCtx)
+	return app
 }
 
 // refreshQueueDepthMetrics updates the spf_queue_depth gauge with current
