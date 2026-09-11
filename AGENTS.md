@@ -10,6 +10,32 @@ Go service bridging Lidarr ↔ SpotiFLAC. Implements **SABnzbd download client A
 **Go version:** 1.25+  
 **SpotiFLAC fork:** `github.com/fishingpvalues/SpotiFLAC`
 
+## Versioning - do not hand-edit the version
+
+Semver, pre-1.0 deliberately (the SABnzbd surface is shaped by what Lidarr
+happens to call, so it is not API-stable). Releases are automated by
+release-please: Conventional Commits land on `main`, the bot maintains a
+release PR, and merging it writes `CHANGELOG.md`, bumps `version.txt` and
+tags `vX.Y.Z`. That tag is what `release.yml` builds the container from.
+
+So: **never bump `version.txt` or create a `v*` tag by hand** - the bot owns
+both, and a manual tag desynchronises `.release-please-manifest.json`. Get
+the version you want by writing the right commit type (`fix:` -> patch,
+`feat:` -> patch while 0.x, `feat!:`/`BREAKING CHANGE:` -> minor while 0.x).
+
+The line restarted at **0.0.1 on 2026-09-11**. The earlier 3.x tags were
+ad-hoc and were deleted from git and GHCR, because leaving a higher version
+in the registry makes Renovate propose it forever as an "upgrade" from 0.x.
+
+## Docs layout
+
+- `README.md` - install, Lidarr setup, essentials. Keep it short; it is the
+  front page, not the manual.
+- `docs/OPERATIONS.md` - failure modes, the measurements behind the retry and
+  parking behaviour, captcha/session paths, troubleshooting.
+- `docs/API.md` + `openapi.json` - the HTTP surface. CI checks the spec
+  against the running server.
+
 ## Architecture
 
 ```

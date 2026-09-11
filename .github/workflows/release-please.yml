@@ -1,0 +1,32 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # Opens/updates a release PR that collects every Conventional Commit
+      # since the last release, writes CHANGELOG.md and bumps version.txt.
+      # Merging that PR is what creates the vX.Y.Z tag - which is the trigger
+      # release.yml already listens on, so the container build is unchanged.
+      #
+      # Pre-1.0 on purpose: bump-minor-pre-major keeps a breaking change at
+      # 0.x.0 instead of jumping to 1.0.0, and bump-patch-for-minor-pre-major
+      # keeps a feature at 0.0.x. The version says "not API-stable yet",
+      # which is true - the SABnzbd surface is shaped by what Lidarr happens
+      # to call.
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

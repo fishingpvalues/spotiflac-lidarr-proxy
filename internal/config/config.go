@@ -198,21 +198,42 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("log_level", "info")
 	v.SetDefault("history_retention_count", 500)
 	v.SetDefault("verify_notify_title", "SpotiFLAC verification needed")
-	// Known public hifi-api / SpotiFLAC-compatible Tidal mirrors, probed in
-	// order at download time; dead ones are skipped (see probeAPI).
+	// Public hifi-api Tidal mirrors, probed in order at download time; dead
+	// ones are skipped (see probeAPI + probeHiFiTrack).
 	//
-	// Measured 2026-08-07 from a VPN exit and from a bare uplink alike:
-	// monochrome-api.samidy.com is the only one of these that answers as an
-	// API at all. api.monochrome.tf serves 503 and arran.monochrome.tf 502;
-	// every *.qqdl.site host and tidal.kinoplus.online refuse the connection
-	// outright; hifi.geeked.wtf no longer resolves. They stay listed because
-	// public mirrors come back, and a dead entry now costs one probe rather
-	// than poisoning the selection.
+	// Re-measured 2026-09-11 against the full published instance list
+	// (github.com/spotbye/SpotiFLAC-Next wiki, "Available HiFi API
+	// Instances"), from the AirVPN exit AND from a bare home uplink, with
+	// identical results - so what follows is the mirrors being gone, not the
+	// VPN being blocked:
+	//
+	//	monochrome-api.samidy.com   200 {"version":"2.3", ...}   <- the only one
+	//	api.monochrome.tf           503
+	//	arran.monochrome.tf         Cloudflare 1033 (tunnel down)
+	//	*.qqdl.site (5 hosts)       DNS resolves, TLS handshake refused
+	//
+	// Four published instances are NOT listed because their domains no longer
+	// exist at all - NXDOMAIN from Quad9 and Cloudflare alike, so they can
+	// never be probed successfully and only cost a resolver timeout:
+	// triton.squid.wtf, hifi-one.spotisaver.net, hifi-two.spotisaver.net,
+	// tidal.kinoplus.online, tidal-api.binimum.org. squid.wtf itself is
+	// deprecated upstream.
+	//
+	// Entries that merely 503 or refuse TLS are KEPT: the host still exists,
+	// and a mirror coming back costs one probe. A domain that does not
+	// resolve is a different thing and is removed.
 	//
 	// Deliberately NOT listed: lossless.wtf, monochrome.samidy.com and
 	// if-it-runs-ship-it.lol. Those are the Monochrome *web UI*. They answer
 	// 200 with HTML, which the old "any response means alive" check happily
 	// accepted and handed to spotiflac-cli as an API endpoint.
+	//
+	// Depending on strangers' mirrors is the weak link, and it is structural:
+	// public instances breach Tidal's ToS and get killed, and Tidal has been
+	// blocking the accounts behind them in bulk. The durable fix is to run
+	// your own hifi-api (github.com/binimum/hifi-api - Docker, needs a Tidal
+	// account's refresh token) and point SPF_TIDAL_API_URL at it. See the
+	// README.
 	v.SetDefault("tidal_api_fallback_urls",
 		"https://monochrome-api.samidy.com,"+
 			"https://api.monochrome.tf,"+
@@ -221,9 +242,7 @@ func setDefaults(v *viper.Viper) {
 			"https://maus.qqdl.site,"+
 			"https://vogel.qqdl.site,"+
 			"https://katze.qqdl.site,"+
-			"https://hund.qqdl.site,"+
-			"https://tidal.kinoplus.online,"+
-			"https://hifi-one.spotisaver.net")
+			"https://hund.qqdl.site")
 }
 
 // Service constants matching SpotiFLAC CLI
