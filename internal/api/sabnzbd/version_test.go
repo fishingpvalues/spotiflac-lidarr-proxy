@@ -1,27 +1,48 @@
 package sabnzbd
 
-import "testing"
+import (
+	"regexp"
+	"strconv"
+	"strings"
+	"testing"
+)
 
-func TestSabnzbdVersionOnlyEverAnswersSomethingLidarrParses(t *testing.T) {
-	// Lidarr's Sabnzbd.TestConnection fails the whole download client on
-	// anything that is neither strict X.Y.Z nor "develop" - measured against
-	// a real Lidarr, which answered the Test button with HTTP 400 and
-	// "Unknown Version: beta-65825a5". Every non-release tag hit that.
-	cases := map[string]string{
-		"3.0.0":         "3.0.0",
-		"2.14.7":        "2.14.7",
-		"develop":       "develop",
-		"beta-65825a5":  "develop",
-		"latest":        "develop",
-		"v3.0.0":        "develop", // a leading v is not X.Y.Z either
-		"3.0":           "develop",
-		"3.0.0-rc1":     "develop",
-		"":              "develop",
-		"dev-abcdef123": "develop",
-	}
-	for in, want := range cases {
-		if got := sabnzbdVersion(in); got != want {
-			t.Errorf("sabnzbdVersion(%q) = %q, want %q", in, got, want)
+// Lidarr parses mode=version with these two rules and fails the whole
+// download client when either is broken, so no build string may ever reach
+// the answer. Both were measured against a real Lidarr 3.1.5.5066:
+// "Unknown Version: beta-65825a5" for an unparseable one, and
+// "Version 0.7.0+ is required, but found 0.0.3" for this project's own.
+func TestSabnzbdVersionAlwaysAnswersSomethingLidarrAccepts(t *testing.T) {
+	semver := regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)$`)
+
+	for _, build := range []string{
+		"v0.0.3", "0.0.3", "v1.2.3", "develop", "latest",
+		"beta-65825a5", "dev-abcdef123", "3.0", "3.0.0-rc1", "",
+	} {
+		got := sabnzbdVersion(build)
+		m := semver.FindStringSubmatch(got)
+		if m == nil {
+			t.Fatalf("sabnzbdVersion(%q) = %q, which Lidarr cannot parse", build, got)
 		}
+		major, _ := strconv.Atoi(m[1])
+		minor, _ := strconv.Atoi(m[2])
+		if major == 0 && minor < 7 {
+			t.Fatalf("sabnzbdVersion(%q) = %q, below Lidarr's 0.7.0 minimum", build, got)
+		}
+		// "develop" parses and clears the minimum, but Lidarr attaches a
+		// warning to it and then refuses to save the client without
+		// forceSave.
+		if strings.Contains(got, "develop") {
+			t.Fatalf("sabnzbdVersion(%q) = %q, which Lidarr saves only with a warning", build, got)
+		}
+	}
+}
+
+// history_retention_option, which handleGetConfig sets so Lidarr does not
+// raise DownloadClientRemovesCompletedDownloadsCheck, is read on SABnzbd 4.3
+// and later. Claiming an older version would make Lidarr ignore it.
+func TestEmulatedVersionIsAtLeastTheOneTheConfigEmulationAssumes(t *testing.T) {
+	if emulatedVersion < "4.3" {
+		t.Fatalf("emulatedVersion = %q, older than the 4.3 config surface handleGetConfig emulates", emulatedVersion)
 	}
 }

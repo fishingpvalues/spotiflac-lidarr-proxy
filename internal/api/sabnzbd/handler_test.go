@@ -100,11 +100,11 @@ func TestVersion(t *testing.T) {
 
 	var v sabtypes.VersionResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&v))
-	// The test app's build string is "0.1.0-test", which is not strict
-	// X.Y.Z, so the handshake reports "develop" - the one non-numeric string
-	// Lidarr accepts. Echoing the raw build string back is what made every
-	// non-release tag fail Lidarr's Test button with "Unknown Version".
-	assert.Equal(t, "develop", v.Version)
+	// The handshake reports a fixed SABnzbd version, never this build's own.
+	// Echoing the build string back failed Lidarr's Test button two different
+	// ways: "Unknown Version" for any non-semver tag, and "Version 0.7.0+ is
+	// required" for this project's own pre-1.0 releases. See version.go.
+	assert.Equal(t, "4.3.3", v.Version)
 }
 
 func TestAuth(t *testing.T) {
