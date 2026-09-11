@@ -144,9 +144,22 @@ Full table in [`docs/API.md`](docs/API.md).
 | `SPF_RSS_QUERY` | none | Search answering the browse feed |
 | `SPF_TIDAL_API_URL` | none | Your own Tidal API instance |
 | `SPF_LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, `error` |
+| `SPF_METRICS_REQUIRE_AUTH` | `true` | Require the API key on `/metrics` |
 
 Services the running build cannot serve are dropped from the fallback chain.
 Without the Python backend that is `deezer`.
+
+### Exposure
+
+`/health` is open for the container healthcheck. `mode=version`, `mode=auth`
+and `t=caps` are open because Lidarr probes them before a key is configured.
+Everything else requires `SPF_API_KEY`, including `/metrics`.
+
+The key travels as a query parameter over plain HTTP. That is fine on a
+private network and unsuitable for a public address; put a reverse proxy or a
+VPN in front if you need TLS or real authentication. See
+[`SECURITY.md`](SECURITY.md) and
+[`docs/security/`](docs/security/) for the audit.
 
 ## VPN
 

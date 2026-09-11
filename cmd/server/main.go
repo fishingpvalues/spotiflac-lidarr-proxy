@@ -127,10 +127,23 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Immutable: true,
 	})
 
-	app.Get("/metrics", func(c fiber.Ctx) error {
+	// /metrics carries no secrets, but it is still an unauthenticated
+	// window into a service people do expose: job counts, queue depth and
+	// the build version. Nothing in Lidarr scrapes it, so it requires the
+	// API key by default and is opened only by setting
+	// SPF_METRICS_REQUIRE_AUTH=false for a Prometheus that cannot send one.
+	//
+	// Registered before api.RequestLogger on purpose: a scrape every 15s
+	// would otherwise dominate the log.
+	metricsHandler := func(c fiber.Ctx) error {
 		refreshQueueDepthMetrics(q)
 		return fiberadaptor.HTTPHandler(metrics.PromHTTPHandler())(c)
-	})
+	}
+	if cfg.MetricsRequireAuth {
+		app.Get("/metrics", api.APIKeyOnly(cfg.APIKey), metricsHandler)
+	} else {
+		app.Get("/metrics", metricsHandler)
+	}
 
 	// FSL (Byparr/FlareSolverr) auto-solving callback — receives Turnstile
 	// grant callbacks from Byparr's headless browser and forwards to

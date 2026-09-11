@@ -11,14 +11,18 @@ import (
 )
 
 type Config struct {
-	Port             int           `mapstructure:"port"`
-	APIKey           string        `mapstructure:"api_key"`
-	OutputDir        string        `mapstructure:"output_dir"`
-	SpotiflacCLIPath string        `mapstructure:"spotiflac_cli_path"`
-	DefaultService   string        `mapstructure:"default_service"`
-	DefaultQuality   string        `mapstructure:"default_quality"`
-	MaxConcurrent    int           `mapstructure:"max_concurrent"`
-	JobTimeout       time.Duration `mapstructure:"job_timeout"`
+	Port   int    `mapstructure:"port"`
+	APIKey string `mapstructure:"api_key"`
+	// MetricsRequireAuth gates /metrics behind the API key. Default true:
+	// nothing in Lidarr scrapes it, and an open metrics endpoint is a free
+	// window into a service people do put on the internet.
+	MetricsRequireAuth bool          `mapstructure:"metrics_require_auth"`
+	OutputDir          string        `mapstructure:"output_dir"`
+	SpotiflacCLIPath   string        `mapstructure:"spotiflac_cli_path"`
+	DefaultService     string        `mapstructure:"default_service"`
+	DefaultQuality     string        `mapstructure:"default_quality"`
+	MaxConcurrent      int           `mapstructure:"max_concurrent"`
+	JobTimeout         time.Duration `mapstructure:"job_timeout"`
 
 	// PythonBudget bounds the embedded-Python-backend phase of one download
 	// attempt. It used to share JobTimeout with the CLI phase through a single
@@ -196,6 +200,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("skip_python_when_session_present", true)
 	v.SetDefault("db_path", "/data/queue.db")
 	v.SetDefault("log_level", "info")
+	v.SetDefault("metrics_require_auth", true)
 	v.SetDefault("history_retention_count", 500)
 	v.SetDefault("verify_notify_title", "SpotiFLAC verification needed")
 	// Public hifi-api Tidal mirrors, probed in order at download time; dead

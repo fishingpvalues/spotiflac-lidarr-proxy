@@ -118,3 +118,26 @@ func redactAPIKey(query string) string {
 	}
 	return strings.Join(segments, "&")
 }
+
+// APIKeyOnly requires ?apikey= unconditionally - no mode or type can exempt
+// it. For endpoints outside the SABnzbd/Newznab dispatch, where there is no
+// mode to skiplist and nothing should ever be reachable anonymously.
+func APIKeyOnly(apiKey string) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		key := c.Query("apikey")
+		if key == "" {
+			key = c.FormValue("apikey")
+		}
+		if key == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "API Key Required",
+			})
+		}
+		if subtle.ConstantTimeCompare([]byte(key), []byte(apiKey)) != 1 {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "API Key Incorrect",
+			})
+		}
+		return c.Next()
+	}
+}
