@@ -13,6 +13,13 @@ resolves a Spotify link to the same recording on Tidal, Qobuz, Amazon Music or
 Deezer and downloads the FLAC. Spotify links are a search key; no account is
 needed on any of the five services.
 
+![Lidarr's interactive search, answered by this proxy](docs/images/lidarr-interactive-search.png)
+
+That is Lidarr's own interactive search. The release is an album on a
+streaming service; this proxy is what makes it look like something Lidarr can
+grab. (Screenshots use [Kevin MacLeod](https://incompetech.com), whose
+catalogue is Creative Commons.)
+
 Only download what you have the right to download. See [Legal](#legal).
 
 ## Install
@@ -52,6 +59,8 @@ Download client — Settings › Download Clients › Add › SABnzbd:
 | Category | `music` |
 | URL Base, Username, Password | empty |
 
+![Lidarr download client settings](docs/images/lidarr-download-client.png)
+
 Indexer — Settings › Indexers › Add › Newznab (Custom):
 
 | Field | Value |
@@ -59,7 +68,9 @@ Indexer — Settings › Indexers › Add › Newznab (Custom):
 | URL | `http://spotiflac-proxy:8484` |
 | API Path | `/api/newznab` |
 | API Key | `$SPF_API_KEY` |
-| Categories | `Music (3000)` and `Lossless (3040)` |
+| Categories | `3000` and `3040` |
+
+![Lidarr indexer settings](docs/images/lidarr-indexer.png)
 
 ### Categories
 
@@ -198,15 +209,32 @@ Full table in [`docs/API.md`](docs/API.md).
 
 ### Exposure
 
-`/health` is open for the container healthcheck. `mode=version`, `mode=auth`
-and `t=caps` are open because Lidarr probes them before a key is configured.
-Everything else requires `SPF_API_KEY`, including `/metrics`.
+Four things answer without the API key, and only those four:
 
-The key travels as a query parameter over plain HTTP. That is fine on a
-private network and unsuitable for a public address; put a reverse proxy or a
-VPN in front if you need TLS or real authentication. See
-[`SECURITY.md`](SECURITY.md) and
-[`docs/security/`](docs/security/) for the audit.
+| Open | Why |
+|------|-----|
+| `/health` | container healthcheck, runs before a key exists |
+| `mode=version`, `mode=auth` | Lidarr probes both before a key is configured |
+| `t=caps` | Lidarr reads Newznab caps before a key is configured |
+| `/api/verify-relay`, `/verify/callback` | a browser redirect carries no key |
+
+Everything else requires `SPF_API_KEY`, `/metrics` included. The list is not a
+claim: `cmd/server/auth_coverage_test.go` enumerates the server's real route
+table, fails the build on a route nobody classified, and asserts that no
+response served without a key contains the key.
+
+The two callback endpoints forward only to a listener this process itself
+dispatched a verification to. Accepting any loopback address there would make
+an unauthenticated endpoint into a port scanner for whatever shares the
+container's network namespace.
+
+The key travels as a query parameter over plain HTTP, because that is what the
+SABnzbd and Newznab protocols are. That is fine on a private network and
+unsuitable for a public address; put a reverse proxy or a VPN in front if you
+need TLS. The container runs as uid 1000, not root.
+
+`SECURITY.md` has the disclosure process. `docs/security/` has the audit,
+including what was found and fixed rather than only a conclusion.
 
 ## VPN
 
@@ -284,6 +312,31 @@ Report security issues through
 [private advisories](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/security/advisories/new).
 [`SECURITY.md`](SECURITY.md) describes the threat model: a homelab service
 with a shared-secret key over plain HTTP, not intended to face the internet.
+
+## Provenance
+
+Written with AI assistance (Claude Code), by one maintainer. Saying so is not
+a disclaimer, it is the thing you would otherwise have to guess at, and a
+project that denies it while the commit history says otherwise is the one
+worth avoiding.
+
+What that assistance sits on top of, because the tool is not the part that
+matters:
+
+- Tests run in CI on every push. The auth boundary is tested against the
+  server's real route table, not a table the test builds for itself, and a new
+  route that nobody classified as open or closed fails the build.
+- Behaviour that depends on Lidarr is pinned against a real Lidarr, not
+  against an assumption about it. Several of the comments in this tree exist
+  because the assumption was wrong.
+- Commits explain why, not what. `git log` is the honest record of how this
+  was built; read it before trusting the code.
+- A security review is in `docs/security/`, with the findings, not just a
+  verdict.
+
+Known limits worth weighing before you deploy it: one maintainer, so the bus
+factor is one. Images are on GHCR under this repository, so they go where the
+repository goes. Releases are tagged and the binaries carry `checksums.txt`.
 
 ## Legal
 
