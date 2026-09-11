@@ -20,6 +20,9 @@ const grantCallbackPath = "/session-grant"
 // Implemented by spotiflac.Client.
 type UpstreamCBLookup interface {
 	LookupUpstreamCB(state string) (string, bool)
+	// IsRecordedUpstreamCB reports whether this process dispatched a
+	// verification whose callback names the same listener as cb.
+	IsRecordedUpstreamCB(cb string) bool
 }
 
 // VerifyRelayHandler receives community verification callbacks from Byparr's
@@ -144,14 +147,39 @@ func (h *VerifyRelayHandler) Handle(c fiber.Ctx) error {
 // actually has: plain http, on loopback, at /session-grant. That leaves an
 // anonymous caller able to reach nothing but a /session-grant path on
 // localhost, which no other service implements.
+// resolveUpstream decides where a grant may be forwarded.
+//
+// The state parameter is the happy path: it names a callback this process
+// recorded when it dispatched the challenge, so the target never comes from
+// the request at all.
+//
+// The fallback used to accept any loopback URL carrying the grant path, on
+// the grounds that loopback is not the internet. It is here: this container
+// shares gluetun's network namespace with qBittorrent, slskd, aria2,
+// kapowarr, searxng and i2pd, so "loopback" spans every one of them. With an
+// unauthenticated endpoint that made the port number attacker-chosen, which
+// is a port-existence oracle against the whole namespace and one path away
+// from worse. An idle instance - the normal state - would answer those
+// probes forever.
+//
+// So the fallback now also has to name a listener this process itself
+// dispatched a verification to. A genuine callback always does; it is the
+// same URL, arriving back through the browser. Nothing is recorded until a
+// download needs verification, so an idle instance forwards nothing at all.
 func (h *VerifyRelayHandler) resolveUpstream(state, supplied string) (string, error) {
-	if h.lookup != nil && state != "" {
+	if h.lookup == nil {
+		return "", fmt.Errorf("no verification lookup configured; refusing to forward")
+	}
+	if state != "" {
 		if recorded, ok := h.lookup.LookupUpstreamCB(state); ok {
 			return recorded, nil
 		}
 	}
 	if err := validateCallbackURL(supplied); err != nil {
 		return "", err
+	}
+	if !h.lookup.IsRecordedUpstreamCB(supplied) {
+		return "", fmt.Errorf("upstream_cb %q was never dispatched by this process", supplied)
 	}
 	return supplied, nil
 }

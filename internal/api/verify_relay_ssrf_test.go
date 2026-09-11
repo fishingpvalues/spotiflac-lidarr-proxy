@@ -26,6 +26,26 @@ func (s stubLookup) LookupUpstreamCB(state string) (string, bool) {
 	return v, ok
 }
 
+// IsRecordedUpstreamCB mirrors the client's: match on host:port and path,
+// because a callback returns through a browser redirect and its query string
+// can be re-encoded on the way.
+func (s stubLookup) IsRecordedUpstreamCB(cb string) bool {
+	want, err := url.Parse(cb)
+	if err != nil {
+		return false
+	}
+	for _, recorded := range s {
+		got, err := url.Parse(recorded)
+		if err != nil {
+			continue
+		}
+		if got.Host == want.Host && got.Path == want.Path {
+			return true
+		}
+	}
+	return false
+}
+
 func relayApp(lookup api.UpstreamCBLookup) *fiber.App {
 	app := fiber.New()
 	h := api.NewVerifyRelayHandler(lookup)
@@ -166,12 +186,57 @@ func TestVerifyRelayResolvesStateNestedInUpstreamCB(t *testing.T) {
 
 // The genuine loopback callback with no recorded state (the manual browser
 // relay flow, which never goes through Byparr) must still work.
-func TestVerifyRelayAllowsUnrecordedLoopbackGrantCallback(t *testing.T) {
-	require.NoError(t, validateForTest("http://127.0.0.1:39637/session-grant?state=x"))
-	require.NoError(t, validateForTest("http://localhost:39637/session-grant"))
-	require.Error(t, validateForTest("http://127.0.0.1:8191/"))
-	require.Error(t, validateForTest("https://example.com/session-grant"))
-	require.Error(t, validateForTest("http://10.0.0.5/session-grant"))
+// The fallback path - a callback arriving without a state this process
+// recognises - is restricted to listeners this process actually dispatched a
+// verification to. "Is it loopback" was the old rule and it is not enough
+// here: this container shares gluetun's network namespace with qBittorrent,
+// slskd, aria2, kapowarr, searxng and i2pd, so an attacker-chosen port on an
+// unauthenticated endpoint is a port-existence oracle across all of them,
+// answerable forever on an idle instance.
+func TestVerifyRelayFallbackRequiresARecordedListener(t *testing.T) {
+	// Nothing dispatched: the endpoint forwards nowhere, whatever is asked.
+	idle := relayApp(stubLookup{})
+	for _, target := range []string{
+		"http://127.0.0.1:39637/session-grant?state=x",
+		"http://localhost:39637/session-grant",
+		"http://127.0.0.1:8282/session-grant", // qBittorrent, same namespace
+		"http://127.0.0.1:6379/session-grant", // redis, same namespace
+	} {
+		code, _ := get(t, idle, "/api/verify-relay?grant=g&upstream_cb="+url.QueryEscape(target))
+		assert.Equal(t, 400, code, "idle instance must not forward to %s", target)
+	}
+
+	// One verification dispatched to :39637. That listener is now reachable
+	// through the fallback; its neighbours still are not.
+	busy := relayApp(stubLookup{"recorded-state": "http://127.0.0.1:39637/session-grant?state=recorded-state"})
+
+	code, _ := get(t, busy, "/api/verify-relay?grant=g&upstream_cb="+
+		url.QueryEscape("http://127.0.0.1:39637/session-grant?state=unknown"))
+	assert.NotEqual(t, 400, code, "a listener this process dispatched to must be reachable without a known state")
+
+	for _, neighbour := range []string{
+		"http://127.0.0.1:8282/session-grant",
+		"http://127.0.0.1:8191/session-grant",
+	} {
+		code, _ := get(t, busy, "/api/verify-relay?grant=g&upstream_cb="+url.QueryEscape(neighbour))
+		assert.Equal(t, 400, code, "port %s was never dispatched to and must stay unreachable", neighbour)
+	}
+}
+
+// The shape checks still apply before the recorded-listener check, so a
+// non-loopback or wrong-path target is refused even while a verification is
+// pending.
+func TestVerifyRelayFallbackStillEnforcesShape(t *testing.T) {
+	app := relayApp(stubLookup{"s": "http://127.0.0.1:39637/session-grant"})
+	for _, bad := range []string{
+		"http://127.0.0.1:39637/",              // wrong path
+		"https://example.com/session-grant",    // not loopback
+		"http://10.0.0.5/session-grant",        // not loopback
+		"http://127.0.0.1:39637/../etc/passwd", // path traversal
+	} {
+		code, _ := get(t, app, "/api/verify-relay?grant=g&upstream_cb="+url.QueryEscape(bad))
+		assert.Equal(t, 400, code, "must refuse %s", bad)
+	}
 }
 
 // validateForTest exercises the same acceptance rule through the public

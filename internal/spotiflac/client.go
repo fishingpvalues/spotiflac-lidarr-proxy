@@ -443,6 +443,36 @@ func (c *Client) LookupUpstreamCB(state string) (string, bool) {
 	return s, ok
 }
 
+// IsRecordedUpstreamCB reports whether this process itself dispatched a
+// verification whose callback points at the same host:port and path as cb.
+//
+// This is what keeps /api/verify-relay from being an anonymous request
+// primitive against everything sharing this container's network namespace.
+// Matching on host:port and path rather than the exact string is deliberate:
+// the value comes back through a browser redirect, so query-parameter order
+// and percent-encoding can differ from what was stored while still naming the
+// same listener.
+func (c *Client) IsRecordedUpstreamCB(cb string) bool {
+	want, err := url.Parse(cb)
+	if err != nil {
+		return false
+	}
+	var found bool
+	c.verificationStates.Range(func(_, v any) bool {
+		recorded, _ := v.(string)
+		got, err := url.Parse(recorded)
+		if err != nil {
+			return true
+		}
+		if got.Host == want.Host && got.Path == want.Path {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 //nolint:gocyclo // Fallback cascade (Python→CLI→FSL→community) is inherently branched.
 func (c *Client) Download(ctx context.Context, url, outputDir, service, quality string) (<-chan ProgressEvent, <-chan error) {
 	if service == "" {
