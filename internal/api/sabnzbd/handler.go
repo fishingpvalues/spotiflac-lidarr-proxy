@@ -261,6 +261,54 @@ const maxAttempts = 3
 
 var retryBackoff = []time.Duration{5 * time.Second, 15 * time.Second}
 
+// jobContext builds the job's cancellable context and registers it in the
+// running map so mode=pause/delete can cancel it. The returned func undoes
+// both and must be deferred.
+//
+// The deadline is the whole wall-clock budget - two JobTimeouts, one slow
+// attempt plus one retry - and it starts HERE, at processing start, not at
+// TimeAdded. Measuring from TimeAdded meant a job that sat queued through an
+// outage arrived at its slot already out of time and failed instantly:
+// observed 2026-08-22, a ~30-job backlog draining into mass "budget
+// exhausted" failures minutes after the API recovered. The budget still
+// bounds what it is for, active slot occupancy. Every phase derives its own
+// deadline from this context, so a dead backend cannot consume the budget and
+// leave the fallback phases with an already-expired one - which is exactly
+// how outages used to surface: Python burned the full 30m, then "start
+// spotiflac: context deadline exceeded" on the CLI, then "job budget
+// exhausted" on every fallback.
+func (h *Handler) jobContext(nzoID string) (context.Context, func()) {
+	parent := context.Background()
+	parentCancel := context.CancelFunc(func() {})
+	if h.cfg.JobTimeout > 0 {
+		parent, parentCancel = context.WithDeadline(parent, time.Now().Add(2*h.cfg.JobTimeout))
+	}
+	ctx, cancel := context.WithCancel(parent)
+	h.running.Store(nzoID, cancel)
+	return ctx, func() {
+		h.running.Delete(nzoID)
+		cancel()
+		parentCancel()
+	}
+}
+
+// beginDownload allocates the job's output directory and marks it
+// Downloading, returning the directory. A failure to persist the status is
+// logged rather than fatal: the download can still run, and the next
+// queue.Update carries the state forward.
+func (h *Handler) beginDownload(job *queue.Job) (string, error) {
+	jobDir, err := h.storage.PrepareJobDir(job.NzoID)
+	if err != nil {
+		return "", err
+	}
+	job.Status = sabnzbd.StatusDownloading
+	job.OutputPath = jobDir
+	if err := h.queue.Update(job); err != nil {
+		h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("mark job downloading failed")
+	}
+	return jobDir, nil
+}
+
 func (h *Handler) processDownload(job *queue.Job) {
 	// Upstream community break gate: if the shared spotbye infra announced a
 	// scheduled cooldown ("try again in about N minute(s)"), park BEFORE
@@ -282,45 +330,16 @@ func (h *Handler) processDownload(job *queue.Job) {
 	h.sem <- struct{}{}
 	defer func() { <-h.sem }()
 
-	// The job context carries the whole wall-clock budget: two JobTimeouts
-	// (one slow attempt plus one retry), measured from PROCESSING START
-	// rather than TimeAdded, so time spent queued does not count against it.
-	// Measuring from TimeAdded meant a job that sat queued through an outage
-	// arrived at its slot already out of time and failed instantly - observed
-	// 2026-08-22: a ~30-job backlog drained into mass "budget exhausted"
-	// failures minutes after the API recovered. The budget still bounds what
-	// it protects: ACTIVE slot occupancy. Every phase below derives its own
-	// deadline from this context, so a dead backend can no longer consume the
-	// budget and leave the fallback phases with an already-expired context -
-	// which is exactly how outages used to surface: Python burned the full
-	// 30m, then "start spotiflac: context deadline exceeded" on the CLI, then
-	// "job budget exhausted" on every fallback.
-	parent := context.Background()
-	if h.cfg.JobTimeout > 0 {
-		var parentCancel context.CancelFunc
-		parent, parentCancel = context.WithDeadline(parent, time.Now().Add(2*h.cfg.JobTimeout))
-		defer parentCancel()
-	}
-	ctx, cancel := context.WithCancel(parent)
-	h.running.Store(job.NzoID, cancel)
-	defer func() {
-		h.running.Delete(job.NzoID)
-		cancel()
-	}()
+	ctx, releaseCtx := h.jobContext(job.NzoID)
+	defer releaseCtx()
 
 	primarySvc := job.Service
 
-	jobDir, err := h.storage.PrepareJobDir(job.NzoID)
+	jobDir, err := h.beginDownload(job)
 	if err != nil {
 		metrics.RecordJobResult(string(sabnzbd.StatusFailed), job.Service)
 		h.failJob(job, err.Error())
 		return
-	}
-
-	job.Status = sabnzbd.StatusDownloading
-	job.OutputPath = jobDir
-	if err := h.queue.Update(job); err != nil {
-		h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("mark job downloading failed")
 	}
 
 	// If the primary's breaker is already open, don't attempt it at all --
@@ -611,7 +630,7 @@ var maxCircuitPark = 45 * time.Minute
 // 46 on 08-31, 33 on 09-04) - none of them a download that was attempted
 // and lost.
 //
-// A breaker protects the upstream. Parking honours that (zero requests
+// A breaker protects the upstream. Parking honors that (zero requests
 // reach the open service) while keeping the job honest to Lidarr: it stays
 // Queued, which is what it is. Same shape as parkForUpstreamBreak, and for
 // the same reason it runs BEFORE the concurrency semaphore - waiting inside
@@ -642,7 +661,7 @@ func (h *Handler) parkForOpenCircuits(job *queue.Job) {
 				Msg("circuit park cap reached; attempting anyway")
 			// Remember that we waited. Without this the eventual failure
 			// reads "service tidal temporarily unavailable (circuit open)",
-			// identical to the old fail-fast behaviour, and the next person
+			// identical to the old fail-fast behavior, and the next person
 			// to look cannot tell a job that gave up after 45 minutes from
 			// one that was never tried.
 			job.CLIOutput = fmt.Sprintf("parked %s waiting for a closed circuit on %v before this attempt",

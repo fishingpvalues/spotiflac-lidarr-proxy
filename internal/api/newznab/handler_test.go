@@ -167,7 +167,7 @@ func TestHandleGetWithoutANameFallsBackToTheID(t *testing.T) {
 
 // Lidarr parses t=caps with its own Newznab reader before it will use an
 // indexer at all, and a missing element there is not a soft failure: the
-// indexer is rejected, or every result is filtered away as uncategorised.
+// indexer is rejected, or every result is filtered away as uncategorized.
 // Users run a wide range of Lidarr releases, so these are the elements the
 // parser has required throughout, asserted against the real response.
 func TestNewznabCapsContractForLidarr(t *testing.T) {
@@ -214,7 +214,7 @@ func TestNewznabCapsContractForLidarr(t *testing.T) {
 		"music-search must declare album as a supported param")
 }
 
-// A search result Lidarr cannot size or categorise is a result it will not
+// A search result Lidarr cannot size or categorize is a result it will not
 // grab. These are the item-level fields its RSS parser reads.
 func TestNewznabSearchItemContractForLidarr(t *testing.T) {
 	app := setupNewznabApp(t)

@@ -187,7 +187,7 @@ func TestVerifyRelayResolvesStateNestedInUpstreamCB(t *testing.T) {
 // The genuine loopback callback with no recorded state (the manual browser
 // relay flow, which never goes through Byparr) must still work.
 // The fallback path - a callback arriving without a state this process
-// recognises - is restricted to listeners this process actually dispatched a
+// recognizes - is restricted to listeners this process actually dispatched a
 // verification to. "Is it loopback" was the old rule and it is not enough
 // here: this container shares gluetun's network namespace with qBittorrent,
 // slskd, aria2, kapowarr, searxng and i2pd, so an attacker-chosen port on an
@@ -207,19 +207,19 @@ func TestVerifyRelayFallbackRequiresARecordedListener(t *testing.T) {
 	}
 
 	// One verification dispatched to :39637. That listener is now reachable
-	// through the fallback; its neighbours still are not.
+	// through the fallback; its neighbors still are not.
 	busy := relayApp(stubLookup{"recorded-state": "http://127.0.0.1:39637/session-grant?state=recorded-state"})
 
 	code, _ := get(t, busy, "/api/verify-relay?grant=g&upstream_cb="+
 		url.QueryEscape("http://127.0.0.1:39637/session-grant?state=unknown"))
 	assert.NotEqual(t, 400, code, "a listener this process dispatched to must be reachable without a known state")
 
-	for _, neighbour := range []string{
+	for _, neighbor := range []string{
 		"http://127.0.0.1:8282/session-grant",
 		"http://127.0.0.1:8191/session-grant",
 	} {
-		code, _ := get(t, busy, "/api/verify-relay?grant=g&upstream_cb="+url.QueryEscape(neighbour))
-		assert.Equal(t, 400, code, "port %s was never dispatched to and must stay unreachable", neighbour)
+		code, _ := get(t, busy, "/api/verify-relay?grant=g&upstream_cb="+url.QueryEscape(neighbor))
+		assert.Equal(t, 400, code, "port %s was never dispatched to and must stay unreachable", neighbor)
 	}
 }
 
@@ -238,27 +238,6 @@ func TestVerifyRelayFallbackStillEnforcesShape(t *testing.T) {
 		assert.Equal(t, 400, code, "must refuse %s", bad)
 	}
 }
-
-// validateForTest exercises the same acceptance rule through the public
-// handler, so the test cannot drift from the code path requests take.
-func validateForTest(upstream string) error {
-	app := relayApp(stubLookup{})
-	req, _ := http.NewRequest("GET", "/api/verify-relay?grant=g&upstream_cb="+url.QueryEscape(upstream), nil)
-	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode == 400 {
-		return errRejected
-	}
-	return nil
-}
-
-var errRejected = &rejectedError{}
-
-type rejectedError struct{}
-
-func (e *rejectedError) Error() string { return "upstream rejected by validation" }
 
 // TestVerifyRelayLogsEveryOutcome guards the observability of the one hop
 // that had none. The route is registered before api.RequestLogger is
