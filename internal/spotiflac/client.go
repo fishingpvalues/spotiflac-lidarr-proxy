@@ -47,8 +47,13 @@ type Client struct {
 	renewInterval time.Duration
 	renewMu       sync.Mutex
 	lastRenewAt   time.Time
-	relayAddress  string
-	relayPort     int
+
+	// Cached result of the Python-backend probe. The probe execs the
+	// interpreter once, so it must not run per job.
+	pythonProbeOnce sync.Once
+	pythonProbeOK   bool
+	relayAddress    string
+	relayPort       int
 
 	// pythonVenv is the path to a Python venv binary (e.g. /venv/bin/python3).
 	// When set, the proxy tries the Python wrapper first (embedded),
@@ -546,13 +551,43 @@ func (c *Client) DownloadCLI(ctx context.Context, url, outputDir, service, quali
 
 // HasPythonBackend reports whether the embedded Python wrapper can run at
 // all: a usable interpreter AND an extractable wrapper script.
+// pythonProbeTimeout bounds the one-off `import spotiflac` probe. Importing
+// the module is fast; anything slower than this is a broken environment and
+// must not stall the first download.
+const pythonProbeTimeout = 20 * time.Second
+
+// HasPythonBackend reports whether the embedded Python wrapper can actually
+// run: a usable interpreter, an extractable wrapper script, AND the
+// spotiflac module importable by that interpreter.
+//
+// The module check is the part that matters and it was missing. This image
+// ships `spotiflac-cli` only, with /venv/bin/python3 a symlink to the system
+// interpreter - so "interpreter exists" was true while `import spotiflac`
+// raised ModuleNotFoundError. Everything keyed on this answer therefore got
+// it backwards: SupportsService kept deezer (Python-only) in the fallback
+// chain, the chain handed it to the CLI, and the CLI answered `service
+// "deezer" is only available through the Python backend, which is not
+// available in this deployment` - the exact error the filter exists to
+// prevent, still arriving on 2026-09-11 after the filter shipped.
+//
+// Probed once and cached: the answer cannot change without a restart, and
+// this is called on every job.
 func (c *Client) HasPythonBackend() bool {
-	if _, err := extractPythonWrapper(); err != nil {
-		return false
-	}
-	bin := findPython(c.pythonVenv)
-	_, err := os.Stat(bin)
-	return err == nil
+	c.pythonProbeOnce.Do(func() {
+		if _, err := extractPythonWrapper(); err != nil {
+			return
+		}
+		bin := findPython(c.pythonVenv)
+		if _, err := os.Stat(bin); err != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), pythonProbeTimeout)
+		defer cancel()
+		// Import, not --version: the interpreter is present in images that
+		// carry no SpotiFLAC module at all.
+		c.pythonProbeOK = exec.CommandContext(ctx, bin, "-c", "import spotiflac").Run() == nil
+	})
+	return c.pythonProbeOK
 }
 
 // SupportsService reports whether this deployment can download `service` at

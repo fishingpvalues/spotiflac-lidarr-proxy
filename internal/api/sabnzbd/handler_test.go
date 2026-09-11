@@ -1281,7 +1281,18 @@ func TestProcessDownloadFallbackRunsCLIOptionallyWhenPythonAvailable(t *testing.
 
 	pythonMarker := filepath.Join(t.TempDir(), "python-invocations")
 	pythonBin := filepath.Join(t.TempDir(), "python3")
-	script := fmt.Sprintf("#!/bin/bash\necho x >> %s\nexit 1\n", pythonMarker)
+	// HasPythonBackend probes the interpreter with `-c "import spotiflac"`
+	// before anything uses it, so a fake that logs and fails on EVERY
+	// invocation both inflates this test's count and makes the probe report
+	// no Python backend at all - the opposite of what the test sets up. The
+	// real interpreter answers the probe and then runs the wrapper, so the
+	// fake has to do the same: succeed silently for `-c`, log and fail for
+	// an actual download.
+	script := fmt.Sprintf(`#!/bin/bash
+if [[ "$1" == "-c" ]]; then exit 0; fi
+echo x >> %s
+exit 1
+`, pythonMarker)
 	require.NoError(t, os.WriteFile(pythonBin, []byte(script), 0755))
 
 	cliLog := filepath.Join(t.TempDir(), "cli-invocations")

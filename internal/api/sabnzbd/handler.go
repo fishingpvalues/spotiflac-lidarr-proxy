@@ -341,6 +341,9 @@ func (h *Handler) processDownload(job *queue.Job) {
 			Msg("primary service unsupported by this build; going straight to fallbacks")
 	case !h.breaker.Allow(primarySvc):
 		lastErr = fmt.Sprintf("service %s temporarily unavailable (circuit open)", primarySvc)
+		if waited := job.CLIOutput; waited != "" {
+			lastErr += " - " + waited
+		}
 		metrics.RecordJobResult(string(sabnzbd.StatusFailed), primarySvc)
 	default:
 		retryDL := h.client.Download
@@ -635,7 +638,15 @@ func (h *Handler) parkForOpenCircuits(job *queue.Job) {
 		}
 		if time.Now().After(deadline) {
 			h.log.Warn().Str("nzo_id", job.NzoID).Dur("parked_for", maxCircuitPark).
+				Strs("services", candidates).
 				Msg("circuit park cap reached; attempting anyway")
+			// Remember that we waited. Without this the eventual failure
+			// reads "service tidal temporarily unavailable (circuit open)",
+			// identical to the old fail-fast behaviour, and the next person
+			// to look cannot tell a job that gave up after 45 minutes from
+			// one that was never tried.
+			job.CLIOutput = fmt.Sprintf("parked %s waiting for a closed circuit on %v before this attempt",
+				maxCircuitPark, candidates)
 			return
 		}
 		if !logged {
