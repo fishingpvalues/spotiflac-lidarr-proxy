@@ -1,0 +1,48 @@
+name: Bug report
+description: Something does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: most download failures are upstream, not this proxy.
+        Check `mode=warnings` first - it reports open circuit breakers, park
+        windows and pending verification - and read the Troubleshooting
+        section of the README.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: From the startup log, or `docker inspect` the image tag.
+      placeholder: "0.0.2"
+    validations: { required: true }
+  - type: dropdown
+    id: install
+    attributes:
+      label: How are you running it?
+      options:
+        - Container (ghcr.io image)
+        - Container (self-built)
+        - Binary from a release
+        - Built from source
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, what happened instead, and how to reproduce it.
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Relevant lines, not the whole file. `SPF_LOG_LEVEL=debug` helps.
+        Redact SPF_API_KEY and any session or verification URL.
+      render: shell
+  - type: textarea
+    id: warnings
+    attributes:
+      label: Output of mode=warnings
+      description: "curl \"http://host:8484/api?mode=warnings&output=json&apikey=...\""
+      render: json

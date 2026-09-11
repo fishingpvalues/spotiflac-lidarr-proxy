@@ -23,9 +23,11 @@ both, and a manual tag desynchronises `.release-please-manifest.json`. Get
 the version you want by writing the right commit type (`fix:` -> patch,
 `feat:` -> patch while 0.x, `feat!:`/`BREAKING CHANGE:` -> minor while 0.x).
 
-The line restarted at **0.0.1 on 2026-09-11**. The earlier 3.x tags were
-ad-hoc and were deleted from git and GHCR, because leaving a higher version
-in the registry makes Renovate propose it forever as an "upgrade" from 0.x.
+The line restarted at **0.0.1 on 2026-09-11**. Every earlier tag (1.x, 2.x,
+3.x) was ad-hoc and has been deleted from git, from GitHub releases and from
+GHCR - leaving any higher version in the registry makes Renovate propose it
+forever as an "upgrade" from 0.x. The registry now holds only the 0.0.x line
+plus `latest`, `beta` and the `sha-*` build tags.
 
 ## Docs layout
 

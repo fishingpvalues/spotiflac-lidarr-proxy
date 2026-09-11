@@ -1,0 +1,10 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/fishingpvalues/spotiflac-lidarr-proxy/security/advisories/new
+    about: Report privately, not as a public issue. See SECURITY.md.
+  - name: A download failed for one album
+    url: https://github.com/fishingpvalues/spotiflac-lidarr-proxy/blob/main/docs/OPERATIONS.md
+    about: >
+      Usually upstream. docs/OPERATIONS.md lists what each provider error
+      actually means before you open an issue.

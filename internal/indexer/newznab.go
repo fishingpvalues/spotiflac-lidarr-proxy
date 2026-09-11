@@ -254,10 +254,20 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality s
 	return []byte(result), nil
 }
 
+// CapsXML is what Lidarr reads before it will use this indexer at all. A
+// missing element is not a soft failure: no <searching> means "cannot
+// search", and a category the document does not declare has its results
+// filtered away silently.
+//
+// <limits> is part of the Newznab caps spec and Lidarr reads it to size its
+// requests. It was absent, so Lidarr fell back to its own default rather than
+// being told; declaring it costs nothing and removes the guess. 100 matches
+// what the search path actually returns.
 func CapsXML(serverURL, version string) []byte {
 	xmlStr := `<?xml version="1.0" encoding="UTF-8"?>
 <caps>
   <server title="Spotiflac-Lidarr Proxy" version="` + version + `" url="` + serverURL + `" />
+  <limits max="100" default="100" />
   <searching>
     <search available="yes" supported="yes" />
     <music-search available="yes" supported="yes" supportedParams="q,artist,album" />
