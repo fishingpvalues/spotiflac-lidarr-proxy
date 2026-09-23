@@ -21,6 +21,14 @@ services:
       - SPF_DEFAULT_SERVICE=tidal
       - SPF_DEFAULT_QUALITY=lossless
       - SPF_MAX_CONCURRENT=3
+      # Answers the browse feed - `t=music` with no q, artist or album - which
+      # is what Lidarr's indexer Test button and its RSS sync both send. Left
+      # empty, the feed is empty and Test fails with "Query successful, but no
+      # results in the configured categories were returned from your indexer"
+      # while every directed search works, so the indexer looks broken. Any
+      # query Spotify's search understands does; this one returns ~40 album
+      # releases. Blank it to keep RSS sync silent and accept a red Test.
+      - SPF_RSS_QUERY=${SPF_RSS_QUERY:-new music friday}
       # Optional settings, shown with their defaults:
       # - SPF_PORT=8484
       # - SPF_FALLBACK_SERVICES=qobuz,amazon,deezer

@@ -178,8 +178,8 @@ func TestNewznabXMLSizesHiResFromTheHiResPerTrackEstimate(t *testing.T) {
 }
 
 // Every subcategory caps declares must be one some release can actually
-// carry. A category is a filter on Lidarr's side, so an undeliverable one is
-// an indexer that returns nothing with no error to explain it.
+// carry. A tick box nothing matches is a setting that silently returns
+// nothing, with no error to explain it.
 func TestCapsDeclaresOnlyEmittableCategories(t *testing.T) {
 	caps := string(indexer.CapsXML("http://x", "v0"))
 

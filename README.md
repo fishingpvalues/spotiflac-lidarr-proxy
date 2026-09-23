@@ -72,6 +72,9 @@ Indexer — Settings › Indexers › Add › Newznab (Custom):
 
 ![Lidarr indexer settings](docs/images/lidarr-indexer.png)
 
+The Test button stays red until the browse feed has a query to run - see
+[Indexer Test](#indexer-test). Directed searches work regardless.
+
 ### Categories
 
 A category name is `music[-service][-quality]`, matched by substring. The
@@ -133,12 +136,26 @@ provider outage into a slower download instead of a failed one. Services the
 running build cannot serve are dropped from the chain; without the Python
 backend that is `deezer`.
 
-### Indexer Test is red until `SPF_RSS_QUERY` is set
+### Indexer Test
 
-The indexer resolves metadata for a named album and has no browse feed, so an
-empty `t=music` query returns nothing and Lidarr reports the Test as failed.
-Directed searches work either way. Set `SPF_RSS_QUERY="new albums"` for a
-green Test.
+Lidarr's Test button and its RSS sync both send `t=music` with no artist and no
+album - a browse feed, which this indexer has no notion of (it resolves Spotify
+metadata for a *named* album). With nothing to search for, it answers an empty
+feed, and Lidarr reports that as
+
+    Query successful, but no results in the configured categories were
+    returned from your indexer.
+
+`SPF_RSS_QUERY` gives the browse feed a search to run. [`docker-compose.yml`](docker-compose.yml)
+ships `new music friday`, so a compose deployment is green out of the box;
+every other deployment needs it set explicitly:
+
+    SPF_RSS_QUERY="new albums"
+
+Any query Spotify's search understands works. The results are ordinary album
+releases, so Lidarr ignores every one that does not match an album it is
+monitoring. Leave it empty to keep RSS sync silent and accept a red Test -
+directed searches and grabbing work either way.
 
 ### Albums, not tracks
 
@@ -202,7 +219,7 @@ Full table in [`docs/API.md`](docs/API.md).
 | `SPF_FALLBACK_SERVICES` | none | Services tried after the primary fails |
 | `SPF_MAX_CONCURRENT` | `3` | Concurrent downloads |
 | `SPF_JOB_TIMEOUT` | `30m` | Ceiling per job |
-| `SPF_RSS_QUERY` | none | Search answering the browse feed |
+| `SPF_RSS_QUERY` | none (compose: `new music friday`) | Search answering the browse feed; makes Lidarr's indexer Test pass |
 | `SPF_TIDAL_API_URL` | none | Your own Tidal API instance |
 | `SPF_LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, `error` |
 | `SPF_METRICS_REQUIRE_AUTH` | `true` | Require the API key on `/metrics` |

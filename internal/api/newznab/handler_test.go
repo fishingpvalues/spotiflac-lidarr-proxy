@@ -3,6 +3,8 @@ package newznab_test
 import (
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -167,7 +169,7 @@ func TestHandleGetWithoutANameFallsBackToTheID(t *testing.T) {
 
 // Lidarr parses t=caps with its own Newznab reader before it will use an
 // indexer at all, and a missing element there is not a soft failure: the
-// indexer is rejected, or every result is filtered away as uncategorized.
+// indexer is rejected, or a capability it needs is assumed absent.
 // Users run a wide range of Lidarr releases, so these are the elements the
 // parser has required throughout, asserted against the real response.
 func TestNewznabCapsContractForLidarr(t *testing.T) {
@@ -195,14 +197,13 @@ func TestNewznabCapsContractForLidarr(t *testing.T) {
 		require.Contains(t, xml, mode, "caps does not declare %s", mode)
 	}
 
-	// Categories. Lidarr filters results against the categories configured on
-	// the indexer; anything outside the declared set is dropped silently, so
-	// the audio categories this proxy tags releases with must be declared.
+	// Categories. Caps decides what a client offers as tick boxes, and this
+	// proxy tags every release 3000 + 3040, so those must be declared.
 	for _, cat := range []string{`id="3000"`, `id="3040"`} {
 		require.Contains(t, xml, cat, "caps does not declare category %s", cat)
 	}
-	// 3010 is Audio/MP3, and this proxy serves no MP3. Declaring it offered a
-	// tick box that filtered away every release it was supposed to select.
+	// 3010 is Audio/MP3, and this proxy serves no MP3. Advertising it invited
+	// a tick box for a format that is never published.
 	require.NotContains(t, xml, `id="3010"`)
 
 	// music-search must declare the fields Lidarr sends. It builds a query
@@ -241,4 +242,79 @@ func TestNewznabSearchItemContractForLidarr(t *testing.T) {
 	for _, elem := range []string{"<title", "<guid", "<link", "<enclosure", "newznab:attr"} {
 		require.Contains(t, xml, elem, "search item is missing %s, which Lidarr reads", elem)
 	}
+}
+
+// browseApp is setupNewznabApp with a fake spotiflac-cli instead of the real
+// binary, so a browse request can be followed all the way to the search
+// command. It returns the app plus the file the fake CLI writes its argv to.
+func browseApp(t *testing.T, rssQuery string) (*fiber.App, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "argv")
+	cli := filepath.Join(dir, "spotiflac-cli")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" > '" + argsFile + "'\n" +
+		"printf '%s\\n' '{\"entity\":\"album\",\"artist\":\"Fake Artist\",\"album\":\"Fake Album\"," +
+		"\"spotify_url\":\"https://open.spotify.com/album/fake\",\"track_count\":9}'\n"
+	require.NoError(t, os.WriteFile(cli, []byte(script), 0o755))
+
+	client := spotiflac.NewClient(cli, 5*time.Second, "tidal", "lossless", "", "", "", nil, noPython, nil)
+	handler := newznab.NewHandler(client, "test", "test-key", "lossless")
+	handler.SetRSSQuery(rssQuery)
+
+	app := fiber.New()
+	app.Use(api.APIKeyAuth("test-key", nil, []string{"caps"}))
+	handler.RegisterRoutes(app)
+
+	return app, argsFile
+}
+
+// lidarrTestRequest is the URL Lidarr's indexer Test sends: a browse query -
+// t=music with no q, artist or album - carrying the categories ticked on the
+// indexer. See NewznabRequestGenerator.GetRecentRequests and
+// HttpIndexerBase.TestConnection in Lidarr.
+const lidarrTestRequest = "/api/newznab?t=music&cat=3000,3040&extended=1&apikey=test-key&offset=0&limit=100"
+
+// TestBrowseFeedWithRSSQueryAnswersLidarrTest pins the fix for a red indexer
+// Test: Lidarr treats an empty browse feed as a failure ("no results in the
+// configured categories were returned from your indexer") even though every
+// directed search works. SPF_RSS_QUERY is what gives that feed something to
+// run, so it must reach the search backend and come back with releases.
+func TestBrowseFeedWithRSSQueryAnswersLidarrTest(t *testing.T) {
+	app, argsFile := browseApp(t, "new music friday")
+
+	req, _ := http.NewRequest("GET", lidarrTestRequest, nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "<item",
+		"a configured browse feed must return releases; Lidarr's indexer Test reads an empty feed as a failure")
+
+	argv, err := os.ReadFile(argsFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(argv), "--search new music friday",
+		"the configured RSS query is what the backend must be searched for")
+}
+
+// TestBrowseFeedWithoutRSSQueryIsEmpty is the other half of the contract: an
+// unset SPF_RSS_QUERY answers an empty feed without shelling out at all, which
+// is why Lidarr's Test is red until it is set. See README, "Indexer Test".
+func TestBrowseFeedWithoutRSSQueryIsEmpty(t *testing.T) {
+	app, argsFile := browseApp(t, "")
+
+	req, _ := http.NewRequest("GET", lidarrTestRequest, nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "<item", "an unset RSS query has nothing to answer with")
+
+	_, err = os.Stat(argsFile)
+	assert.True(t, os.IsNotExist(err), "an empty browse request must not invoke the search backend")
 }
