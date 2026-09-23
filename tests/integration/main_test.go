@@ -184,9 +184,7 @@ type lidarrValidationFailure struct {
 // higher" is isWarning:true, not a real failure, yet still 400s. The
 // isWarning field, not the status code, is what actually distinguishes
 // them. toleratedMessages additionally allows specific known-benign
-// non-warning messages (e.g. Lidarr's indexer test sends a blank
-// connectivity search and treats zero results as an error even for a
-// fully working indexer - confirmed against production this session).
+// non-warning messages.
 func assertLidarrTestOK(t *testing.T, resp *http.Response, body string, toleratedMessages ...string) {
 	t.Helper()
 	if resp.StatusCode == 200 {
@@ -254,9 +252,35 @@ func TestIntegration_LidarrConfiguresProxy(t *testing.T) {
 				{"name": "baseUrl", "value": proxyBaseFromLidarr},
 				{"name": "apiPath", "value": "/api/newznab"},
 				{"name": "apiKey", "value": apiKey},
-				{"name": "categories", "value": []int{3010, 3040}},
+				{"name": "categories", "value": []int{3000, 3040}},
 			},
 		})
-		assertLidarrTestOK(t, resp, body, "no results in the configured categories")
+		// No tolerance: this must be a green Test. It was red - and
+		// tolerated here - for as long as the stack answered the browse
+		// feed with an empty result, which is exactly what issue #7
+		// reported. The compose file sets SPF_RSS_QUERY so it is not.
+		assertLidarrTestOK(t, resp, body)
 	})
+}
+
+// TestIntegration_BrowseFeedAnswersLidarrTestQuery pins the request Lidarr's
+// indexer Test actually sends - t=music with no q, artist or album - and
+// fails with a diagnosable message when the feed comes back empty, which
+// Lidarr reports as "no results in the configured categories were returned
+// from your indexer" (issue #7). The compose stack ships SPF_RSS_QUERY
+// (new music friday) for this reason; a deployment without it answers an
+// empty feed by design, so this test also documents what "configured" means.
+func TestIntegration_BrowseFeedAnswersLidarrTestQuery(t *testing.T) {
+	skipIfNoDocker(t)
+
+	resp, err := http.Get(proxyBase + "/api/newznab?t=music&cat=3000,3040&extended=1&apikey=" + apiKey + "&offset=0&limit=100")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Contains(t, string(body), "<item>",
+		"browse feed is empty, so Lidarr's indexer Test fails with 'no results in the configured categories'. Is SPF_RSS_QUERY set on the proxy?")
 }

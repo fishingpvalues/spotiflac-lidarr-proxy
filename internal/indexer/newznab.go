@@ -93,23 +93,29 @@ type Attr struct {
 // parent first, matching what CapsXML declares.
 //
 // Consumers read an item's categories ONLY from `newznab:attr name="category"`
-// (Lidarr's NewznabRssParser.GetCategory, and the same in Prowlarr, autobrr and
-// cross-seed); the human-readable <category> element is decorative. Without
-// these attrs every release we hand out parses with an empty category set, so
-// any consumer that filters or routes on category silently drops it.
+// (Prowlarr, autobrr and cross-seed all do); the human-readable <category>
+// element is decorative. Without these attrs every release we hand out parses
+// with an empty category set, so any consumer that filters or routes on
+// category silently drops it.
 //
 // This is NOT what makes Lidarr's indexer Test button complain. That message
 // ("no results in the configured categories") is emitted whenever the result set
 // is empty, and Lidarr tests with a browse query - no artist, no album - which
-// this indexer answers with zero items by design. See README.
+// this indexer answers with zero items unless SPF_RSS_QUERY is set. See README.
 //
 // Both qualities are 3040, Audio/Lossless. Everything this proxy serves is
 // FLAC; 16-bit and 24-bit differ in the release title, which is where Lidarr's
 // QualityParser reads quality from anyway. 16-bit used to be tagged 3010,
-// which in the Newznab standard - and in Lidarr's own dropdown - is
-// Audio/MP3. That made the one category a lossless-only setup would obviously
-// tick, "Lossless (3040)", filter away every 16-bit FLAC this indexer
-// published, with no error to say why.
+// which in the Newznab standard - and in Lidarr's own category dropdown - is
+// Audio/MP3, so every release this indexer published was mislabeled for
+// anything that routes on the attribute.
+//
+// Lidarr itself does not read the attribute back: its NewznabRssParser sets no
+// category on a release and ReleaseInfo has no field for one (checked against
+// Lidarr's develop branch, 2026-09-23), and the ticked set only ever reaches an
+// indexer as the request's `cat=` parameter, which this proxy ignores. Ticking
+// 3000 or 3040 therefore cannot change what Lidarr receives - and a red Test
+// button is a browse-feed problem, never a category one.
 func newznabCategories(string) []string {
 	return []string{"3000", "3040"}
 }
@@ -261,20 +267,18 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality s
 
 // CapsXML is what Lidarr reads before it will use this indexer at all. A
 // missing element is not a soft failure: no <searching> means "cannot
-// search", and a category the document does not declare has its results
-// filtered away silently.
+// search", and no <categories> means there is nothing to tick.
 //
 // <limits> is part of the Newznab caps spec and Lidarr reads it to size its
 // requests. It was absent, so Lidarr fell back to its own default rather than
 // being told; declaring it costs nothing and removes the guess. 100 matches
 // what the search path actually returns.
-// Only the subcategories newznabCategories can actually emit are declared.
-// Ticking a category in Lidarr is a FILTER - it sends cat= and drops every
-// release whose categories do not intersect it - so a category that no release
-// ever carries is a silent zero-result setting. Earlier versions also offered
-// 3050 "FLAC 16-bit" and 3060-3063 per provider; nothing was ever tagged with
-// them, so anyone who selected one got an indexer that returned nothing and no
-// error to say why.
+//
+// Only the subcategories newznabCategories can actually emit are declared. A
+// tick box that no release ever carries matches nothing in anything that maps
+// releases by category, and it advertises a capability this indexer does not
+// have. Earlier versions also offered 3050 "FLAC 16-bit" and 3060-3063 per
+// provider; no release was ever tagged with any of them.
 func CapsXML(serverURL, version string) []byte {
 	xmlStr := `<?xml version="1.0" encoding="UTF-8"?>
 <caps>

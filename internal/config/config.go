@@ -64,7 +64,9 @@ type Config struct {
 	// Set this to make the Test button pass and give the RSS sync something
 	// real to chew on. Anything Spotify's search understands works; the
 	// results are ordinary album releases, so Lidarr ignores every one that
-	// does not match an album it is monitoring.
+	// does not match an album it is monitoring. The shipped
+	// docker-compose.yml sets it ("new music friday"), so the example stack
+	// has a green Test out of the box; the binary's own default stays empty.
 	RSSQuery string `mapstructure:"rss_query"`
 
 	// VerifyRelayURL, if set, must be this proxy's own externally reachable
