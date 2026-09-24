@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.0.4](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.3...v0.0.4) (2026-09-24)
+
+
+### Features
+
+* **health:** report a download backend that cannot deliver ([#7](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/issues/7), reported by [@Breeches6786](https://github.com/Breeches6786)) ([be5eab1](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/be5eab1147f95ed342c6d301a8dba3f3c98309de))
+
+
+### Bug Fixes
+
+* **indexer:** a failed search answers a Newznab error, not an empty feed ([#7](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/issues/7), reported by [@Breeches6786](https://github.com/Breeches6786)) ([79045a1](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/79045a185268b21763a1802b4ca9662005c4e3be))
+
 ## [0.0.3](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.2...v0.0.3) (2026-09-23)
 
 
