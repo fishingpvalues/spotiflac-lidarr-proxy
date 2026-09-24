@@ -20,6 +20,7 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/sabnzbd"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/health"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/indexer"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	apispotiflac "github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
@@ -1342,4 +1343,33 @@ echo '{"type":"complete","path":"'"$OUTDIR"'","size":1000}'
 	services := strings.Fields(string(cliInvocations))
 	assert.Equal(t, []string{"tidal", "tidal", "tidal", "qobuz"}, services,
 		"primary attempts hit the CLI after Python fails; the qobuz fallback is a single CLI-only attempt")
+}
+
+// Issue #7's reporter was asked for mode=warnings output, and on the stock
+// image it was empty while every download timed out. The backend check must
+// reach it.
+func TestWarningsSurfacesBackendWarnings(t *testing.T) {
+	cfg := &config.Config{APIKey: "test-key", OutputDir: t.TempDir(), DefaultService: "tidal", JobTimeout: time.Minute}
+	q, err := queue.New(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+	client := apispotiflac.NewClient("echo", 5*time.Second, "tidal", "lossless", "", "", "", nil, noPython, nil)
+	handler := sabnzbd.NewHandler(q, client, storage.New(cfg.OutputDir), cfg, "0.1.0-test")
+	handler.SetBackendWarnings(func() []health.BackendWarning {
+		return []health.BackendWarning{{ID: health.WarnNoExtensions, Text: "no extensions"}}
+	})
+
+	app := fiber.New()
+	app.Use(api.APIKeyAuthWithSkiplist("test-key", "version", "auth"))
+	handler.RegisterRoutes(app)
+
+	req, _ := http.NewRequest("GET", "/api/sabnzbd?mode=warnings&apikey=test-key", nil)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+	require.NoError(t, err)
+
+	var w sabtypes.WarningsResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&w))
+	require.Len(t, w.Warnings, 1)
+	assert.Equal(t, health.WarnNoExtensions, w.Warnings[0].ID)
+	assert.Equal(t, "no extensions", w.Warnings[0].Text)
 }

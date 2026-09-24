@@ -131,7 +131,8 @@ still advertises `[FLAC]`, so Lidarr scores 24-bit files as 16-bit and will
 keep trying to upgrade them. Category `music` cannot drift that way.
 
 `SPF_FALLBACK_SERVICES` is empty by default, which makes the primary service
-the only one that is ever tried. Three names cost nothing and are what turns a
+the only one that is ever tried; [`docker-compose.yml`](docker-compose.yml)
+ships the three above. Three names cost nothing and are what turns a
 provider outage into a slower download instead of a failed one. Services the
 running build cannot serve are dropped from the chain; without the Python
 backend that is `deezer`.
@@ -174,13 +175,26 @@ Four backends, tried in order, first success wins.
 
 | # | Backend | Requires | Interaction |
 |---|---------|----------|-------------|
-| 1 | SpotiFLAC Python module + bundled Chromium | writable `$HOME` | none |
+| 1 | SpotiFLAC Python module + bundled Chromium | `SPOTIFLAC_REGISTRIES`, writable `$HOME` | none |
 | 2 | `spotiflac-cli` against a custom Tidal/Qobuz API | `SPF_TIDAL_API_URL` or a live mirror | none |
 | 3 | `spotiflac-cli` with a captcha solver | `SPOTIFLAC_FSL_URL` | none |
 | 4 | `spotiflac-cli` against the community tier | nothing | none with `SPF_SESSION_RENEW_CMD` |
 
 Backend 1 authenticates itself and needs no captcha or third-party mirror.
 The others exist because upstream sources fail often and independently.
+
+Backend 1 downloads through SpotiFLAC extensions, and SpotiFLAC 3.x installs
+those from a registry that it does not ship: without `SPOTIFLAC_REGISTRIES`
+(a `registry.json` URL) it has no extensions and fails every job with
+`No extensions found for: [tidal]`. Extensions already in
+`~/.spotiflac/extensions`, for example from a mounted volume, work without it.
+Backend 4 needs one of `SPOTIFLAC_FSL_URL`, `SPF_VERIFY_RELAY_URL` or
+`SPF_SESSION_RENEW_CMD` to get past a verification challenge; with none of
+them the job waits for the challenge and times out.
+
+Measured on the stock image with only `SPF_API_KEY` set: nothing downloads,
+jobs sit at "Downloading 0%" and retry. `/health` stays `ok` but lists both
+conditions under `warnings`, and so does `mode=warnings`.
 
 Jobs are stored in SQLite and survive restarts. Completion is checked against
 the files on disk. An open circuit breaker, an announced upstream break and a
@@ -216,11 +230,12 @@ Full table in [`docs/API.md`](docs/API.md).
 | `SPF_DB_PATH` | `/data/queue.db` | Job queue database |
 | `SPF_DEFAULT_SERVICE` | `tidal` | `tidal`, `qobuz`, `amazon`, `deezer` |
 | `SPF_DEFAULT_QUALITY` | `lossless` | `lossless` or `hires` |
-| `SPF_FALLBACK_SERVICES` | none | Services tried after the primary fails |
+| `SPF_FALLBACK_SERVICES` | none (compose: `qobuz,amazon,deezer`) | Services tried after the primary fails |
 | `SPF_MAX_CONCURRENT` | `3` | Concurrent downloads |
 | `SPF_JOB_TIMEOUT` | `30m` | Ceiling per job |
 | `SPF_RSS_QUERY` | none (compose: `new music friday`) | Search answering the browse feed; makes Lidarr's indexer Test pass |
 | `SPF_TIDAL_API_URL` | none | Your own Tidal API instance |
+| `SPOTIFLAC_REGISTRIES` | none | SpotiFLAC extension registry URL; backend 1 has no extensions without it |
 | `SPF_LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, `error` |
 | `SPF_METRICS_REQUIRE_AUTH` | `true` | Require the API key on `/metrics` |
 
@@ -299,7 +314,13 @@ the values come from `spotiflac-cli`, which does not report them. Same check
 as above.
 
 Everything fails at once — check egress, then `mode=warnings`, which lists
-open breakers, park windows and pending verification.
+open breakers, park windows, pending verification and a download backend
+that cannot work as configured (see [How it works](#how-it-works)).
+
+Lidarr's indexer Test says "Unable to connect to indexer. search failed:
+..." — the search backend itself failed; the rest of the message is its error. An
+empty browse feed, "no results in the configured categories", means
+`SPF_RSS_QUERY` is unset (see [Indexer Test](#indexer-test)).
 
 Per-provider errors and the captcha and session paths are in
 [`docs/OPERATIONS.md`](docs/OPERATIONS.md).

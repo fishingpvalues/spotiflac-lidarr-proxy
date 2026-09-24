@@ -14,6 +14,7 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/verify"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/breaker"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/health"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/metrics"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
@@ -34,6 +35,9 @@ type Handler struct {
 	breaker     *breaker.Breaker
 	breakGate   *upstreamBreakGate
 	verifyStore *verify.Store
+	// backendWarnings reports configuration under which no download can
+	// complete; see SetBackendWarnings.
+	backendWarnings func() []health.BackendWarning
 
 	// requeues counts, per nzo_id, how many times a job has been put back
 	// into the queue because upstream asked us to back off (scheduled break
@@ -77,6 +81,12 @@ func NewHandler(q *queue.SQLiteQueue, client *spotiflac.Client, s *storage.Stora
 // download still fails the same way once its CLI-side timeout elapses).
 func (h *Handler) SetVerifyStore(store *verify.Store) {
 	h.verifyStore = store
+}
+
+// SetBackendWarnings wires the check mode=warnings runs for a download backend
+// that cannot deliver (health.BackendWarnings). Optional: nil reports nothing.
+func (h *Handler) SetBackendWarnings(f func() []health.BackendWarning) {
+	h.backendWarnings = f
 }
 
 func (h *Handler) SetLogger(log zerolog.Logger) {

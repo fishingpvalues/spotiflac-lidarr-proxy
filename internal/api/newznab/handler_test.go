@@ -27,6 +27,12 @@ import (
 // and timing-dependent under a full-suite run.
 const noPython = "/nonexistent/python3"
 
+// noTimeout lifts app.Test's 1s default. Handlers here shell out to a fake
+// CLI, and under a full-suite run spawning it alone can take longer than
+// that, which failed TestBrowseFeedWithRSSQueryAnswersLidarrTest with
+// "i/o timeout" while it passed in isolation.
+var noTimeout = fiber.TestConfig{Timeout: 0}
+
 func setupNewznabApp(t *testing.T) *fiber.App {
 	t.Helper()
 
@@ -44,7 +50,7 @@ func TestCaps(t *testing.T) {
 	app := setupNewznabApp(t)
 
 	req, _ := http.NewRequest("GET", "/api/newznab?t=caps&apikey=test-key", nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 	assert.Contains(t, resp.Header.Get("Content-Type"), "xml")
@@ -54,7 +60,7 @@ func TestCapsNoAuth(t *testing.T) {
 	app := setupNewznabApp(t)
 
 	req, _ := http.NewRequest("GET", "/api/newznab?t=caps", nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 	assert.Contains(t, resp.Header.Get("Content-Type"), "xml")
@@ -64,7 +70,7 @@ func TestSearch(t *testing.T) {
 	app := setupNewznabApp(t)
 
 	req, _ := http.NewRequest("GET", "/api/newznab?t=search&q=Test+Artist+Test+Album&apikey=test-key", nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 }
@@ -73,7 +79,7 @@ func TestMusic(t *testing.T) {
 	app := setupNewznabApp(t)
 
 	req, _ := http.NewRequest("GET", "/api/newznab?t=music&artist=Test+Artist&album=Test+Album&apikey=test-key", nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 }
@@ -86,7 +92,7 @@ func TestGetReturnsWellFormedNZB(t *testing.T) {
 
 	id := "https://open.spotify.com/album/x"
 	req, _ := http.NewRequest("GET", "/api/newznab?t=get&id="+id+"&apikey=test-key", nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 	assert.Contains(t, resp.Header.Get("Content-Type"), "nzb")
@@ -99,7 +105,7 @@ func TestMusicSearch(t *testing.T) {
 	app := setupNewznabApp(t)
 
 	req, _ := http.NewRequest("GET", "/api/newznab?t=musicsearch&q=debussy&apikey=test-key", nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 }
@@ -110,7 +116,7 @@ func TestMusicSearchFallbackToQ(t *testing.T) {
 	app := setupNewznabApp(t)
 
 	req, _ := http.NewRequest("GET", "/api/newznab?t=musicsearch&q=debussy&apikey=test-key", nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 }
@@ -119,7 +125,7 @@ func TestGetMissingIDReturnsBadRequest(t *testing.T) {
 	app := setupNewznabApp(t)
 
 	req, _ := http.NewRequest("GET", "/api/newznab?t=get&apikey=test-key", nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	assert.Equal(t, 400, resp.StatusCode)
 }
@@ -134,7 +140,7 @@ func TestHandleGetFoldsReleaseNameSizeAndTracksIntoTheNZB(t *testing.T) {
 	req, _ := http.NewRequest("GET",
 		"/api/newznab?t=get&id=https%3A%2F%2Fopen.spotify.com%2Falbum%2Fx&name=Daft+Punk+-+Discovery+%5BFLAC%5D&size=513802240&tracks=14&apikey=test-key",
 		nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	require.Equal(t, 200, resp.StatusCode)
 
@@ -154,7 +160,7 @@ func TestHandleGetWithoutANameFallsBackToTheID(t *testing.T) {
 
 	req, _ := http.NewRequest("GET",
 		"/api/newznab?t=get&id=https%3A%2F%2Fopen.spotify.com%2Falbum%2Fy&apikey=test-key", nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	require.Equal(t, 200, resp.StatusCode)
 
@@ -176,7 +182,7 @@ func TestNewznabCapsContractForLidarr(t *testing.T) {
 	app := setupNewznabApp(t)
 
 	req, _ := http.NewRequest("GET", "/api/newznab?t=caps&apikey=test-key", nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, 200, resp.StatusCode)
@@ -221,7 +227,7 @@ func TestNewznabSearchItemContractForLidarr(t *testing.T) {
 	app := setupNewznabApp(t)
 
 	req, _ := http.NewRequest("GET", "/api/newznab?t=music&artist=Daft+Punk&album=Discovery&apikey=test-key", nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, 200, resp.StatusCode)
@@ -249,14 +255,23 @@ func TestNewznabSearchItemContractForLidarr(t *testing.T) {
 // command. It returns the app plus the file the fake CLI writes its argv to.
 func browseApp(t *testing.T, rssQuery string) (*fiber.App, string) {
 	t.Helper()
+	return fakeCLIApp(t, rssQuery,
+		`printf '%s\n' '{"entity":"album","artist":"Fake Artist","album":"Fake Album",`+
+			`"spotify_url":"https://open.spotify.com/album/fake","track_count":9}'`)
+}
+
+// fakeCLIApp wires the newznab handler to a shell script standing in for
+// spotiflac-cli. The script records its argv to the returned file, then runs
+// body - which prints search results as JSON lines, or fails.
+func fakeCLIApp(t *testing.T, rssQuery, body string) (*fiber.App, string) {
+	t.Helper()
 
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "argv")
 	cli := filepath.Join(dir, "spotiflac-cli")
 	script := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$*\" > '" + argsFile + "'\n" +
-		"printf '%s\\n' '{\"entity\":\"album\",\"artist\":\"Fake Artist\",\"album\":\"Fake Album\"," +
-		"\"spotify_url\":\"https://open.spotify.com/album/fake\",\"track_count\":9}'\n"
+		body + "\n"
 	require.NoError(t, os.WriteFile(cli, []byte(script), 0o755))
 
 	client := spotiflac.NewClient(cli, 5*time.Second, "tidal", "lossless", "", "", "", nil, noPython, nil)
@@ -285,7 +300,7 @@ func TestBrowseFeedWithRSSQueryAnswersLidarrTest(t *testing.T) {
 	app, argsFile := browseApp(t, "new music friday")
 
 	req, _ := http.NewRequest("GET", lidarrTestRequest, nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	require.Equal(t, 200, resp.StatusCode)
 
@@ -307,7 +322,7 @@ func TestBrowseFeedWithoutRSSQueryIsEmpty(t *testing.T) {
 	app, argsFile := browseApp(t, "")
 
 	req, _ := http.NewRequest("GET", lidarrTestRequest, nil)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, noTimeout)
 	require.NoError(t, err)
 	require.Equal(t, 200, resp.StatusCode)
 
@@ -317,4 +332,58 @@ func TestBrowseFeedWithoutRSSQueryIsEmpty(t *testing.T) {
 
 	_, err = os.Stat(argsFile)
 	assert.True(t, os.IsNotExist(err), "an empty browse request must not invoke the search backend")
+}
+
+// A search backend that fails must not look like an empty feed. Lidarr
+// reports an empty feed from its Test as "no results in the configured
+// categories" - the same words as an unset SPF_RSS_QUERY - so issue #7 could
+// not tell a dead backend from a missing setting. A Newznab <error> document
+// is what Lidarr's parser surfaces with its description.
+func TestSearchBackendFailureAnswersNewznabError(t *testing.T) {
+	app, _ := fakeCLIApp(t, "new music friday", `echo "spotify metadata unreachable" >&2; exit 1`)
+
+	for _, target := range []string{
+		lidarrTestRequest,
+		"/api/newznab?t=music&artist=Daft+Punk&album=Discovery&apikey=test-key",
+		"/api/newznab?t=search&q=daft+punk&apikey=test-key",
+	} {
+		req, _ := http.NewRequest("GET", target, nil)
+		resp, err := app.Test(req, noTimeout)
+		require.NoError(t, err)
+		require.Equal(t, 200, resp.StatusCode, "Newznab errors travel in the body")
+
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), `<error code="900"`, target)
+		assert.Contains(t, string(body), "search failed", target)
+		assert.NotContains(t, string(body), "<rss", "%s: a failure must not read as an empty feed", target)
+	}
+}
+
+// Lidarr pages with offset/limit and asks for the next page whenever one comes
+// back full. t=music ignored both, so every page repeated the first.
+func TestMusicHonoursOffsetAndLimit(t *testing.T) {
+	var lines []string
+	for _, n := range []string{"1", "2", "3"} {
+		lines = append(lines, `printf '%s\n' '{"entity":"album","artist":"Fake Artist","album":"Album `+n+`",`+
+			`"spotify_url":"https://open.spotify.com/album/fake`+n+`","track_count":9}'`)
+	}
+	app, _ := fakeCLIApp(t, "", strings.Join(lines, "\n"))
+
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{
+		{"offset=0&limit=2", 2},
+		{"offset=2&limit=2", 1},
+		{"offset=3&limit=2", 0},
+		{"offset=0&limit=100", 3},
+	} {
+		req, _ := http.NewRequest("GET", "/api/newznab?t=music&q=fake&apikey=test-key&"+tc.query, nil)
+		resp, err := app.Test(req, noTimeout)
+		require.NoError(t, err)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, strings.Count(string(body), "<item>"), tc.query)
+	}
 }

@@ -29,9 +29,17 @@ services:
       # query Spotify's search understands does; this one returns ~40 album
       # releases. Blank it to keep RSS sync silent and accept a red Test.
       - SPF_RSS_QUERY=${SPF_RSS_QUERY:-new music friday}
+      # Tried in order after SPF_DEFAULT_SERVICE fails. The program's own
+      # default is empty - primary only - so a provider outage fails the job
+      # instead of moving on; these are the README's recommended three.
+      - SPF_FALLBACK_SERVICES=${SPF_FALLBACK_SERVICES:-qobuz,amazon,deezer}
+      # SpotiFLAC extension registry (a registry.json URL). SpotiFLAC 3.x
+      # ships none, and without one the Python backend has no extensions and
+      # fails every download with "No extensions found for: [tidal]". /health
+      # and mode=warnings report it while unset. See README, "How it works".
+      - SPOTIFLAC_REGISTRIES=${SPOTIFLAC_REGISTRIES:-}
       # Optional settings, shown with their defaults:
       # - SPF_PORT=8484
-      # - SPF_FALLBACK_SERVICES=qobuz,amazon,deezer
       # - SPF_JOB_TIMEOUT=30m
       # - SPF_HISTORY_RETENTION_COUNT=500
       # - SPF_SPOTIFLAC_CLI_PATH=/usr/local/bin/spotiflac-cli

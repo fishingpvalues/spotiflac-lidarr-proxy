@@ -297,3 +297,31 @@ func CapsXML(serverURL, version string) []byte {
 </caps>`
 	return []byte(xmlStr)
 }
+
+// ErrorCodeUnknown is the Newznab spec's "Unknown error" code (900). Codes
+// 100-199 would tell Lidarr the API key is wrong, which a failed search is
+// not.
+const ErrorCodeUnknown = 900
+
+// ErrorXML is the Newznab error document: <error code="..." description="..."/>.
+//
+// A failed search used to answer an empty feed, and Lidarr reports an empty
+// feed from its indexer Test as "no results in the configured categories" -
+// the same words as an unset SPF_RSS_QUERY, so a dead search backend could
+// not be told apart from a missing setting (issue #7). Lidarr's Newznab
+// parser recognizes this document and shows its description instead
+// (measured, Lidarr's indexer Test: "Unable to connect to indexer. search
+// failed: ...").
+func ErrorXML(code int, description string) []byte {
+	type errorDoc struct {
+		XMLName     xml.Name `xml:"error"`
+		Code        int      `xml:"code,attr"`
+		Description string   `xml:"description,attr"`
+	}
+	out, err := xml.Marshal(errorDoc{Code: code, Description: description})
+	if err != nil {
+		// Unreachable for a struct of an int and a string.
+		out = []byte(`<error code="900" description="internal error"/>`)
+	}
+	return append([]byte(xml.Header), out...)
+}
