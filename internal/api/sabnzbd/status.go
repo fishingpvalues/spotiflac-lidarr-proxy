@@ -165,6 +165,17 @@ func (h *Handler) handleWarnings(c fiber.Ctx) error {
 		}
 	}
 
+	if h.backendWarnings != nil {
+		for _, w := range h.backendWarnings() {
+			warnings = append(warnings, sabnzbd.Warning{
+				Time: time.Now().Unix(),
+				Type: "WARNING",
+				Text: w.Text,
+				ID:   w.ID,
+			})
+		}
+	}
+
 	stuck, _, err := h.queue.List(queue.ListParams{Status: string(sabnzbd.StatusDownloading), Limit: 1000})
 	if err == nil {
 		for _, job := range stuck {

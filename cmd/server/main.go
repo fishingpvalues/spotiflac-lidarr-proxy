@@ -200,6 +200,14 @@ func buildApp(
 	verifyStore := verify.NewStore()
 	sabHandler.SetVerifyStore(verifyStore)
 
+	backendWarnings := func() []health.BackendWarning {
+		return health.BackendWarnings(backendConfig(cfg))
+	}
+	sabHandler.SetBackendWarnings(backendWarnings)
+	for _, w := range backendWarnings() {
+		log.Warn().Str("id", w.ID).Msg(w.Text)
+	}
+
 	// /health stays beyond the binary checks (DB, CLI, disk) and reports the
 	// two states that decide whether a queued backlog can drain at all: the
 	// upstream community break pause and the CLI community session's expiry.
@@ -219,6 +227,13 @@ func buildApp(
 		for k, v := range sabHandler.HealthExtras() {
 			resp[k] = v
 		}
+		// Warnings, not failures: the process is fine and a restart fixes
+		// nothing, so the status (and Docker's healthcheck) stays "ok".
+		warnings := []string{}
+		for _, w := range backendWarnings() {
+			warnings = append(warnings, w.Text)
+		}
+		resp["warnings"] = warnings
 		if !result.Healthy {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(resp)
 		}
@@ -288,5 +303,24 @@ func refreshQueueDepthMetrics(q *queue.SQLiteQueue) {
 			continue
 		}
 		metrics.SetQueueDepth(string(status), total)
+	}
+}
+
+// backendConfig collects what health.BackendWarnings needs. The Python
+// interpreter is the configured venv, or the image's /venv - not findPython's
+// wider search, which would match a system python3 that has no SpotiFLAC.
+func backendConfig(cfg *config.Config) health.Backend {
+	pythonBin := cfg.SpotiFLACPythonVenv
+	if pythonBin == "" {
+		pythonBin = "/venv/bin/python3"
+	}
+	home, _ := os.UserHomeDir()
+	return health.Backend{
+		PythonBin:       pythonBin,
+		HomeDir:         home,
+		Registries:      os.Getenv("SPOTIFLAC_REGISTRIES"),
+		FSLURL:          os.Getenv("SPOTIFLAC_FSL_URL"),
+		VerifyRelayURL:  cfg.VerifyRelayURL,
+		SessionRenewCmd: os.Getenv("SPF_SESSION_RENEW_CMD"),
 	}
 }

@@ -71,6 +71,13 @@ func TestIntegration_ProxyHealth(t *testing.T) {
 	default:
 		t.Errorf("session_expires_at must be string or null, got %T", v)
 	}
+
+	// warnings is always a list. CI's stack configures no registry and no
+	// verification solver, which is exactly the setup that cannot download,
+	// so it must say so rather than report a bare "ok".
+	warnings, ok := body["warnings"].([]any)
+	require.True(t, ok, "warnings must be a list, got %T", body["warnings"])
+	assert.NotEmpty(t, warnings, "an unconfigured backend must be reported in /health warnings")
 }
 
 func TestIntegration_SABnzbdVersion(t *testing.T) {

@@ -141,7 +141,7 @@ Pick one of three ways:
 
 | Endpoint    | Purpose                                                        |
 |-------------|------------------------------------------------------------------|
-| `/health`   | Liveness/readiness probe: checks DB connectivity, CLI binary, disk space. Returns 503 with the failed check names if unhealthy. |
+| `/health`   | Liveness/readiness probe: checks DB connectivity, CLI binary, disk space. Returns 503 with the failed check names if unhealthy. `warnings` lists download-backend configuration that cannot work (no extension registry, no verification solver) without failing the probe. |
 | `/metrics`  | Prometheus text format. `spf_jobs_total{status,service}`, `spf_download_duration_seconds{service,quality}`, `spf_queue_depth{status}`. |
 
 ## Full configuration reference
@@ -157,6 +157,7 @@ All settings are environment variables prefixed `SPF_`.
 | `SPF_DEFAULT_SERVICE`         | `tidal`                          | Default download service |
 | `SPF_DEFAULT_QUALITY`         | `lossless`                       | Default quality: `lossless`, `hires` |
 | `SPF_FALLBACK_SERVICES`       | (none)                           | Comma-separated services to try once, in order, if the primary fails or its circuit breaker is open |
+| `SPOTIFLAC_REGISTRIES`        | (none)                           | SpotiFLAC extension registry URL. Without it (or extensions in `~/.spotiflac/extensions`) the Python backend has no extensions |
 | `SPF_MAX_CONCURRENT`          | `3`                              | Max concurrent downloads |
 | `SPF_JOB_TIMEOUT`             | `30m`                            | Max time per download attempt |
 | `SPF_DB_PATH`                 | `/data/queue.db`                | SQLite database path |
