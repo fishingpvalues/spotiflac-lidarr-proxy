@@ -90,33 +90,10 @@ func (h *Handler) handleSearch(c fiber.Ctx) error {
 	results, err := indexer.Search(c.Context(), h.client, query, artist, album)
 	if err != nil {
 		h.log.Error().Err(err).Msg("newznab search failed")
-		return h.handleEmptyResults(c)
+		return h.handleError(c, "search failed: "+err.Error())
 	}
 
-	// Parse offset/limit for pagination
-	offset, _ := strconv.Atoi(c.Query("offset", "0"))
-	limit, _ := strconv.Atoi(c.Query("limit", "100"))
-
-	if offset > 0 || limit < len(results) {
-		if offset >= len(results) {
-			results = nil
-		} else {
-			end := offset + limit
-			if end > len(results) {
-				end = len(results)
-			}
-			results = results[offset:end]
-		}
-	}
-
-	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey, h.defaultQuality)
-	if err != nil {
-		h.log.Error().Err(err).Msg("newznab xml generation failed")
-		return h.handleEmptyResults(c)
-	}
-
-	c.Set("Content-Type", "application/rss+xml")
-	return c.Send(xml)
+	return h.sendResults(c, paginate(c, results))
 }
 
 func (h *Handler) handleMusic(c fiber.Ctx) error {
@@ -140,33 +117,21 @@ func (h *Handler) handleMusic(c fiber.Ctx) error {
 	results, err := indexer.Search(c.Context(), h.client, query, artist, album)
 	if err != nil {
 		h.log.Error().Err(err).Msg("newznab music search failed")
-		return h.handleEmptyResults(c)
+		return h.handleError(c, "search failed: "+err.Error())
 	}
 
-	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey, h.defaultQuality)
-	if err != nil {
-		h.log.Error().Err(err).Msg("newznab xml generation failed")
-		return h.handleEmptyResults(c)
-	}
-
-	c.Set("Content-Type", "application/rss+xml")
-	return c.Send(xml)
+	return h.sendResults(c, paginate(c, results))
 }
 
 func (h *Handler) handleDetails(c fiber.Ctx) error {
 	id := c.Query("id")
 	results, err := indexer.Search(c.Context(), h.client, id, "", "")
 	if err != nil {
-		return h.handleEmptyResults(c)
+		h.log.Error().Err(err).Str("id", id).Msg("newznab details lookup failed")
+		return h.handleError(c, "details lookup failed: "+err.Error())
 	}
 
-	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey, h.defaultQuality)
-	if err != nil {
-		return h.handleEmptyResults(c)
-	}
-
-	c.Set("Content-Type", "application/rss+xml")
-	return c.Send(xml)
+	return h.sendResults(c, results)
 }
 
 // handleGet serves t=get, the actual release download Lidarr fetches
@@ -216,4 +181,49 @@ func (h *Handler) handleEmptyResults(c fiber.Ctx) error {
 	}
 	c.Set("Content-Type", "application/rss+xml")
 	return c.Send(xml)
+}
+
+// sendResults answers results as a Newznab RSS feed.
+func (h *Handler) sendResults(c fiber.Ctx, results []spotiflac.MetadataResult) error {
+	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey, h.defaultQuality)
+	if err != nil {
+		h.log.Error().Err(err).Msg("newznab xml generation failed")
+		return h.handleError(c, "xml generation failed: "+err.Error())
+	}
+
+	c.Set("Content-Type", "application/rss+xml")
+	return c.Send(xml)
+}
+
+// handleError answers a Newznab error document rather than an empty feed, so
+// Lidarr shows why a search failed instead of "no results in the configured
+// categories" (see indexer.ErrorXML). HTTP 200 per the Newznab spec: the error
+// is in the body, which is where Lidarr's parser looks for it.
+func (h *Handler) handleError(c fiber.Ctx, description string) error {
+	// The backend's stderr can run to pages; Lidarr shows this in one line.
+	if len(description) > maxErrorDescription {
+		description = description[:maxErrorDescription] + "..."
+	}
+	c.Set("Content-Type", "application/xml")
+	return c.Send(indexer.ErrorXML(indexer.ErrorCodeUnknown, description))
+}
+
+const maxErrorDescription = 300
+
+// paginate applies Newznab's offset and limit. Lidarr asks for the next page
+// when a page comes back full, and without this every page repeated the first.
+func paginate(c fiber.Ctx, results []spotiflac.MetadataResult) []spotiflac.MetadataResult {
+	offset, _ := strconv.Atoi(c.Query("offset", "0"))
+	limit, _ := strconv.Atoi(c.Query("limit", "100"))
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(results) {
+		return nil
+	}
+	end := len(results)
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return results[offset:end]
 }
