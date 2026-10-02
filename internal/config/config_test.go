@@ -66,6 +66,11 @@ func TestFallbackServicesDefaultEmpty(t *testing.T) {
 	t.Setenv("SPF_API_KEY", "test")
 	t.Setenv("SPF_OUTPUT_DIR", t.TempDir())
 	t.Setenv("SPF_DB_PATH", filepath.Join(t.TempDir(), "q.db"))
+	// viper reads the process environment (AutomaticEnv), so this test only
+	// proves the PROGRAM's default where the variable is genuinely unset.
+	// Production exports SPF_FALLBACK_SERVICES, which made this a red test
+	// on the very host it matters for.
+	t.Setenv("SPF_FALLBACK_SERVICES", "")
 
 	cfg, err := config.Load()
 	require.NoError(t, err)
