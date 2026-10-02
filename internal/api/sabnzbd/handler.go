@@ -218,8 +218,31 @@ func (h *Handler) ProcessDownloadSync(job *queue.Job) {
 	h.processDownload(job)
 }
 
-// dispatchJob starts a job's download in the background, at most once per
-// nzo_id.
+// jobRun is the per-nzo_id worker bookkeeping: the cancel func of whatever it
+// is running now, and whether something asked it to run again.
+type jobRun struct {
+	mu     sync.Mutex
+	rerun  bool
+	cancel context.CancelFunc
+}
+
+// askAgain marks the worker for a re-run once its current pass finishes.
+func (r *jobRun) askAgain() {
+	r.mu.Lock()
+	r.rerun = true
+	r.mu.Unlock()
+}
+
+// takeRerun consumes the pending re-run flag.
+func (r *jobRun) takeRerun() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	again := r.rerun
+	r.rerun = false
+	return again
+}
+
+// dispatchJob runs a job in the background, at most one worker at a time.
 //
 // Every route that can move a job towards "running" used to spawn the worker
 // itself (`go h.ProcessDownloadSync(job)`) - addurl, queue resume,
@@ -230,16 +253,50 @@ func (h *Handler) ProcessDownloadSync(job *queue.Job) {
 // history the second one's next progress write sets status=Downloading on a
 // historical row, which RecoverStuckJobs never repairs (it only looks at
 // is_history = 0), so Lidarr shows it as downloading forever.
+//
+// The worker RELOADS the job by nzo_id rather than using the caller's struct,
+// and it loops there instead of spawning a second goroutine. Both matter:
+//
+//   - The requeue paths call dispatchJob from inside the worker that is about
+//     to return (a cooldown or a never-attempted park sends the job back).
+//     With a plain "already in flight, refuse" guard that re-dispatch was
+//     dropped on the floor and the job sat Queued until the next restart;
+//     with a plain "spawn anyway" the caller and the new worker would both
+//     hold the same *queue.Job (a data race, found by -race in CI) and the
+//     finished worker's cleanup would unregister its successor.
+//   - Reloading means a worker owns its own copy, and a job deleted while it
+//     waited is simply not found.
 func (h *Handler) dispatchJob(job *queue.Job) {
-	if _, loaded := h.inFlight.LoadOrStore(job.NzoID, struct{}{}); loaded {
-		h.log.Warn().Str("nzo_id", job.NzoID).
-			Msg("job already has a worker in flight; not starting a second one")
+	h.dispatchNzoID(job.NzoID)
+}
+
+func (h *Handler) dispatchNzoID(nzoID string) {
+	state, loaded := h.inFlight.LoadOrStore(nzoID, &jobRun{})
+	run := state.(*jobRun)
+	if loaded {
+		h.log.Debug().Str("nzo_id", nzoID).
+			Msg("job already has a worker; asking it to run again when it finishes")
+		run.askAgain()
 		return
 	}
-	go func() {
-		defer h.inFlight.Delete(job.NzoID)
+	go h.runJob(nzoID, run)
+}
+
+// runJob is one nzo_id's worker: it processes the job, and processes it again
+// for as long as something kept asking.
+func (h *Handler) runJob(nzoID string, state *jobRun) {
+	defer h.inFlight.Delete(nzoID)
+	for {
+		job, err := h.queue.Get(nzoID)
+		if err != nil {
+			// Deleted, or already in history: there is nothing to run.
+			return
+		}
 		h.ProcessDownloadSync(job)
-	}()
+		if !state.takeRerun() {
+			return
+		}
+	}
 }
 
 // ResumeQueuedJobs re-dispatches every job still sitting in Queued or
@@ -532,6 +589,20 @@ func (h *Handler) processDownload(job *queue.Job) {
 		fallbackDownload = h.client.DownloadCLI
 	}
 
+	if done := h.runFallbackChain(ctx, job, jobDir, fallbackDownload, out, &lastErr); done {
+		return
+	}
+
+	h.concludeFailedAttempts(ctx, job, lastErr, out)
+}
+
+// runFallbackChain walks the configured services after the primary. It
+// reports true when one of them succeeded (the job is already in history).
+//
+// Split out of processDownload, which had grown past the linter's complexity
+// budget: the chain adds a branch per service per outcome on top of an
+// already long primary path.
+func (h *Handler) runFallbackChain(ctx context.Context, job *queue.Job, jobDir string, fallbackDownload downloadFn, out *jobOutcome, lastErr *string) bool {
 	for _, fallbackSvc := range h.fallbackChain(job.Service) {
 		// Upstream announced a break while the primary was running. Every
 		// further request is the hammering the announcement asks us to stop,
@@ -556,11 +627,11 @@ func (h *Handler) processDownload(job *queue.Job) {
 		}
 		fbErr, attempted := h.tryFallbackService(ctx, job, jobDir, fallbackSvc, fallbackDownload)
 		if fbErr == "" {
-			return
+			return true
 		}
 		// The most recent attempt's reason is the one that explains the
 		// job's fate; the primary's is only a fallback for when nothing ran.
-		lastErr = fbErr
+		*lastErr = fbErr
 		stop := h.observe(fbErr, attempted, out, fallbackSvc)
 		if ctx.Err() == nil {
 			// Same rule as the primary path above: a dead context means the
@@ -574,8 +645,7 @@ func (h *Handler) processDownload(job *queue.Job) {
 			break
 		}
 	}
-
-	h.concludeFailedAttempts(ctx, job, lastErr, out)
+	return false
 }
 
 // anyCandidateAllowed reports whether at least one service this job could

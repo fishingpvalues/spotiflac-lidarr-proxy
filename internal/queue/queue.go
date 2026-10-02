@@ -373,7 +373,7 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 //
 // Requeueing rather than failing is the point. A restart interrupts a
 // download; it says nothing about whether the release is downloadable. The
-// old behaviour - fail and move to history - handed Lidarr a dead grab that
+// old behavior - fail and move to history - handed Lidarr a dead grab that
 // had to be blocklisted and re-searched, and the only thing that ever
 // brought the album back was an external re-grab cycle. Measured over the
 // week to 2026-10-02: the DAGU stuck-monitor restarted this container eight

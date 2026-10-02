@@ -192,3 +192,51 @@ func TestQueueSpeedIsMeasuredNotFabricated(t *testing.T) {
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// A job that the handler sends BACK to the queue - an upstream cooldown, a
+// park it never got to attempt - has to actually run again.
+//
+// The worker that decides this is still running when it makes the decision,
+// so a dispatch guard that simply refuses a second dispatch for an
+// already-running nzo_id dropped the re-dispatch on the floor and left the
+// job Queued until the next restart. The guard has to hand the re-run to the
+// worker that is about to finish.
+func TestRequeuedJobIsActuallyRunAgain(t *testing.T) {
+	dir := t.TempDir()
+	runs := filepath.Join(dir, "runs")
+	cli := filepath.Join(dir, "spotiflac-cli")
+	script := "#!/bin/sh\n" +
+		"echo run >> " + runs + "\n" +
+		`printf '%s\n' '{"message":"Download failed: Tidal community API rate limited (429)","type":"error"}'` + "\n" +
+		"exit 1\n"
+	require.NoError(t, os.WriteFile(cli, []byte(script), 0o755))
+
+	// A 429 parks the queue for SPF_RATE_LIMIT_PARK_S (default 90s) before the
+	// re-run, and the test does not want to wait that out. The re-dispatch is
+	// what is under test, not the park length.
+	t.Setenv("SPF_RATE_LIMIT_PARK_S", "1")
+
+	h, q := failureHandler(t, cli, nil)
+	job := &queue.Job{
+		NzoID:      "SABnzbd_nzo_rerun",
+		SpotifyURL: "https://open.spotify.com/album/rerun",
+		Service:    "tidal",
+		Filename:   "Run Again",
+	}
+	require.NoError(t, q.Add(job))
+
+	// dispatchJob, not ProcessDownloadSync: the bug is in the dispatch guard,
+	// which only runs on the production path.
+	h.DispatchJobForTest(job)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(runs); err == nil && strings.Count(string(b), "\n") >= 2 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	b, _ := os.ReadFile(runs)
+	t.Fatalf("the requeued job ran %d time(s), want at least 2: a re-dispatch from inside a worker was dropped",
+		strings.Count(string(b), "\n"))
+}

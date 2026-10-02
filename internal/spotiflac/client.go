@@ -743,21 +743,12 @@ func (c *Client) runCLIBackend(ctx context.Context, events chan<- ProgressEvent,
 		cmd.Env = append(cmd.Env, "SPOTIFLAC_VERIFY_RELAY_URL="+relayURL)
 	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		errs <- fmt.Errorf("stdout pipe: %w", err)
-		return
-	}
-
-	// Without this the CLI's stderr goes to /dev/null (exec.Cmd's
-	// default for a nil Stderr), so pydoll's and the extension bridge's
-	// diagnostics were discarded before anyone could read them. Only
-	// this goroutine reads the buffer, and only after Wait returns.
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
-
+	// streamBackend creates and owns the process's pipes. The CLI's stderr
+	// is captured rather than discarded (exec.Cmd's default for a nil
+	// Stderr): the extension bridge and pydoll log their diagnostics there
+	// and nothing else records them.
 	sink := newErrSink(errs)
-	var outputBuf bytes.Buffer
+	var outputBuf, stderrBuf bytes.Buffer
 	onVerify := func(ev ProgressEvent) {
 		// FSL auto-solving: when Byparr/FlareSolverr is configured and a
 		// verification_required event arrives, send the challenge URL to
@@ -766,7 +757,7 @@ func (c *Client) runCLIBackend(ctx context.Context, events chan<- ProgressEvent,
 			c.solveVerification(ev.URL)
 		}
 	}
-	startErr, exitErr, canceled := streamBackend(ctx, cmd, stdout, events, sink.send, &outputBuf, onVerify)
+	startErr, exitErr, canceled := streamBackend(ctx, cmd, events, sink.send, &outputBuf, &stderrBuf, onVerify)
 	switch {
 	case startErr != nil:
 		sink.send(fmt.Errorf("start spotiflac: %w", startErr))
@@ -804,24 +795,15 @@ func (c *Client) downloadWithPython(ctx context.Context, pythonBin, wrapperPath,
 
 		cmd := exec.CommandContext(ctx, pythonBin, args...)
 		// Own process group: the wrapper starts a headless Chromium for
-		// verification, and that browser must not outlive a cancelled job.
+		// verification, and that browser must not outlive a canceled job.
 		cmd.SysProcAttr = processGroupAttr()
 		c.activeCmds.Store(outputDir, cmd)
 		defer c.activeCmds.Delete(outputDir)
 		cmd.Env = os.Environ() // passes HTTP_PROXY through
 
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			errs <- fmt.Errorf("python stdout pipe: %w", err)
-			return
-		}
-
-		var stderrBuf bytes.Buffer
-		cmd.Stderr = &stderrBuf
-
 		sink := newErrSink(errs)
-		var outputBuf bytes.Buffer
-		startErr, exitErr, canceled := streamBackend(ctx, cmd, stdout, events, sink.send, &outputBuf, nil)
+		var outputBuf, stderrBuf bytes.Buffer
+		startErr, exitErr, canceled := streamBackend(ctx, cmd, events, sink.send, &outputBuf, &stderrBuf, nil)
 		switch {
 		case startErr != nil:
 			sink.send(fmt.Errorf("start python wrapper: %w", startErr))

@@ -31,10 +31,6 @@ func TestStreamBackendReturnsWhenAGrandchildHoldsThePipe(t *testing.T) {
 	// inherits stdout and sleeps far longer than the test.
 	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 60 & exit 0")
 	cmd.SysProcAttr = processGroupAttr()
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("stdout pipe: %v", err)
-	}
 
 	events := make(chan ProgressEvent, 8)
 	sink := newErrSink(make(chan error, 1))
@@ -42,7 +38,7 @@ func TestStreamBackendReturnsWhenAGrandchildHoldsThePipe(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _, _ = streamBackend(ctx, cmd, stdout, events, sink.send, &bytes.Buffer{}, nil)
+		_, _, _ = streamBackend(ctx, cmd, events, sink.send, &bytes.Buffer{}, &bytes.Buffer{}, nil)
 	}()
 
 	select {
@@ -62,10 +58,6 @@ func TestStreamBackendEndsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 60 & sleep 60")
 	cmd.SysProcAttr = processGroupAttr()
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("stdout pipe: %v", err)
-	}
 
 	events := make(chan ProgressEvent, 8)
 	sink := newErrSink(make(chan error, 1))
@@ -73,7 +65,7 @@ func TestStreamBackendEndsOnContextCancel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _, _ = streamBackend(ctx, cmd, stdout, events, sink.send, &bytes.Buffer{}, nil)
+		_, _, _ = streamBackend(ctx, cmd, events, sink.send, &bytes.Buffer{}, &bytes.Buffer{}, nil)
 	}()
 
 	time.Sleep(100 * time.Millisecond)
@@ -82,7 +74,7 @@ func TestStreamBackendEndsOnContextCancel(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(15 * time.Second):
-		t.Fatal("a cancelled job must return promptly, not wait for its backend to notice")
+		t.Fatal("a canceled job must return promptly, not wait for its backend to notice")
 	}
 }
 
@@ -150,22 +142,18 @@ func TestPipeTeardownIsNotReportedAsTheFailure(t *testing.T) {
 	ctx := context.Background()
 	cmd := exec.CommandContext(ctx, "sh", "-c", "exit 3")
 	cmd.SysProcAttr = processGroupAttr()
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("stdout pipe: %v", err)
-	}
 
 	events := make(chan ProgressEvent, 8)
 	errCh := make(chan error, 4)
 	sink := newErrSink(errCh)
 
-	var out bytes.Buffer
-	startErr, exitErr, canceled := streamBackend(ctx, cmd, stdout, events, sink.send, &out, nil)
+	var out, errOut bytes.Buffer
+	startErr, exitErr, canceled := streamBackend(ctx, cmd, events, sink.send, &out, &errOut, nil)
 	if startErr != nil {
 		t.Fatalf("start: %v", startErr)
 	}
 	if canceled {
-		t.Fatal("nothing cancelled this run")
+		t.Fatal("nothing canceled this run")
 	}
 	if exitErr == nil {
 		t.Fatal("want the non-zero exit status")
