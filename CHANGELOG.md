@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.6](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.5...v0.0.6) (2026-10-02)
+
+
+### Bug Fixes
+
+* **sabnzbd:** retirement has to be atomic with respect to a re-run request ([34bfeb8](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/34bfeb802da2a7c915d4ab8139f3a977e2e07a32))
+
 ## [0.0.5](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.4...v0.0.5) (2026-10-02)
 
 
