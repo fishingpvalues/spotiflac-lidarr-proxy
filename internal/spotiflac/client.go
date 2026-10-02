@@ -720,7 +720,7 @@ func (c *Client) runCLIBackend(ctx context.Context, events chan<- ProgressEvent,
 		args = append(args, "--qobuz-api-url", c.qobuzAPIURL)
 	}
 	cmd := exec.CommandContext(ctx, c.cliPath, args...)
-	// Own process group, so cancelling a job takes the CLI's Chromium and
+	// Own process group, so canceling a job takes the CLI's Chromium and
 	// node extension bridge with it instead of leaving them holding the
 	// output pipe (see backend_wait.go).
 	cmd.SysProcAttr = processGroupAttr()
