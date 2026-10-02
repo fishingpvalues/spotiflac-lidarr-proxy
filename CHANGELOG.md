@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.0.5](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.4...v0.0.5) (2026-10-02)
+
+
+### Bug Fixes
+
+* **indexer:** advertise supportedParams, and report the true match count ([45acd63](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/45acd63c971b488a7a63418996d063d6c3514a70))
+* **lint:** canceling, the US spelling CI's misspell linter wants ([301b2cf](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/301b2cf85aeeb164ac3d9a1df8760aba013ca825))
+* **lint:** drop the unused helper, and make the attr list earn its keep ([0236ba9](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/0236ba9930dff93f08eb80bd210990b35339273c))
+* **queue:** requeue interrupted jobs instead of failing them, and page every list ([be894f7](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/be894f77b5e5a9a616ad21e639ccaccdf4842ddc))
+* **sabnzbd:** never fail a job the proxy did not attempt ([9f8d2e3](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/9f8d2e34f70e1d9e26ed613db5c2e2d4b2e2c126))
+* **sabnzbd:** run the requeued job on the worker that is already alive ([b55430d](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/b55430d4f05e8b308cdd825787f9d4d1fa348b6d))
+* **spotiflac:** bound every backend wait, and stop leaking a goroutine per failure ([3ae61f6](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/3ae61f65b7e872d29adb0230482544d02a23fb68))
+
 ## [0.0.4](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.3...v0.0.4) (2026-09-24)
 
 
