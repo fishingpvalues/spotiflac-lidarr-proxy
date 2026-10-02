@@ -289,7 +289,7 @@ Full table in [`docs/API.md`](docs/API.md).
 | `SPF_DEFAULT_QUALITY` | `lossless` | `lossless` or `hires` |
 | `SPF_FALLBACK_SERVICES` | none (compose: `qobuz,amazon,deezer`) | Services tried after the primary fails |
 | `SPF_MAX_CONCURRENT` | `3` | Concurrent downloads |
-| `SPF_JOB_TIMEOUT` | `30m` | Ceiling per job |
+| `SPF_JOB_TIMEOUT` | `30m` | Ceiling per ATTEMPT; the whole job's budget is 2x this. Size it from the largest release you expect (`size / worst_sustained_rate`): a retry deletes the job directory first, so an attempt that times out throws its partial download away and starts from zero, and a release that cannot finish inside one attempt fails with "job wall-clock budget exhausted" however many times it is retried |
 | `SPF_RSS_QUERY` | none (compose: `new music friday`) | Search answering the browse feed; makes Lidarr's indexer Test pass |
 | `SPF_TIDAL_API_URL` | none | Your own Tidal API instance |
 | `SPOTIFLAC_REGISTRIES` | none | SpotiFLAC extension registry URL; backend 1 has no extensions without it |
