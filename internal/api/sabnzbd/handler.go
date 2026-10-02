@@ -286,18 +286,35 @@ func (h *Handler) dispatchNzoID(nzoID string) {
 // runJob is one nzo_id's worker: it processes the job, and processes it again
 // for as long as something kept asking.
 func (h *Handler) runJob(nzoID string, state *jobRun) {
-	defer h.inFlight.Delete(nzoID)
 	for {
 		job, err := h.queue.Get(nzoID)
 		if err != nil {
 			// Deleted, or already in history: there is nothing to run.
+			h.retireJob(nzoID, state)
 			return
 		}
 		h.ProcessDownloadSync(job)
-		if !state.takeRerun() {
+		if !state.takeRerun() && h.retireJob(nzoID, state) {
 			return
 		}
 	}
+}
+
+// retireJob removes the in-flight entry and reports whether the worker may
+// exit. It answers false - leaving the worker in place to run the job once
+// more - when a re-run arrived between the worker's last check and this call,
+// because deregistering first would drop that request on the floor and leave
+// the job Queued until the next restart.
+func (h *Handler) retireJob(nzoID string, state *jobRun) bool {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.rerun {
+		state.rerun = false
+		return false
+	}
+	// CompareAndDelete, not Delete: only ever retire our own registration.
+	h.inFlight.CompareAndDelete(nzoID, state)
+	return true
 }
 
 // ResumeQueuedJobs re-dispatches every job still sitting in Queued or
