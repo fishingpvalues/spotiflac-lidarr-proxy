@@ -135,13 +135,70 @@ After the Python→CLI cascade, the Go handler adds its own retry/fallback loop:
   cancellation) marks the job failed but does NOT feed `RecordFailure` - budget
   deaths once opened the breaker right after an outage lifted and fast-failed
   healthy-API jobs with "circuit open" (2026-08-22)
-- Upstream community break gate (`upstream_break.go`): when a final job error
+- Upstream community break gate (`upstream_break.go`): when an ATTEMPT error
   carries the spotbye infra's scheduled-cooldown message ("short break ... try
   again in about N minute(s)"), the queue parks until now+N BEFORE jobs take a
   concurrency slot - jobs stay Queued, zero requests hit the dead infra during
   the window, and the backlog drains serially when the break lifts. In-memory
   only: a container restart during a break loses the window (one round of
-  hammering re-arms it). Visible via SABnzbd `mode=warnings` (`upstream_break`).
+  hammering re-arms it). Visible via SABnzbd `mode=warnings` (`upstream_break`)
+  and `/health` (`break_until`).
+- **Failure classification (`failure.go`) decides everything downstream.** Each
+  attempt error is `failureRetryable`, `failureUpstreamCooldown` or
+  `failurePermanent`; retry, breaker input and the terminal decision all read
+  the class, not the message.
+  - The gate is armed by the FIRST service that announces a break, and that
+    ends the job's whole chain. It used to be consulted only on the LAST error
+    of the chain, so a chain whose third service failed with an unrelated
+    Amazon 404 never parked anything: measured 2026-10-01, a 79-minute break
+    drained 18 jobs into Lidarr's history, all reading "circuit open".
+  - Only `failureRetryable` feeds `RecordFailure`. Feeding it cooldowns and
+    release-specific failures opened all three circuits off the back of one
+    break plus a handful of unresolvable releases.
+  - `failurePermanent` (songlink/songstats "couldn't find ... URL", "Amazon API
+    returned status 404", "track link not found for ISRC") also stops the
+    3-attempt retry: the answer cannot change, and each retry holds the slot.
+- **The park is re-checked after the semaphore is acquired.** Parking happens
+  before the slot, but the wait for the slot is unbounded, so the breakers can
+  be reopened by the jobs that ran ahead. Without the re-check a job died with
+  "circuit open" after 64 minutes of waiting and zero attempts (measured
+  2026-10-02). At the 45-minute cap the park now `Reset`s the primary circuit,
+  so "attempting anyway" means an actual attempt rather than the same failure.
+- **A job that was never attempted is never failed.** If no backend ran - all
+  circuits open, or a break announced first - `concludeFailedAttempts` requeues
+  it (bounded by `maxUnattemptedRequeues`) instead of reporting a download
+  result it does not have.
+- **The park is published** (`beginCircuitPark` -> `mode=warnings` id
+  `circuit_park`, `/health` `circuit_park_until`). From outside, a parked proxy
+  is indistinguishable from a hung one: slots in the queue, 0 B/s, no outbound
+  requests. potatostack's stuck-monitor read exactly those two numbers and
+  restarted the container eight times in the week to 2026-10-02.
+- **`dispatchJob` is the only way to start a worker**, and it is idempotent per
+  nzo_id. addurl/resume/retry/requeue/ResumeQueuedJobs all used to `go
+  h.ProcessDownloadSync(job)` unguarded, so two workers could share one job dir
+  and one row - and when the first moved the row to history, the second's next
+  progress write restored `Downloading` on a historical row that
+  `RecoverStuckJobs` never repairs.
+- **The job context exists before the first wait.** Registering the cancel func
+  after the semaphore made DELETE and pause no-ops for a queued job; the orphan
+  then took the slot, re-created the output directory and downloaded into a row
+  that no longer existed. The budget deadline is still derived at PROCESSING
+  start (see above) - the wait phase gets a cancellable parent with no deadline.
+- **Waiting for a backend is bounded** (`backend_wait.go`). The old shape - read
+  stdout to EOF, then `Wait` - could hang forever: `exec.CommandContext` kills
+  only the direct child, and SpotiFLAC leaves its Chromium and node bridge
+  running, holding the write end of the pipe. The job stayed "Downloading" and
+  held the only slot, and the budget could not stop it because nothing it could
+  cancel was still alive. Now the reader runs alongside `Wait`, the process is
+  started in its own process group, and the pipe is abandoned after
+  `outputDrainGrace` (2 s). Read errors caused by that teardown are suppressed so
+  they cannot replace the job's real failure with "file already closed".
+- **`RecoverStuckJobs` requeues, it does not fail.** A restart interrupts a
+  download; it says nothing about the release. Jobs come back as `Queued` with a
+  persisted `recover_count` (cap `MaxRecoveries`, 3) so a crash loop cannot
+  re-download one release forever. `ResumeQueuedJobs` also picks up `Paused`
+  rows and pages the whole list - `queue.List` defaults to 50, so the old single
+  call silently stranded everything past the fiftieth job.
 
 ### SpotiFLAC failover patches (patches/python/)
 
@@ -293,3 +350,26 @@ Lidarr expects specific field types from SABnzbd:
 - `get_config` must have `Misc.complete_dir`, `Misc.pre_check`, `Misc.history_retention`
 
 See CI job `upstream-check.yml` for automated compatibility verification.
+
+### Lidarr version window
+
+Supported: the newest three Lidarr releases, all on the `develop` channel
+(Lidarr ships releases there). Currently `v3.1.6.5078`, `v3.1.5.5066`,
+`v3.1.4.5029` - the pinned image tags, the offline contract assertions and the
+CI matrix all live in `cmd/server/lidarr_contract_test.go`,
+`tests/apicompat/lidarr_matrix_test.go` and `.github/workflows/ci.yml`.
+
+The SABnzbd client is byte-identical across that window, which is why one
+contract table covers it - but the table is a data structure on purpose: a new
+release is a new row, not a code change. `tests/apicompat` fails once Lidarr
+publishes something newer than the oldest row.
+
+Two contract facts that are easy to get wrong and are now asserted:
+
+- `mode=version` must answer a parseable `X.Y.Z` that clears Lidarr's 0.7.0
+  floor and is not the literal `develop` (accepted, but with a warning Lidarr
+  refuses to save without `forceSave`).
+- `<search>` in the Newznab caps must carry `supportedParams`. Lidarr only
+  falls back to its built-in `["q"]` when the whole `<searching>` element is
+  missing, so an attribute-less `<search>` made `SupportsSearch()` false and
+  killed the `t=search` fallback tier silently.

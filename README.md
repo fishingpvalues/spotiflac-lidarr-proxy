@@ -137,6 +137,37 @@ provider outage into a slower download instead of a failed one. Services the
 running build cannot serve are dropped from the chain; without the Python
 backend that is `deezer`.
 
+### Supported Lidarr versions
+
+The newest three Lidarr releases, tested against the real application, not
+against a description of it:
+
+| Lidarr | Channel | Tested image |
+|--------|---------|--------------|
+| `v3.1.6.5078` | develop (nightly) | `lscr.io/linuxserver/lidarr:nightly-3.1.6.5078-ls218` |
+| `v3.1.5.5066` | develop (nightly) | `lscr.io/linuxserver/lidarr:nightly-3.1.5.5066-ls215` |
+| `v3.1.4.5029` | develop (nightly) | `lscr.io/linuxserver/lidarr:nightly-3.1.4.5029-ls213` |
+
+Lidarr ships releases on its `develop` branch, so these are pre-releases by
+Lidarr's own labelling. Each row is exercised in CI: the stack comes up with
+that exact image and Lidarr's own `/api/v1/downloadclient/test` and
+`/api/v1/indexer/test` have to accept what this proxy answers
+(`.github/workflows/ci.yml`).
+
+Two more checks keep that table honest without a container:
+
+* `go test ./cmd/server/` asserts the download-client and indexer contract
+  offline, for every row - the modes Lidarr calls, the JSON keys its models
+  bind, the version gate, the caps document.
+* `go test -tags apicompat ./tests/apicompat/` re-derives those facts from
+  Lidarr's own source at each pinned tag, and fails once Lidarr publishes
+  something newer than the oldest row - so the window cannot go stale
+  unnoticed.
+
+When a new Lidarr release appears: add its pinned linuxserver tag to the
+matrix in `.github/workflows/ci.yml` and to `lidarrContract` in
+`cmd/server/lidarr_contract_test.go`, then drop the oldest row.
+
 ### Indexer Test
 
 Lidarr's Test button and its RSS sync both send `t=music` with no artist and no
@@ -200,6 +231,32 @@ Jobs are stored in SQLite and survive restarts. Completion is checked against
 the files on disk. An open circuit breaker, an announced upstream break and a
 429 all park the job in `Queued` rather than failing it, because a failed job
 leaves Lidarr's history and only a fresh search brings it back.
+
+### What a failure means
+
+Every backend error is sorted into one of three classes, and the class decides
+what happens next.
+
+| Class | Example | Response |
+|-------|---------|----------|
+| Service-side | `Tidal community request failed` | Retry, try the other services, feed the circuit breaker |
+| Upstream cooldown | `The server is taking a scheduled short break. Please try again in about 79 minute(s).` | Park the whole queue for the announced window, requeue the job, do not touch the breaker |
+| Release-specific | `songlink/songstats couldn't find Tidal URL`, `Amazon API returned status 404` | One attempt per service, no breaker, fail with the backend's own words |
+
+The distinction is not cosmetic. Treating the last two as service failures
+produced the two failure modes this proxy used to be known for: a 79-minute
+upstream break drained a backlog of 18 jobs into Lidarr's failed history
+behind `circuit open`, and six unresolvable releases opened all three service
+circuits, which parked every other release behind them.
+
+A cooldown announced by ANY service ends the job's whole attempt chain, not
+just that service's turn. Upstream said wait; asking the next provider is
+exactly the hammering the announcement is about.
+
+If the job never reached a backend at all - every candidate circuit was open,
+or upstream announced a break first - it goes back to `Queued` instead of
+failing. Nothing was learned about that release, so nothing about it can be
+reported to Lidarr.
 
 See [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
@@ -316,6 +373,22 @@ as above.
 Everything fails at once — check egress, then `mode=warnings`, which lists
 open breakers, park windows, pending verification and a download backend
 that cannot work as configured (see [How it works](#how-it-works)).
+
+The queue is full and nothing is moving — the proxy may be holding it on
+purpose. `mode=warnings` says which:
+
+| Warning id | Meaning |
+|------------|---------|
+| `upstream_break` | an announced upstream pause; waits it out, sends nothing |
+| `circuit_park` | every candidate service circuit is open; waits for one to cool |
+| `breaker_<service>` | that provider's circuit is open, with when it retries |
+| `stuck_<nzo_id>` | a job has been downloading past 2x `SPF_JOB_TIMEOUT` |
+
+`/health` mirrors the first two as `break_until` and `circuit_park_until`
+(epoch seconds, `0` when neither applies). A monitor that restarts the
+container on "queue has slots and 0 B/s" will restart it mid-park, which
+discards the breakers and the park window and fails whatever was in flight;
+key on those fields, or on `mode=warnings`, instead.
 
 Lidarr's indexer Test says "Unable to connect to indexer. search failed:
 ..." — the search backend itself failed; the rest of the message is its error. An
