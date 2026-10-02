@@ -58,7 +58,19 @@ var permanentFailurePattern = regexp.MustCompile(`(?i)` +
 	`|is not available in this deployment` +
 	`|no results found in the configured categories` +
 	`|spotify (track|album|playlist) not found` +
-	`|invalid spotify (url|uri|id)`,
+	`|invalid spotify (url|uri|id)` +
+	// The CLI validates a downloaded file against the duration the metadata
+	// source reported and deletes it when they disagree. Retrying the same
+	// service is provably pointless: measured 2026-10-02, three consecutive
+	// attempts on one track each returned "file is 450s, expected about 286s"
+	// to the second, and the provider is serving a different edit of the
+	// track, not a truncated transfer (a truncation would be shorter than
+	// expected and could plausibly succeed on a retry). One attempt per
+	// service still happens, so a provider-specific bad file is worked
+	// around; what stops is asking the same provider for the same wrong file
+	// three times, and feeding a release-specific mismatch to the breaker
+	// that unrelated releases then park behind.
+	`|downloaded file duration mismatch`,
 )
 
 // classifyFailure sorts one attempt's final error into a failureClass, and

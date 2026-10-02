@@ -241,7 +241,7 @@ what happens next.
 |-------|---------|----------|
 | Service-side | `Tidal community request failed` | Retry, try the other services, feed the circuit breaker |
 | Upstream cooldown | `The server is taking a scheduled short break. Please try again in about 79 minute(s).` | Park the whole queue for the announced window, requeue the job, do not touch the breaker |
-| Release-specific | `songlink/songstats couldn't find Tidal URL`, `Amazon API returned status 404` | One attempt per service, no breaker, fail with the backend's own words |
+| Release-specific | `songlink/songstats couldn't find Tidal URL`, `Amazon API returned status 404`, `downloaded file duration mismatch` | One attempt per service, no breaker, fail with the backend's own words |
 
 The distinction is not cosmetic. Treating the last two as service failures
 produced the two failure modes this proxy used to be known for: a 79-minute

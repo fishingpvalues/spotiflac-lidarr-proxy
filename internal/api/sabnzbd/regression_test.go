@@ -240,3 +240,29 @@ func TestRequeuedJobIsActuallyRunAgain(t *testing.T) {
 	t.Fatalf("the requeued job ran %d time(s), want at least 2: a re-dispatch from inside a worker was dropped",
 		strings.Count(string(b), "\n"))
 }
+
+// A provider serving a different edit of a track is a fact about the release,
+// not a service outage. Measured 2026-10-02: three consecutive attempts on one
+// track each returned the identical "file is 450s, expected about 286s", and
+// the failures were on their way to opening every circuit.
+func TestDurationMismatchIsNotRetriedAndDoesNotOpenTheBreaker(t *testing.T) {
+	cli := failingCLI(t,
+		`{"message":"track Fisto - Edit Mix: downloaded file duration mismatch: file is 450s, expected about 286s. file was removed","type":"error"}`)
+	h, q := failureHandler(t, cli, []string{"qobuz", "amazon"})
+
+	for i := 0; i < 6; i++ {
+		job := &queue.Job{
+			NzoID:      "SABnzbd_nzo_dur" + string(rune('a'+i)),
+			SpotifyURL: "https://open.spotify.com/album/dur",
+			Service:    "tidal",
+			Filename:   "Wrong Edit",
+		}
+		require.NoError(t, q.Add(job))
+		h.ProcessDownloadSync(job)
+	}
+
+	for _, svc := range []string{"tidal", "qobuz", "amazon"} {
+		assert.False(t, h.BreakerOpenForTest(svc),
+			"a wrong-edit mismatch must not open the %s circuit: six of them would, and every other release parks behind it", svc)
+	}
+}
