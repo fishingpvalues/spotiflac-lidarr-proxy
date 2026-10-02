@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.8](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.7...v0.0.8) (2026-10-02)
+
+
+### Bug Fixes
+
+* **lint:** behavior, the spelling CI's misspell linter wants ([bd79b80](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/bd79b80fdb64da2d831a10b49513625e259b37db))
+* **sabnzbd:** the cooldown requeue budget has to outlast a real outage ([e79753d](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/e79753d9a895e604c6d20e933d5069d834bc9a59))
+
 ## [0.0.7](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.6...v0.0.7) (2026-10-02)
 
 
