@@ -89,11 +89,15 @@ func (h *Handler) handleSearch(c fiber.Ctx) error {
 
 	results, err := indexer.Search(c.Context(), h.client, query, artist, album)
 	if err != nil {
-		h.log.Error().Err(err).Msg("newznab search failed")
+		// Log the backend's own reason, not just "exit status 1": the
+		// intermittent search failures in production were undiagnosable
+		// because the CLI's stderr tail was dropped here.
+		h.log.Error().Err(err).Str("detail", spotiflac.ErrorDetail(err)).Msg("newznab search failed")
 		return h.handleError(c, "search failed: "+err.Error())
 	}
 
-	return h.sendResults(c, paginate(c, results))
+	page, offset, total := paginate(c, results)
+	return h.sendResults(c, page, total, offset)
 }
 
 func (h *Handler) handleMusic(c fiber.Ctx) error {
@@ -116,11 +120,12 @@ func (h *Handler) handleMusic(c fiber.Ctx) error {
 
 	results, err := indexer.Search(c.Context(), h.client, query, artist, album)
 	if err != nil {
-		h.log.Error().Err(err).Msg("newznab music search failed")
+		h.log.Error().Err(err).Str("detail", spotiflac.ErrorDetail(err)).Msg("newznab music search failed")
 		return h.handleError(c, "search failed: "+err.Error())
 	}
 
-	return h.sendResults(c, paginate(c, results))
+	page, offset, total := paginate(c, results)
+	return h.sendResults(c, page, total, offset)
 }
 
 func (h *Handler) handleDetails(c fiber.Ctx) error {
@@ -131,7 +136,7 @@ func (h *Handler) handleDetails(c fiber.Ctx) error {
 		return h.handleError(c, "details lookup failed: "+err.Error())
 	}
 
-	return h.sendResults(c, results)
+	return h.sendResults(c, results, len(results), 0)
 }
 
 // handleGet serves t=get, the actual release download Lidarr fetches
@@ -183,9 +188,10 @@ func (h *Handler) handleEmptyResults(c fiber.Ctx) error {
 	return c.Send(xml)
 }
 
-// sendResults answers results as a Newznab RSS feed.
-func (h *Handler) sendResults(c fiber.Ctx, results []spotiflac.MetadataResult) error {
-	xml, err := indexer.NewznabXML(results, c.BaseURL(), h.apiKey, h.defaultQuality)
+// sendResults answers one page of results as a Newznab RSS feed, reporting
+// the total match count so a paging consumer knows when to stop.
+func (h *Handler) sendResults(c fiber.Ctx, results []spotiflac.MetadataResult, total, offset int) error {
+	xml, err := indexer.NewznabXMLPage(results, total, offset, c.BaseURL(), h.apiKey, h.defaultQuality)
 	if err != nil {
 		h.log.Error().Err(err).Msg("newznab xml generation failed")
 		return h.handleError(c, "xml generation failed: "+err.Error())
@@ -212,18 +218,21 @@ const maxErrorDescription = 300
 
 // paginate applies Newznab's offset and limit. Lidarr asks for the next page
 // when a page comes back full, and without this every page repeated the first.
-func paginate(c fiber.Ctx, results []spotiflac.MetadataResult) []spotiflac.MetadataResult {
-	offset, _ := strconv.Atoi(c.Query("offset", "0"))
+// It also returns the offset and the total match count, which the feed's
+// <newznab:response> element has to report for that paging to terminate.
+func paginate(c fiber.Ctx, results []spotiflac.MetadataResult) (page []spotiflac.MetadataResult, offset, total int) {
+	total = len(results)
+	offset, _ = strconv.Atoi(c.Query("offset", "0"))
 	limit, _ := strconv.Atoi(c.Query("limit", "100"))
 	if offset < 0 {
 		offset = 0
 	}
 	if offset >= len(results) {
-		return nil
+		return nil, offset, total
 	}
 	end := len(results)
 	if limit > 0 && offset+limit < end {
 		end = offset + limit
 	}
-	return results[offset:end]
+	return results[offset:end], offset, total
 }

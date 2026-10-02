@@ -159,6 +159,14 @@ func categoryLabel(genre string) string {
 }
 
 func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality string) ([]byte, error) {
+	return NewznabXMLPage(results, len(results), 0, serverURL, apiKey, quality)
+}
+
+// NewznabXMLPage renders one page of results while reporting the TOTAL number
+// of matches in the feed's <newznab:response> element. The total used to be
+// len(results) of the already-paginated slice, so a client that pages until
+// it has seen `total` items stopped after the first page.
+func NewznabXMLPage(results []spotiflac.MetadataResult, total, offset int, serverURL, apiKey, quality string) ([]byte, error) {
 	if results == nil {
 		results = []spotiflac.MetadataResult{}
 	}
@@ -181,8 +189,8 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality s
 				Description: "Spotiflac-Lidarr Proxy",
 			},
 			Response: Response{
-				Offset: 0,
-				Total:  len(results),
+				Offset: offset,
+				Total:  total,
 			},
 		},
 	}
@@ -274,6 +282,13 @@ func NewznabXML(results []spotiflac.MetadataResult, serverURL, apiKey, quality s
 // being told; declaring it costs nothing and removes the guess. 100 matches
 // what the search path actually returns.
 //
+// supportedParams is not decoration. Lidarr's NewznabCapabilitiesProvider only
+// falls back to its built-in ["q"] when the whole <searching> element is
+// missing; a <search> element that carries no supportedParams parses to an
+// empty list, and SupportsSearch() then answers false - so the t=search
+// fallback tier was silently unusable and every search had to be served by
+// audio-search alone.
+//
 // Only the subcategories newznabCategories can actually emit are declared. A
 // tick box that no release ever carries matches nothing in anything that maps
 // releases by category, and it advertises a capability this indexer does not
@@ -285,7 +300,7 @@ func CapsXML(serverURL, version string) []byte {
   <server title="Spotiflac-Lidarr Proxy" version="` + version + `" url="` + serverURL + `" />
   <limits max="100" default="100" />
   <searching>
-    <search available="yes" supported="yes" />
+    <search available="yes" supported="yes" supportedParams="q" />
     <music-search available="yes" supported="yes" supportedParams="q,artist,album" />
     <audio-search available="yes" supported="yes" supportedParams="q,artist,album" />
   </searching>
