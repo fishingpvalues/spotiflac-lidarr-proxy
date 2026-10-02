@@ -59,8 +59,27 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
 
+  # The download-client and indexer contract, exercised against the real
+  # application rather than against a description of it, for every Lidarr
+  # release this proxy claims to support. Both the SABnzbd client and the
+  # Newznab parser are validated by Lidarr itself here: the job posts to
+  # /api/v1/downloadclient/test and /api/v1/indexer/test and asserts Lidarr
+  # accepts what we answer.
+  #
+  # The matrix is the support window. When Lidarr cuts a release, add its
+  # pinned linuxserver tag here AND to cmd/server/lidarr_contract_test.go,
+  # and drop the oldest row - tests/apicompat fails loudly once the window is
+  # stale, so this cannot rot unnoticed.
   integration:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lidarr_image:
+          - lscr.io/linuxserver/lidarr:nightly-3.1.6.5078-ls218
+          - lscr.io/linuxserver/lidarr:nightly-3.1.5.5066-ls215
+          - lscr.io/linuxserver/lidarr:nightly-3.1.4.5029-ls213
+    name: integration (${{ matrix.lidarr_image }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -71,6 +90,8 @@ jobs:
         run: docker network create potatostack_potatostack 2>/dev/null || true
 
       - name: Start proxy + Lidarr
+        env:
+          LIDARR_IMAGE: ${{ matrix.lidarr_image }}
         run: docker compose up -d --build
 
       - name: Wait for proxy and Lidarr to be ready

@@ -36,10 +36,31 @@ func skipIfNoDocker(t *testing.T) {
 	}
 }
 
+// lidarrURL is where the Lidarr under test answers.
+//
+// Overridable so the support matrix can run against several Lidarr releases
+// without fighting the default ports, and so this suite can be pointed at a
+// stack started with a different LIDARR_IMAGE.
+func lidarrURL() string {
+	if v := os.Getenv("LIDARR_BASE"); v != "" {
+		return v
+	}
+	return lidarrBase
+}
+
+// proxyURL is where the proxy under test answers, overridable for the same
+// reason.
+func proxyURL() string {
+	if v := os.Getenv("PROXY_BASE"); v != "" {
+		return v
+	}
+	return proxyBase
+}
+
 func TestIntegration_ProxyHealth(t *testing.T) {
 	skipIfNoDocker(t)
 
-	resp, err := http.Get(proxyBase + "/health")
+	resp, err := http.Get(proxyURL() + "/health")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -83,7 +104,7 @@ func TestIntegration_ProxyHealth(t *testing.T) {
 func TestIntegration_SABnzbdVersion(t *testing.T) {
 	skipIfNoDocker(t)
 
-	url := fmt.Sprintf("%s/api/sabnzbd?mode=version", proxyBase)
+	url := fmt.Sprintf("%s/api/sabnzbd?mode=version", proxyURL())
 	resp, err := http.Get(url)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -98,7 +119,7 @@ func TestIntegration_SABnzbdVersion(t *testing.T) {
 func TestIntegration_SABnzbdAddURLAndQueue(t *testing.T) {
 	skipIfNoDocker(t)
 
-	addURL := fmt.Sprintf("%s/api/sabnzbd?mode=addurl&name=https://open.spotify.com/album/0sNOF9WDwhWunNAHPD3Baj&apikey=%s", proxyBase, apiKey)
+	addURL := fmt.Sprintf("%s/api/sabnzbd?mode=addurl&name=https://open.spotify.com/album/0sNOF9WDwhWunNAHPD3Baj&apikey=%s", proxyURL(), apiKey)
 	resp, err := http.Post(addURL, "application/x-www-form-urlencoded", nil)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -115,7 +136,7 @@ func TestIntegration_SABnzbdAddURLAndQueue(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	queueURL := fmt.Sprintf("%s/api/sabnzbd?mode=queue&nzo_ids=%s&apikey=%s", proxyBase, nzoID, apiKey)
+	queueURL := fmt.Sprintf("%s/api/sabnzbd?mode=queue&nzo_ids=%s&apikey=%s", proxyURL(), nzoID, apiKey)
 	resp2, err := http.Get(queueURL)
 	require.NoError(t, err)
 	defer resp2.Body.Close()
@@ -148,8 +169,18 @@ var lidarrConfigAPIKeyPattern = regexp.MustCompile(`<ApiKey>([^<]+)</ApiKey>`)
 // every /api/v1/* call must authenticate with that one, not the proxy's.
 func fetchLidarrAPIKey(t *testing.T) string {
 	t.Helper()
-	out, err := exec.Command("docker", "compose", "exec", "-T", "lidarr", "cat", "/config/config.xml").Output()
-	require.NoError(t, err, "reading Lidarr's config.xml via docker compose exec")
+
+	// LIDARR_CONTAINER targets a stack started outside this directory's
+	// default compose project - the support matrix brings each Lidarr release
+	// up under its own project name so the runs cannot collide.
+	var out []byte
+	var err error
+	if name := os.Getenv("LIDARR_CONTAINER"); name != "" {
+		out, err = exec.Command("docker", "exec", name, "cat", "/config/config.xml").Output()
+	} else {
+		out, err = exec.Command("docker", "compose", "exec", "-T", "lidarr", "cat", "/config/config.xml").Output()
+	}
+	require.NoError(t, err, "reading Lidarr's config.xml from its container")
 
 	match := lidarrConfigAPIKeyPattern.FindSubmatch(out)
 	require.NotNil(t, match, "could not find ApiKey in Lidarr's config.xml")
@@ -166,7 +197,7 @@ func lidarrRequest(t *testing.T, lidarrAPIKey, path string, body map[string]any)
 	bodyJSON, err := json.Marshal(body)
 	require.NoError(t, err)
 
-	req, err := http.NewRequest("POST", lidarrBase+path, bytes.NewReader(bodyJSON))
+	req, err := http.NewRequest("POST", lidarrURL()+path, bytes.NewReader(bodyJSON))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Api-Key", lidarrAPIKey)
@@ -280,7 +311,7 @@ func TestIntegration_LidarrConfiguresProxy(t *testing.T) {
 func TestIntegration_BrowseFeedAnswersLidarrTestQuery(t *testing.T) {
 	skipIfNoDocker(t)
 
-	resp, err := http.Get(proxyBase + "/api/newznab?t=music&cat=3000,3040&extended=1&apikey=" + apiKey + "&offset=0&limit=100")
+	resp, err := http.Get(proxyURL() + "/api/newznab?t=music&cat=3000,3040&extended=1&apikey=" + apiKey + "&offset=0&limit=100")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 

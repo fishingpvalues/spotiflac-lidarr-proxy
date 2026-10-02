@@ -93,7 +93,11 @@ services:
       start_period: 10s
 
   lidarr:
-    image: lscr.io/linuxserver/lidarr:latest
+    # LIDARR_IMAGE lets CI run this stack against each release in the support
+    # window (see .github/workflows/ci.yml's integration matrix and
+    # cmd/server/lidarr_contract_test.go). The default is the newest develop
+    # build, which is the channel Lidarr actually ships releases on.
+    image: ${LIDARR_IMAGE:-lscr.io/linuxserver/lidarr:nightly-3.1.6.5078-ls218}
     ports:
       - "8686:8686"
     environment:
