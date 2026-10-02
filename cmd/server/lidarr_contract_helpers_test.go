@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -92,13 +91,4 @@ func readAll(t *testing.T, resp *http.Response) string {
 		t.Fatalf("read body: %v", err)
 	}
 	return string(b)
-}
-
-// decodeJSON decodes a response body, failing the test on invalid JSON.
-func decodeJSON(t *testing.T, resp *http.Response, into any) {
-	t.Helper()
-	defer resp.Body.Close()
-	if err := json.NewDecoder(resp.Body).Decode(into); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
 }

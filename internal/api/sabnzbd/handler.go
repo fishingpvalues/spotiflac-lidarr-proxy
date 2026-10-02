@@ -218,12 +218,13 @@ func (h *Handler) ProcessDownloadSync(job *queue.Job) {
 	h.processDownload(job)
 }
 
-// jobRun is the per-nzo_id worker bookkeeping: the cancel func of whatever it
-// is running now, and whether something asked it to run again.
+// jobRun is the per-nzo_id worker bookkeeping: whether something asked the
+// worker to run the job again once its current pass finishes. The cancel func
+// for a running job lives in h.running, where mode=delete and mode=pause look
+// for it.
 type jobRun struct {
-	mu     sync.Mutex
-	rerun  bool
-	cancel context.CancelFunc
+	mu    sync.Mutex
+	rerun bool
 }
 
 // askAgain marks the worker for a re-run once its current pass finishes.

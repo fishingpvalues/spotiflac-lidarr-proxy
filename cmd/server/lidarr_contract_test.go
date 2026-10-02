@@ -10,6 +10,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/indexer"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
 )
 
 // This file pins the contract between this proxy and the Lidarr releases it
@@ -119,13 +122,29 @@ const lidarrVersionRegex = `(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+|x)`
 // There is no t=get: the NZB bytes come straight from the RSS <enclosure>.
 var lidarrNewznabModes = []string{"caps", "music", "search"}
 
-// lidarrNewznabAttrs are the newznab:attr names NewznabRssParser actually
-// reads. Note what is NOT in the list: files, grabs, genre, year and tracks are
-// sent by this proxy and ignored by Lidarr, which is harmless - but `size` and
-// `usenetdate` are load-bearing, because a feed item without a usable
-// publication date is rejected outright
-// ("Rss feed must have a pubDate element with a valid publish date.").
-var lidarrNewznabAttrs = []string{"size", "usenetdate", "language", "artist", "album"}
+// lidarrNewznabAttr is one newznab:attr NewznabRssParser reads, and what
+// satisfies it when the attribute itself is absent.
+//
+// The distinction matters: `size` has no fallback other than the enclosure
+// length, while `usenetdate` exists only to override the item's <pubDate> and
+// `language` only to override the item's <language> elements. A feed that
+// carries <pubDate> and no usenetdate is complete, and saying so here is
+// better than an assertion that looks like a defect forever.
+//
+// What is NOT read at all: files, grabs, genre, year, title, poster and
+// category attributes are sent by this proxy and ignored by Lidarr's Newznab
+// parser (they belong to the torznab/other-client vocabularies). Sending them
+// is harmless.
+var lidarrNewznabAttrs = []struct {
+	name     string
+	fallback string
+}{
+	{name: "size"},
+	{name: "artist"},
+	{name: "album"},
+	{name: "usenetdate", fallback: "<pubDate>"},
+	{name: "language", fallback: "<language>"},
+}
 
 // TestContractIsPinnedToTheThreeNewestLidarrReleases documents and enforces the
 // version window this proxy is tested against. When Lidarr cuts a release, this
@@ -364,4 +383,41 @@ func TestResponseTotalIsTheMatchCountNotThePageSize(t *testing.T) {
 	body := readAll(t, resp)
 	// An empty result set still has to carry the element.
 	assert.Contains(t, body, "<newznab:response")
+}
+
+// Every newznab:attr Lidarr's RSS parser actually reads has to be on the item,
+// and `usenetdate` in particular is load-bearing: NewznabRssParser throws
+// "Rss feed must have a pubDate element with a valid publish date." for an
+// item with neither it nor a <pubDate>.
+func TestFeedItemsCarryEveryAttrLidarrReads(t *testing.T) {
+	feed, err := indexer.NewznabXMLPage([]spotiflac.MetadataResult{{
+		Artist:     "Contract Test Artist",
+		Album:      "Contract Test Album",
+		SpotifyURL: "https://open.spotify.com/album/contract",
+		TrackCount: 3,
+		Year:       2026,
+	}}, 1, 0, "http://proxy.test", testAPIKey, "lossless")
+	require.NoError(t, err)
+
+	body := string(feed)
+	for _, attr := range lidarrNewznabAttrs {
+		// strings.Contains, not assert.Contains: probing for the attribute
+		// must not record a failure of its own, or the fallback branch below
+		// would always report a defect that is not there.
+		if strings.Contains(body, `newznab:attr name="`+attr.name+`"`) {
+			continue
+		}
+		assert.NotEmpty(t, attr.fallback,
+			"newznab:attr %q has no fallback and must always be sent", attr.name)
+		assert.Contains(t, body, attr.fallback,
+			"neither newznab:attr %q nor the fallback it may use instead (%s) is in the feed",
+			attr.name, attr.fallback)
+	}
+	// application/x-nzb is the only enclosure type NewznabRssParser keeps
+	// (PreferredEnclosureMimeTypes = UsenetEnclosureMimeTypes, UseEnclosureUrl
+	// = true), and a release without a usable enclosure is dropped silently.
+	assert.Contains(t, string(feed), `type="application/x-nzb"`)
+	// Without either a usable usenetdate or a parseable pubDate, the parser
+	// throws "Rss feed must have a pubDate element with a valid publish date."
+	assert.Contains(t, string(feed), "<pubDate>")
 }
