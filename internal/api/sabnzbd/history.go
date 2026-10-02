@@ -51,9 +51,16 @@ func (h *Handler) handleHistory(c fiber.Ctx) error {
 	resp.History.TotalSize = formatBytes(totalSize)
 
 	for _, job := range jobs {
+		// Measured from when the job started PROCESSING, not from when it
+		// was queued: with a backlog TimeAdded can be an hour earlier, and
+		// SABnzbd reports this as the download's duration.
+		started := job.TimeAdded
+		if job.StartedAt != nil {
+			started = *job.StartedAt
+		}
 		downloadTime := 0
 		if job.CompletedAt != nil {
-			downloadTime = int(job.CompletedAt.Sub(job.TimeAdded).Seconds())
+			downloadTime = int(job.CompletedAt.Sub(started).Seconds())
 		}
 
 		slot := sabnzbd.HistorySlot{
@@ -92,12 +99,19 @@ func (h *Handler) handleHistoryDelete(c fiber.Ctx) error {
 			Status: false, Error: "missing nzo_id",
 		})
 	}
+	// Cancel first and delete only a history row. queue.Delete is
+	// `DELETE FROM jobs WHERE nzo_id = ?` with no is_history predicate, so a
+	// history delete naming an ACTIVE job used to remove the active row
+	// while its worker kept running - the orphan then re-created the output
+	// directory and held the concurrency slot for its whole budget.
 	delFiles := c.Query("del_files") == "1"
-	if err := h.queue.Delete(nzoID, delFiles); err != nil {
+	h.CancelJob(nzoID)
+	if err := h.queue.DeleteFromHistory(nzoID); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(sabnzbd.StatusResponse{
 			Status: false, Error: err.Error(),
 		})
 	}
+	h.clearRequeues(nzoID)
 	if delFiles {
 		if err := h.storage.CleanupJob(nzoID); err != nil {
 			h.log.Warn().Err(err).Str("nzo_id", nzoID).Msg("failed to cleanup history job files")

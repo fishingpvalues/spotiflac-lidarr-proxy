@@ -65,13 +65,8 @@ func (h *Handler) handleQueue(c fiber.Ctx) error {
 
 		if job.Status == sabnzbd.StatusDownloading {
 			hasDownloading = true
-			// Estimate speed: if size changed recently, calculate from bytes/sec
-			// Otherwise use default estimate
-			if job.Size > 0 && job.Sizeleft > 0 && job.Size > job.Sizeleft {
-				downloaded := float64(job.Size - job.Sizeleft)
-				// Assume 10 seconds avg since last update for speed calc
-				estimatedSpeed := downloaded / 10.0
-				totalSpeed += estimatedSpeed
+			if rate, ok := h.observeSpeed(job); ok {
+				totalSpeed += rate
 			}
 		}
 
@@ -121,6 +116,51 @@ func (h *Handler) handleQueue(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
+// observeSpeed turns two consecutive queue polls into a real byte rate for
+// one job, and reports whether it could.
+//
+// The old calculation was not a rate at all: it took the bytes downloaded so
+// far and divided them by a hardcoded 10 seconds, so a 35 MB single that had
+// been running for a minute reported 3.5 MB/s and a 5.7 GB box set reported
+// "154.00 M" and kbpersec 157696 - numbers Lidarr displays and the external
+// stuck-monitor used to decide whether the container was wedged. Two samples
+// taken dt apart give (bytesBefore - bytesNow)/dt, which is what the field
+// means. The first poll for a job has nothing to compare against and
+// honestly reports 0.
+func (h *Handler) observeSpeed(job *queue.Job) (float64, bool) {
+	now := time.Now()
+
+	h.speedMu.Lock()
+	defer h.speedMu.Unlock()
+	if h.speedSamples == nil {
+		h.speedSamples = make(map[string]speedSample)
+	}
+	// Bound the map: it is keyed by nzo_id and a long-lived process sees a
+	// new id per grab.
+	if len(h.speedSamples) > 512 {
+		for k, v := range h.speedSamples {
+			if now.Sub(v.at) > 10*time.Minute {
+				delete(h.speedSamples, k)
+			}
+		}
+	}
+	prev, ok := h.speedSamples[job.NzoID]
+	h.speedSamples[job.NzoID] = speedSample{sizeleft: job.Sizeleft, at: now}
+	if !ok {
+		return 0, false
+	}
+	dt := now.Sub(prev.at).Seconds()
+	if dt <= 0 {
+		return 0, false
+	}
+	// Sizeleft only ever grows when a new attempt restarts the job from an
+	// empty directory; a negative delta is a restart, not negative speed.
+	if moved := prev.sizeleft - job.Sizeleft; moved > 0 {
+		return float64(moved) / dt, true
+	}
+	return 0, true
+}
+
 func formatDuration(secs int) string {
 	if secs <= 0 {
 		return "0:00:00"
@@ -138,18 +178,25 @@ func pad2(n int) string {
 	return strconv.Itoa(n)
 }
 
+// handlePause pauses one job, or the whole queue when no value is given.
+//
+// The whole-queue form is real SABnzbd's semantics for
+// `mode=queue&name=pause`; this used to answer HTTP 400 for it. Pausing also
+// cancels the in-flight download now - the status alone did not stop
+// anything, and the worker's next progress event overwrote it.
 func (h *Handler) handlePause(c fiber.Ctx) error {
 	nzoID := c.Query("value")
 	if nzoID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(sabnzbd.StatusResponse{
-			Status: false, Error: "missing nzo_id",
-		})
+		return h.handlePauseAll(c)
 	}
 	job, err := h.queue.Get(nzoID)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(sabnzbd.StatusResponse{
 			Status: false, Error: "job not found",
 		})
+	}
+	if job.Status == sabnzbd.StatusDownloading {
+		h.CancelJob(nzoID)
 	}
 	job.Status = sabnzbd.StatusPaused
 	if err := h.queue.Update(job); err != nil {
@@ -160,12 +207,12 @@ func (h *Handler) handlePause(c fiber.Ctx) error {
 	return c.JSON(sabnzbd.StatusResponse{Status: true, NzoIDs: []string{nzoID}})
 }
 
+// handleResume resumes one job, or the whole queue when no value is given
+// (real SABnzbd's `mode=queue&name=resume`).
 func (h *Handler) handleResume(c fiber.Ctx) error {
 	nzoID := c.Query("value")
 	if nzoID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(sabnzbd.StatusResponse{
-			Status: false, Error: "missing nzo_id",
-		})
+		return h.handleResumeAll(c)
 	}
 	job, err := h.queue.Get(nzoID)
 	if err != nil {
@@ -174,12 +221,14 @@ func (h *Handler) handleResume(c fiber.Ctx) error {
 		})
 	}
 	job.Status = sabnzbd.StatusQueued
+	job.CompletedAt = nil
+	job.StartedAt = nil
 	if err := h.queue.Update(job); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(sabnzbd.StatusResponse{
 			Status: false, Error: err.Error(),
 		})
 	}
-	go h.ProcessDownloadSync(job)
+	h.dispatchJob(job)
 	return c.JSON(sabnzbd.StatusResponse{Status: true, NzoIDs: []string{nzoID}})
 }
 
@@ -195,6 +244,7 @@ func (h *Handler) handleDelete(c fiber.Ctx) error {
 	// SPF_MAX_CONCURRENT=1 a deleted job stalled every later one for as long
 	// as its retries and service fallbacks took.
 	h.CancelJob(nzoID)
+	h.clearRequeues(nzoID)
 
 	delFiles := c.Query("del_files") == "1"
 	if err := h.queue.Delete(nzoID, delFiles); err != nil {

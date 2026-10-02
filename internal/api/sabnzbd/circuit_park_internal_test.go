@@ -1,6 +1,7 @@
 package sabnzbd
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -84,7 +85,7 @@ func TestParkForOpenCircuitsReturnsWhenAnyServiceAllowed(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		h.parkForOpenCircuits(&queue.Job{NzoID: "x", Service: config.ServiceTidal})
+		h.parkForOpenCircuits(context.Background(), &queue.Job{NzoID: "x", Service: config.ServiceTidal})
 		close(done)
 	}()
 	select {
@@ -112,7 +113,7 @@ func TestParkForOpenCircuitsWaitsUntilCooldownLifts(t *testing.T) {
 	}
 
 	start := time.Now()
-	h.parkForOpenCircuits(&queue.Job{NzoID: "x", Service: config.ServiceTidal})
+	h.parkForOpenCircuits(context.Background(), &queue.Job{NzoID: "x", Service: config.ServiceTidal})
 	elapsed := time.Since(start)
 
 	if elapsed < 250*time.Millisecond {
@@ -141,7 +142,7 @@ func TestParkForOpenCircuitsHonorsCap(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		h.parkForOpenCircuits(&queue.Job{NzoID: "x", Service: config.ServiceTidal})
+		h.parkForOpenCircuits(context.Background(), &queue.Job{NzoID: "x", Service: config.ServiceTidal})
 		close(done)
 	}()
 	select {

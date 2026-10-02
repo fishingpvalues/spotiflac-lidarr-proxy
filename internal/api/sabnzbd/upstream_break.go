@@ -1,6 +1,7 @@
 package sabnzbd
 
 import (
+	"context"
 	"os"
 	"regexp"
 	"strconv"
@@ -163,7 +164,18 @@ func (g *upstreamBreakGate) extend(d time.Duration) bool {
 // extended window (another job parsing a longer break) is honored without
 // restarting the waiter.
 func (g *upstreamBreakGate) wait() {
+	g.waitContext(context.Background())
+}
+
+// waitContext is wait, plus "stop early if the job was deleted or paused".
+// A parked job holds no concurrency slot, so this is not about throughput:
+// without it every deleted job left a goroutine asleep for up to the whole
+// break window (measured windows run 90-120 minutes).
+func (g *upstreamBreakGate) waitContext(ctx context.Context) {
 	for {
+		if ctx != nil && ctx.Err() != nil {
+			return
+		}
 		g.mu.Lock()
 		remaining := g.until.Sub(g.now())
 		g.mu.Unlock()
@@ -174,7 +186,15 @@ func (g *upstreamBreakGate) wait() {
 		if remaining < step {
 			step = remaining
 		}
-		time.Sleep(step)
+		if ctx == nil {
+			time.Sleep(step)
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(step):
+		}
 	}
 }
 

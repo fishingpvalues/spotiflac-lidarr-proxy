@@ -96,7 +96,7 @@ func (h *Handler) handleAddURL(c fiber.Ctx) error {
 		})
 	}
 
-	go h.ProcessDownloadSync(job)
+	h.dispatchJob(job)
 
 	return c.JSON(sabnzbd.AddURLResponse{
 		Status: true,

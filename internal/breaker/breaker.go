@@ -94,6 +94,26 @@ func (b *Breaker) RecordFailure(key string) {
 	}
 }
 
+// Reset closes the breaker for key unconditionally, clearing the failure
+// count.
+//
+// It exists for the ONE case where continuing to hold a job back is worse
+// than the traffic it guards against: a job that has already waited out the
+// full park cap (see maxCircuitPark) and would otherwise be failed without a
+// single attempt. "Attempting anyway" has to mean an actual attempt, and
+// every downstream path asks the breaker first - so without this the cap
+// produced exactly the terminal "circuit open" failure the park exists to
+// prevent. A failure after the reset re-opens the breaker normally.
+func (b *Breaker) Reset(key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if e, ok := b.entries[key]; ok {
+		e.consecutiveFailures = 0
+		e.openedAt = time.Time{}
+	}
+}
+
 func (b *Breaker) RecordSuccess(key string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

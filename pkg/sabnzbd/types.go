@@ -131,8 +131,12 @@ type HistorySlot struct {
 	Script       string `json:"script"`
 	Storage      string `json:"storage"`
 	Path         string `json:"path"`
-	FailMessage  string `json:"fail_message,omitempty"`
-	URL          string `json:"url,omitempty"`
+	// Always present, like real SABnzbd's history slots. Lidarr binds this
+	// to SabnzbdHistoryItem.FailMessage, and FailedDownloadService reads it
+	// to explain why a grab died, so omitting it on success only made the
+	// wire format differ from the thing being emulated.
+	FailMessage string `json:"fail_message"`
+	URL         string `json:"url,omitempty"`
 }
 
 // FullStatusResponse is used by Lidarr v2.0+ to resolve relative complete_dir.

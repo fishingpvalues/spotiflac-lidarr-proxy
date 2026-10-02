@@ -108,15 +108,32 @@ func (h *Handler) handleRetry(c fiber.Ctx) error {
 		})
 	}
 
-	// Move job back from history to active queue
-	job, err := h.queue.Get(nzoID)
+	// Move job back from history to active queue. GetByNzoID, not Get: Get
+	// filters `is_history = 0`, so this endpoint - which exists to retry a
+	// FAILED download and is documented as such - could only ever answer
+	// 404 for the one kind of job it is for.
+	job, err := h.queue.GetByNzoID(nzoID)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(sabnzbd.StatusResponse{
 			Status: false, Error: "job not found",
 		})
 	}
 
+	// Cancel whatever is still running for this id before re-dispatching:
+	// otherwise a retry of a live job starts a second worker on the same row
+	// and the same output directory.
+	h.CancelJob(nzoID)
 	job.Status = sabnzbd.StatusQueued
+	job.ErrorMessage = ""
+	job.CompletedAt = nil
+	job.Percentage = 0
+	job.StartedAt = nil
+	job.ProgressAt = nil
+	if err := h.queue.MoveToQueue(nzoID); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(sabnzbd.StatusResponse{
+			Status: false, Error: err.Error(),
+		})
+	}
 	if err := h.queue.Update(job); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(sabnzbd.StatusResponse{
 			Status: false, Error: err.Error(),
@@ -124,7 +141,8 @@ func (h *Handler) handleRetry(c fiber.Ctx) error {
 	}
 
 	// Restart the download
-	go h.ProcessDownloadSync(job)
+	h.clearRequeues(nzoID)
+	h.dispatchJob(job)
 
 	return c.JSON(sabnzbd.RetryResponse{
 		Status: true,
@@ -133,6 +151,12 @@ func (h *Handler) handleRetry(c fiber.Ctx) error {
 }
 
 func (h *Handler) handleWarnings(c fiber.Ctx) error {
+	return c.JSON(sabnzbd.WarningsResponse{Warnings: h.Warnings()})
+}
+
+// Warnings builds the operator-facing warning list. Split from the HTTP
+// handler so tests can assert on the content without a request.
+func (h *Handler) Warnings() []sabnzbd.Warning {
 	var warnings []sabnzbd.Warning
 	if text := h.breakGate.summarize(); text != "" {
 		warnings = append(warnings, sabnzbd.Warning{
@@ -151,6 +175,22 @@ func (h *Handler) handleWarnings(c fiber.Ctx) error {
 			Type: "ERROR",
 			Text: fmt.Sprintf("service %s circuit open, retrying after %s", service, state.RetryAt.Format(time.RFC3339)),
 			ID:   "breaker_" + service,
+		})
+	}
+
+	// The circuit park. Without this entry the proxy is indistinguishable
+	// from a hang while it waits out a provider cooldown: slots in the
+	// queue, 0 B/s, and deliberately no outbound requests. The external
+	// stuck-monitor on potatostack watched exactly those two numbers and
+	// restarted this container eight times in the week to 2026-10-02, each
+	// time throwing away the breakers, the park and every in-flight job.
+	if remaining, services := h.circuitParkState(); remaining > 0 {
+		warnings = append(warnings, sabnzbd.Warning{
+			Time: time.Now().Unix(),
+			Type: "WARNING",
+			Text: fmt.Sprintf("circuit park active: queue held for %s while %v cool down",
+				remaining.Round(time.Second), services),
+			ID: "circuit_park",
 		})
 	}
 
@@ -179,10 +219,20 @@ func (h *Handler) handleWarnings(c fiber.Ctx) error {
 	stuck, _, err := h.queue.List(queue.ListParams{Status: string(sabnzbd.StatusDownloading), Limit: 1000})
 	if err == nil {
 		for _, job := range stuck {
-			age := time.Since(job.TimeAdded)
-			if age > 2*h.cfg.JobTimeout {
+			// Measure the RUN, not the wait. TimeAdded is when the job
+			// entered the queue, which with a backlog is hours before it
+			// ever took a slot: measured 2026-08-27, ~50 queued jobs were
+			// all reported as "downloading for longer than 2x the timeout"
+			// the moment the check looked at them. StartedAt is written by
+			// beginDownload; a job that predates that column falls back to
+			// TimeAdded.
+			since := job.TimeAdded
+			if job.StartedAt != nil {
+				since = *job.StartedAt
+			}
+			if age := time.Since(since); age > 2*h.cfg.JobTimeout {
 				warnings = append(warnings, sabnzbd.Warning{
-					Time: job.TimeAdded.Unix(),
+					Time: since.Unix(),
 					Type: "WARNING",
 					Text: fmt.Sprintf("job %s (%s) has been downloading for %s, more than 2x the configured timeout", job.NzoID, job.Filename, age.Round(time.Second)),
 					ID:   "stuck_" + job.NzoID,
@@ -194,5 +244,5 @@ func (h *Handler) handleWarnings(c fiber.Ctx) error {
 	if warnings == nil {
 		warnings = []sabnzbd.Warning{}
 	}
-	return c.JSON(sabnzbd.WarningsResponse{Warnings: warnings})
+	return warnings
 }

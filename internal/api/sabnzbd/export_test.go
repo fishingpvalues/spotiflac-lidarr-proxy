@@ -67,3 +67,69 @@ func (h *Handler) SetBreakerForTest(threshold int, cooldown time.Duration) {
 func (h *Handler) BreakerOpenForTest(service string) bool {
 	return h.breaker.Status()[service].Open
 }
+
+// BreakWindowForTest reports the remaining upstream break pause and whether
+// one is armed. Tests assert on the gate itself rather than inferring it from
+// a job's fate.
+func (h *Handler) BreakWindowForTest() (time.Duration, bool) {
+	r := h.breakGate.remaining()
+	return r, r > 0
+}
+
+// ObserveSpeedForTest runs the queue's byte-rate sampling for one job.
+func (h *Handler) ObserveSpeedForTest(job *queue.Job) float64 {
+	rate, _ := h.observeSpeed(job)
+	return rate
+}
+
+// BackdateSpeedSampleForTest plants the previous sample a rate is computed
+// against, so a test does not have to sleep for real time to pass.
+func (h *Handler) BackdateSpeedSampleForTest(nzoID string, sizeleft int64, age time.Duration) {
+	h.speedMu.Lock()
+	defer h.speedMu.Unlock()
+	if h.speedSamples == nil {
+		h.speedSamples = make(map[string]speedSample)
+	}
+	h.speedSamples[nzoID] = speedSample{sizeleft: sizeleft, at: time.Now().Add(-age)}
+}
+
+// CircuitParkForTest reports the published circuit-park state.
+func (h *Handler) CircuitParkForTest() (time.Duration, []string) {
+	return h.circuitParkState()
+}
+
+// stuckJobsForTest runs the mode=warnings stuck-job scan and returns the
+// warnings it would publish, so a test can assert on the judgement itself.
+func (h *Handler) stuckJobsForTest() ([]string, []string) {
+	var ids, texts []string
+	stuck, _, err := h.queue.List(queue.ListParams{Status: "Downloading", Limit: 1000})
+	if err != nil {
+		return nil, nil
+	}
+	for _, job := range stuck {
+		since := job.TimeAdded
+		if job.StartedAt != nil {
+			since = *job.StartedAt
+		}
+		if age := time.Since(since); age > 2*h.cfg.JobTimeout {
+			ids = append(ids, job.NzoID)
+			texts = append(texts, job.Filename)
+		}
+	}
+	return ids, texts
+}
+
+// warningIDs returns the ids of the warnings mode=warnings would publish.
+func (h *Handler) warningIDs() ([]string, error) {
+	var ids []string
+	for _, w := range h.Warnings() {
+		ids = append(ids, w.ID)
+	}
+	return ids, nil
+}
+
+// DispatchJobForTest runs the production dispatch path, so a test can prove
+// that a second dispatch for a job already in flight is a no-op.
+func (h *Handler) DispatchJobForTest(job *queue.Job) {
+	h.dispatchJob(job)
+}

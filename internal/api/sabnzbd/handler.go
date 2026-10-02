@@ -55,6 +55,28 @@ type Handler struct {
 	// service fallbacks took, which is hours. Observed: a freshly added job
 	// sat "Queued" for 270s and never started.
 	running sync.Map
+
+	// parkMu guards parkUntil/parkServices, the operator-visible half of
+	// parkForOpenCircuits (see beginCircuitPark).
+	parkMu       sync.Mutex
+	parkUntil    time.Time
+	parkServices []string
+
+	// speedMu guards speedSamples, the per-job byte-rate sampling that makes
+	// mode=queue's kbpersec a measurement instead of a guess.
+	speedMu      sync.Mutex
+	speedSamples map[string]speedSample
+
+	// inFlight holds one entry per nzo_id that currently has a worker
+	// goroutine. See dispatchJob.
+	inFlight sync.Map
+}
+
+// speedSample is one job's (bytes remaining, when observed) pair, kept
+// between queue polls so the next poll can turn two samples into a rate.
+type speedSample struct {
+	sizeleft int64
+	at       time.Time
 }
 
 func NewHandler(q *queue.SQLiteQueue, client *spotiflac.Client, s *storage.Storage, cfg *config.Config, version string) *Handler {
@@ -191,39 +213,75 @@ func (h *Handler) handleChangeCat(c fiber.Ctx) error {
 }
 
 // ProcessDownloadSync runs the download synchronously. Production call sites
-// wrap it in `go h.ProcessDownloadSync(job)`; tests call it directly.
+// use dispatch(); tests call this directly.
 func (h *Handler) ProcessDownloadSync(job *queue.Job) {
 	h.processDownload(job)
 }
 
-// ResumeQueuedJobs re-dispatches every job still sitting in Queued, and
-// returns how many it started. Called once at startup.
+// dispatchJob starts a job's download in the background, at most once per
+// nzo_id.
 //
-// A job is only ever dispatched from handleAddURL's `go
-// h.ProcessDownloadSync(job)`. That goroutine dies with the process, but the
-// row stays Queued, and nothing ever looked at it again -- so any job that
-// had not yet reached Downloading when the container restarted was stranded
-// permanently. queue.RecoverStuckJobs covers the Downloading case (it fails
-// them, since partial on-disk state is not trusted); Queued jobs have no
-// partial state at all and can simply be started.
+// Every route that can move a job towards "running" used to spawn the worker
+// itself (`go h.ProcessDownloadSync(job)`) - addurl, queue resume,
+// resume_all, retry, both requeue paths and ResumeQueuedJobs - with nothing
+// checking whether a worker for that job was already alive. Two workers on
+// one job share its output directory and its row: they can both take a
+// concurrency slot, and when the first one finishes and moves the row to
+// history the second one's next progress write sets status=Downloading on a
+// historical row, which RecoverStuckJobs never repairs (it only looks at
+// is_history = 0), so Lidarr shows it as downloading forever.
+func (h *Handler) dispatchJob(job *queue.Job) {
+	if _, loaded := h.inFlight.LoadOrStore(job.NzoID, struct{}{}); loaded {
+		h.log.Warn().Str("nzo_id", job.NzoID).
+			Msg("job already has a worker in flight; not starting a second one")
+		return
+	}
+	go func() {
+		defer h.inFlight.Delete(job.NzoID)
+		h.ProcessDownloadSync(job)
+	}()
+}
+
+// ResumeQueuedJobs re-dispatches every job still sitting in Queued or
+// Paused, and returns how many it started. Called once at startup.
 //
-// Found in production 2026-08-07: 13 jobs queued on 2026-08-03 and -04 were
-// still listed as Queued four days and several restarts later. Lidarr sees
-// them as pending forever -- they never download, never fail, and never time
-// out.
+// A job's worker goroutine dies with the process, but the row stays where it
+// was, and nothing ever looked at it again -- so any job that had not yet
+// reached Downloading when the container restarted was stranded
+// permanently. Found in production 2026-08-07: 13 jobs queued on 2026-08-03
+// and -04 were still listed as Queued four days and several restarts later.
+// Lidarr sees them as pending forever -- they never download, never fail,
+// and never time out.
 //
-// Each dispatch blocks on the same semaphore as a live request, so resuming
-// a large backlog cannot exceed SPF_MAX_CONCURRENT.
+// Paused counts as stranded too: mode=pause sets the row's status and does
+// not stop the running worker, so after a restart nothing else would ever
+// pick a Paused row up either.
+//
+// The list is paged to exhaustion. queue.List defaults Limit to 50, and the
+// old single call therefore resumed at most 50 rows while reporting that
+// number as the size of the backlog - silently stranding the 51st and later
+// jobs, which is the very bug this function exists to fix.
 func (h *Handler) ResumeQueuedJobs() int {
-	jobs, _, err := h.queue.List(queue.ListParams{Status: string(sabnzbd.StatusQueued)})
-	if err != nil {
-		h.log.Error().Err(err).Msg("resume queued jobs: list failed")
-		return 0
+	const page = 200
+	started := 0
+	for start := 0; ; start += page {
+		jobs, total, err := h.queue.List(queue.ListParams{Start: start, Limit: page})
+		if err != nil {
+			h.log.Error().Err(err).Msg("resume queued jobs: list failed")
+			return started
+		}
+		for _, job := range jobs {
+			if job.Status != sabnzbd.StatusQueued && job.Status != sabnzbd.StatusPaused {
+				continue
+			}
+			h.dispatchJob(job)
+			started++
+		}
+		if len(jobs) < page || start+page >= total {
+			break
+		}
 	}
-	for _, job := range jobs {
-		go h.ProcessDownloadSync(job)
-	}
-	return len(jobs)
+	return started
 }
 
 // parkForUpstreamBreak holds the job in its Queued state until the upstream
@@ -237,27 +295,35 @@ func (h *Handler) ResumeQueuedJobs() int {
 // it opens or extends, mode=warnings carries the remaining pause for
 // machine and human consumers, and /health mirrors both the break window
 // and the session expiry.
-func (h *Handler) parkForUpstreamBreak(job *queue.Job) {
+func (h *Handler) parkForUpstreamBreak(ctx context.Context, job *queue.Job) {
 	if r := h.breakGate.remaining(); r > 0 {
 		h.log.Debug().Str("nzo_id", job.NzoID).Dur("pause", r).Msg("upstream community break active; holding job in queue")
 	}
-	h.breakGate.wait()
+	h.breakGate.waitContext(ctx)
 }
 
-// HealthExtras reports the two states that decide whether a queued backlog
-// can drain at all, as machine-readable fields for /health: the remaining
-// upstream community break pause (epoch seconds, 0 when not paused) and the
-// CLI community session's expiry (RFC3339, null when no valid session).
-// Before this, neither was visible anywhere except mode=warnings - and even
-// there the session expiry was absent - so a healthy container could sit on
-// a full queue behind an upstream break with an expired session and nothing
-// in its health output explained it.
+// HealthExtras reports the states that decide whether a queued backlog can
+// drain at all, as machine-readable fields for /health: the remaining
+// upstream community break pause (epoch seconds, 0 when not paused), the
+// CLI community session's expiry (RFC3339, null when no valid session), and
+// the circuit park (epoch seconds, 0 when no service circuit is holding the
+// queue).
+//
+// Before the park was here, a container that was healthy by every measure
+// this endpoint reports could sit on a full queue for an hour with nothing
+// explaining it - and the external stuck-monitor, seeing slots and no speed,
+// restarted it.
 func (h *Handler) HealthExtras() map[string]interface{} {
 	resp := map[string]interface{}{}
 	if r := h.breakGate.remaining(); r > 0 {
 		resp["break_until"] = time.Now().Add(r).Unix()
 	} else {
 		resp["break_until"] = int64(0)
+	}
+	if r, _ := h.circuitParkState(); r > 0 {
+		resp["circuit_park_until"] = time.Now().Add(r).Unix()
+	} else {
+		resp["circuit_park_until"] = int64(0)
 	}
 	var sessionExpiry interface{}
 	if valid, exp := spotiflac.SessionState(); valid {
@@ -271,9 +337,9 @@ const maxAttempts = 3
 
 var retryBackoff = []time.Duration{5 * time.Second, 15 * time.Second}
 
-// jobContext builds the job's cancellable context and registers it in the
-// running map so mode=pause/delete can cancel it. The returned func undoes
-// both and must be deferred.
+// jobContext derives the context that bounds a job's PROCESSING time from
+// the caller's cancellable parent. The returned func undoes it and must be
+// deferred.
 //
 // The deadline is the whole wall-clock budget - two JobTimeouts, one slow
 // attempt plus one retry - and it starts HERE, at processing start, not at
@@ -287,18 +353,16 @@ var retryBackoff = []time.Duration{5 * time.Second, 15 * time.Second}
 // how outages used to surface: Python burned the full 30m, then "start
 // spotiflac: context deadline exceeded" on the CLI, then "job budget
 // exhausted" on every fallback.
-func (h *Handler) jobContext(nzoID string) (context.Context, func()) {
-	parent := context.Background()
-	parentCancel := context.CancelFunc(func() {})
-	if h.cfg.JobTimeout > 0 {
-		parent, parentCancel = context.WithDeadline(parent, time.Now().Add(2*h.cfg.JobTimeout))
+func (h *Handler) jobContext(parent context.Context, nzoID string) (context.Context, func()) {
+	if h.cfg.JobTimeout <= 0 {
+		ctx, cancel := context.WithCancel(parent)
+		return ctx, cancel
 	}
-	ctx, cancel := context.WithCancel(parent)
-	h.running.Store(nzoID, cancel)
+	ctx, cancelDeadline := context.WithDeadline(parent, time.Now().Add(2*h.cfg.JobTimeout))
+	ctx, cancel := context.WithCancel(ctx)
 	return ctx, func() {
-		h.running.Delete(nzoID)
 		cancel()
-		parentCancel()
+		cancelDeadline()
 	}
 }
 
@@ -313,6 +377,12 @@ func (h *Handler) beginDownload(job *queue.Job) (string, error) {
 	}
 	job.Status = sabnzbd.StatusDownloading
 	job.OutputPath = jobDir
+	// The job's own clock starts here, not at TimeAdded - a job can wait
+	// hours in the queue, and every "has this been running too long" check
+	// has to measure the run, not the wait.
+	now := time.Now()
+	job.StartedAt = &now
+	job.ProgressAt = &now
 	if err := h.queue.Update(job); err != nil {
 		h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("mark job downloading failed")
 	}
@@ -320,30 +390,71 @@ func (h *Handler) beginDownload(job *queue.Job) (string, error) {
 }
 
 func (h *Handler) processDownload(job *queue.Job) {
-	// Upstream community break gate: if the shared spotbye infra announced a
-	// scheduled cooldown ("try again in about N minute(s)"), park BEFORE
-	// taking a concurrency slot - a wait inside the semaphore would hold one
-	// of SPF_MAX_CONCURRENT slots for the whole break and wedge the queue.
-	h.parkForUpstreamBreak(job)
-	// Same rule for an open circuit breaker: park outside the semaphore
-	// rather than fast-failing the job.
-	h.parkForOpenCircuits(job)
+	// Cancel registration comes FIRST, before any wait. It used to happen
+	// after the concurrency slot was taken, so deleting or pausing a job
+	// that was still queued or parked was a no-op: the row disappeared and
+	// the orphaned goroutine later took the slot, re-created the output
+	// directory and downloaded for up to the full budget into a row that no
+	// longer existed - with SPF_MAX_CONCURRENT=1 that is the whole queue
+	// stalled behind a job nobody is waiting for any more.
+	//
+	// This context carries no deadline: the job's wall-clock budget starts
+	// when it starts PROCESSING, not while it waits its turn, or a job that
+	// queued through an outage would arrive at its slot already expired.
+	waitCtx, cancelWait := context.WithCancel(context.Background())
+	h.running.Store(job.NzoID, cancelWait)
+	defer func() {
+		h.running.Delete(job.NzoID)
+		cancelWait()
+	}()
 
-	// Community-session renewal, before the slot is taken. The community tier
+	// Community-session renewal, before the first wait. The community tier
 	// is what actually delivers audio while the custom Tidal APIs are down,
-	// and it needs a desktop session minted by solving a Turnstile challenge.
-	// Until this hook existed, an expired session meant every job failed its
-	// verification tier until a human ran a solver by hand. No-op unless
-	// SPF_SESSION_RENEW_CMD is configured, and rate-limited inside the client.
+	// and it needs a desktop session minted by solving a Turnstile
+	// challenge. Until this hook existed, an expired session meant every job
+	// failed its verification tier until a human ran a solver by hand.
+	// No-op unless SPF_SESSION_RENEW_CMD is configured, and rate-limited
+	// inside the client.
 	h.client.EnsureCommunitySession()
 
-	h.sem <- struct{}{}
+	// Park BEFORE taking a concurrency slot - a wait inside the semaphore
+	// would hold one of SPF_MAX_CONCURRENT slots for the whole pause and
+	// wedge the queue - then take the slot and check AGAIN.
+	//
+	// The second check is the fix for the last remaining way a job could die
+	// with "circuit open". Parking happens before the semaphore, but the
+	// wait for the semaphore is unbounded: with SPF_MAX_CONCURRENT=1 and a
+	// backlog, a job that finished parking could still wait the better part
+	// of an hour for the slot, and by then the services it was waiting on
+	// had been re-opened by the jobs that ran ahead of it. Measured
+	// 2026-10-02, job SABnzbd_nzo_33ed151d-eb2: parked 12:59:41 with
+	// retry_in 9m, failed 14:03:22 with "service tidal temporarily
+	// unavailable (circuit open)" and not one attempt logged in between.
+	// Releasing the slot and looping keeps the guarantee the park makes:
+	// an open circuit never turns into a failed grab.
+	for {
+		if waitCtx.Err() != nil {
+			return // deleted or paused while queued; the row is gone or idle
+		}
+		h.parkForUpstreamBreak(waitCtx, job)
+		h.parkForOpenCircuits(waitCtx, job)
+		select {
+		case h.sem <- struct{}{}:
+		case <-waitCtx.Done():
+			return
+		}
+		if h.anyCandidateAllowed(job) {
+			break
+		}
+		<-h.sem
+	}
 	defer func() { <-h.sem }()
 
-	ctx, releaseCtx := h.jobContext(job.NzoID)
+	ctx, releaseCtx := h.jobContext(waitCtx, job.NzoID)
 	defer releaseCtx()
 
 	primarySvc := job.Service
+	out := &jobOutcome{}
 
 	jobDir, err := h.beginDownload(job)
 	if err != nil {
@@ -388,13 +499,17 @@ func (h *Handler) processDownload(job *queue.Job) {
 			// exactly the ones burning the budget.
 			retryDL = h.client.DownloadCLI
 		}
-		lastErr = h.runAttemptsWithRetry(ctx, job, jobDir, maxAttempts, h.client.Download, retryDL)
+		var attempted bool
+		lastErr, attempted = h.runAttemptsWithRetry(ctx, job, jobDir, maxAttempts, h.client.Download, retryDL)
 		if lastErr == "" {
 			return
 		}
+		h.observe(lastErr, attempted, out, primarySvc)
 		if ctx.Err() == nil {
-			// Live context: the backend itself failed - a real service signal.
-			h.breaker.RecordFailure(primarySvc)
+			// Live context: the backend itself failed. Whether that opens
+			// the breaker depends on the class - see recordServiceFailure.
+			class, _ := h.classifyFailure(lastErr)
+			h.recordServiceFailure(primarySvc, class)
 		} else {
 			// The job's own budget/cancellation ended it, not the service.
 			// Recording these tripped the breaker right after an outage
@@ -418,6 +533,13 @@ func (h *Handler) processDownload(job *queue.Job) {
 	}
 
 	for _, fallbackSvc := range h.fallbackChain(job.Service) {
+		// Upstream announced a break while the primary was running. Every
+		// further request is the hammering the announcement asks us to stop,
+		// and the service that would answer it is the one that just told us
+		// to go away.
+		if out.cooldown > 0 {
+			break
+		}
 		if !h.breaker.Allow(fallbackSvc) {
 			continue
 		}
@@ -432,37 +554,86 @@ func (h *Handler) processDownload(job *queue.Job) {
 			// below mark the job Failed and move it to history.
 			break
 		}
-		fbErr := h.tryFallbackService(ctx, job, jobDir, fallbackSvc, fallbackDownload)
+		fbErr, attempted := h.tryFallbackService(ctx, job, jobDir, fallbackSvc, fallbackDownload)
 		if fbErr == "" {
 			return
 		}
+		// The most recent attempt's reason is the one that explains the
+		// job's fate; the primary's is only a fallback for when nothing ran.
 		lastErr = fbErr
+		stop := h.observe(fbErr, attempted, out, fallbackSvc)
 		if ctx.Err() == nil {
 			// Same rule as the primary path above: a dead context means the
 			// job's own budget/cancellation ended the attempt, not a service
 			// failure - do not feed it to the breaker.
-			h.breaker.RecordFailure(fallbackSvc)
+			class, _ := h.classifyFailure(fbErr)
+			h.recordServiceFailure(fallbackSvc, class)
 		}
 		metrics.RecordJobResult(string(sabnzbd.StatusFailed), fallbackSvc)
+		if stop {
+			break
+		}
 	}
 
-	h.concludeFailedAttempts(ctx, job, lastErr)
+	h.concludeFailedAttempts(ctx, job, lastErr, out)
+}
+
+// anyCandidateAllowed reports whether at least one service this job could
+// use is currently admitted by its circuit breaker.
+func (h *Handler) anyCandidateAllowed(job *queue.Job) bool {
+	candidates := h.candidateServices(job)
+	if len(candidates) == 0 {
+		// Nothing this deployment can serve. There is no circuit to wait
+		// for; let the normal path produce the permanent, honest error.
+		return true
+	}
+	for _, svc := range candidates {
+		if h.breaker.RetryAfter(svc) <= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // concludeFailedAttempts decides what a job that survived every backend
 // without succeeding actually becomes: requeued, or failed.
 //
-// If the last error came from upstream telling us to back off - an announced
-// scheduled break, or a 429 - the queue is parked and the job goes BACK.
-// Failing it would be a lie: the release was never tried against a working
-// API, and once the item is in Lidarr's history only an external re-grab cycle
-// brings it back. Observed 2026-08-22: a 47-job burst triggered a 104-minute
-// break and the whole backlog failed into history; later the same day one job
-// burned ~25 min of the single concurrency slot retrying into 429s while the
-// drain flatlined.
-func (h *Handler) concludeFailedAttempts(ctx context.Context, job *queue.Job, lastErr string) {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+// The decision is made from the WHOLE attempt chain (jobOutcome), not from
+// the last error alone. That distinction is the fix for the 2026-10-01
+// incident: the gate used to look only at the final error, so a chain whose
+// first two services announced a 79-minute scheduled break and whose third
+// failed with an unrelated "Amazon API returned status 404" never parked
+// anything, and 18 jobs drained into Lidarr's failed history behind a dead
+// upstream. Now an announcement anywhere in the chain parks the queue and
+// sends the job back, whatever the last service said.
+//
+// Failing such a job would be a lie: the release was never tried against a
+// working API, and once the item is in Lidarr's history only an external
+// re-grab cycle brings it back.
+func (h *Handler) concludeFailedAttempts(ctx context.Context, job *queue.Job, lastErr string, out *jobOutcome) {
+	budgetExhausted := errors.Is(ctx.Err(), context.DeadlineExceeded)
+	if budgetExhausted {
 		lastErr = fmt.Sprintf("job wall-clock budget (%s) exhausted: %s", 2*h.cfg.JobTimeout, lastErr)
+	}
+
+	// A path that never invoked a backend has not learned anything about the
+	// release, so it must never be the reason a grab dies. Two ways to get
+	// here: every candidate circuit was open (the window between the
+	// post-semaphore check and the attempt), or upstream announced a break
+	// before anything ran. Hand the job back to the queue instead.
+	if ctx.Err() == nil && !out.attempted {
+		candidates := h.candidateServices(job)
+		if len(candidates) > 0 {
+			if h.requeueUnattempted(job, lastErr, candidates) {
+				return
+			}
+		}
+	}
+
+	if out.cooldown > 0 && !budgetExhausted {
+		if h.requeueAfterCooldown(job, out.cooldown, lastErr) {
+			return
+		}
 	}
 	if cooldown, isCooldown := h.breakGate.cooldownFor(lastErr); isCooldown {
 		h.breakGate.extend(cooldown)
@@ -471,6 +642,40 @@ func (h *Handler) concludeFailedAttempts(ctx context.Context, job *queue.Job, la
 		}
 	}
 	h.failJob(job, lastErr)
+}
+
+// maxUnattemptedRequeues bounds how often one job may be handed back without
+// a single attempt. The circuit park already waits up to maxCircuitPark, so
+// reaching this at all means the breakers were re-opened by other jobs
+// during the wait; a small budget is enough, and unbounded requeueing would
+// hide a permanently broken release as an eternally pending download.
+const maxUnattemptedRequeues = 5
+
+// requeueUnattempted returns a never-tried job to Queued and re-dispatches
+// it, so it re-enters parkForOpenCircuits - which runs BEFORE the semaphore,
+// so a waiting job holds no slot. Reports whether the job was requeued;
+// false means the caller should fail it (budget spent, or the write failed).
+func (h *Handler) requeueUnattempted(job *queue.Job, lastErr string, candidates []string) bool {
+	n := h.bumpRequeue(job.NzoID)
+	if n > maxUnattemptedRequeues {
+		h.log.Warn().Str("nzo_id", job.NzoID).Int("requeues", n-1).
+			Msg("never-attempted requeue budget exhausted; failing job with its reason")
+		return false
+	}
+	job.Status = sabnzbd.StatusQueued
+	job.ErrorMessage = ""
+	job.Percentage = 0
+	job.CompletedAt = nil
+	job.StartedAt = nil
+	if err := h.queue.Update(job); err != nil {
+		h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("requeue never-attempted job: update failed")
+		return false
+	}
+	h.log.Warn().Str("nzo_id", job.NzoID).Int("requeue", n).Strs("services", candidates).
+		Str("reason", lastErr).
+		Msg("job was never attempted (every candidate circuit open); requeuing instead of failing it")
+	h.dispatchJob(job)
+	return true
 }
 
 // maxCooldownRequeues bounds how often one job may be put back for an
@@ -500,7 +705,7 @@ func (h *Handler) requeueAfterCooldown(job *queue.Job, cooldown time.Duration, l
 	}
 	h.log.Warn().Str("nzo_id", job.NzoID).Int("requeue", n).Dur("cooldown", cooldown).
 		Str("upstream_error", lastErr).Msg("upstream asked us to back off; requeuing job instead of failing it")
-	go h.ProcessDownloadSync(job)
+	h.dispatchJob(job)
 	return true
 }
 
@@ -525,15 +730,25 @@ func (h *Handler) clearRequeues(nzoID string) {
 
 // runAttemptsWithRetry runs up to `attempts` tries of the download via dl,
 // sleeping with backoff and clearing the job dir between them. Returns ""
-// on success, the last error otherwise.
+// on success, the last error otherwise, and whether any backend invocation
+// actually ran (a job that ran none has learned nothing about the release).
 type downloadFn func(ctx context.Context, url, outputDir, service, quality string) (<-chan spotiflac.ProgressEvent, <-chan error)
 
 // first and retry may differ: the caller hands the full Python+CLI cascade
 // for attempt 1 and a CLI-only backend for retries (see processDownload),
 // because the Python cascade's own breaker already proved its providers dead
 // for this release by the end of attempt 1.
-func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobDir string, attempts int, first, retry downloadFn) string {
+//
+// Retrying stops early when the error is not a service-side failure. An
+// announced upstream break does not change by asking again three seconds
+// later - it is upstream telling the whole queue to wait - and a
+// release-specific resolution failure produces the same answer every time.
+// Measured 2026-10-01: three tidal attempts plus two fallback services for
+// each of ~18 jobs, all of it against an upstream that had announced a
+// 79-minute break.
+func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobDir string, attempts int, first, retry downloadFn) (string, bool) {
 	var lastErr string
+	attempted := false
 	dl := first
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if attempt > 1 {
@@ -543,9 +758,10 @@ func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobD
 			if attempt > 1 {
 				h.log.Warn().Str("nzo_id", job.NzoID).Int("attempt", attempt).Msg("job budget exhausted, not retrying")
 			}
-			return "canceled"
+			return "canceled", attempted
 		}
 		ok, errMsg := h.attemptDownload(ctx, job, jobDir, dl)
+		attempted = true
 		if !ok {
 			// A failed attempt's backend process can outlive its terminal
 			// error event (still waiting on a verification callback or
@@ -554,10 +770,16 @@ func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobD
 			h.client.AbortActive(jobDir)
 		}
 		if ok {
-			return ""
+			return "", true
 		}
 		lastErr = errMsg
 		if attempt < attempts {
+			if !h.shouldRetry(errMsg) {
+				h.log.Warn().Str("nzo_id", job.NzoID).Int("attempt", attempt).
+					Str("error", errMsg).
+					Msg("not retrying: this failure is not a service-side one")
+				break
+			}
 			h.log.Warn().Str("nzo_id", job.NzoID).Int("attempt", attempt).Str("error", errMsg).Msg("download attempt failed, retrying")
 			if cerr := h.storage.CleanupJob(job.NzoID); cerr != nil {
 				h.log.Warn().Err(cerr).Str("nzo_id", job.NzoID).Msg("failed to clean up job dir before retry")
@@ -567,13 +789,14 @@ func (h *Handler) runAttemptsWithRetry(ctx context.Context, job *queue.Job, jobD
 			time.Sleep(retryBackoff[attempt-1])
 		}
 	}
-	return lastErr
+	return lastErr, attempted
 }
 
 // tryFallbackService switches the job over to svc, resets its job dir and
 // runs one download attempt through dl. Returns "" on success (the job has
-// been moved to history by attemptDownload), the error otherwise.
-func (h *Handler) tryFallbackService(ctx context.Context, job *queue.Job, jobDir, svc string, dl downloadFn) string {
+// been moved to history by attemptDownload), the error otherwise, and
+// whether a backend invocation actually ran.
+func (h *Handler) tryFallbackService(ctx context.Context, job *queue.Job, jobDir, svc string, dl downloadFn) (string, bool) {
 	h.log.Warn().Str("nzo_id", job.NzoID).Str("from_service", job.Service).Str("to_service", svc).Msg("falling back to next service")
 	job.Service = svc
 	if err := h.queue.Update(job); err != nil {
@@ -645,10 +868,19 @@ var maxCircuitPark = 45 * time.Minute
 // Queued, which is what it is. Same shape as parkForUpstreamBreak, and for
 // the same reason it runs BEFORE the concurrency semaphore - waiting inside
 // the semaphore would wedge the single slot for the whole cooldown.
-func (h *Handler) parkForOpenCircuits(job *queue.Job) {
+func (h *Handler) parkForOpenCircuits(ctx context.Context, job *queue.Job) {
 	deadline := time.Now().Add(maxCircuitPark)
 	logged := false
+	parked := false
+	defer func() {
+		if parked {
+			h.endCircuitPark()
+		}
+	}()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		candidates := h.candidateServices(job)
 		if len(candidates) == 0 {
 			// Nothing this deployment can serve; let the normal path
@@ -676,8 +908,16 @@ func (h *Handler) parkForOpenCircuits(job *queue.Job) {
 			// one that was never tried.
 			job.CLIOutput = fmt.Sprintf("parked %s waiting for a closed circuit on %v before this attempt",
 				maxCircuitPark, candidates)
+			// "Attempting anyway" has to mean an actual attempt. Every
+			// downstream path asks the breaker first, so without closing at
+			// least the primary circuit the cap produced exactly the
+			// terminal "circuit open" failure this park exists to prevent.
+			// A failure after the reset re-opens the breaker normally.
+			h.breaker.Reset(job.Service)
 			return
 		}
+		parked = true
+		h.beginCircuitPark(candidates, wait)
 		if !logged {
 			h.log.Info().Str("nzo_id", job.NzoID).Strs("services", candidates).Dur("retry_in", wait).
 				Msg("every candidate service circuit is open; holding job in queue")
@@ -694,6 +934,42 @@ func (h *Handler) parkForOpenCircuits(job *queue.Job) {
 // (RecordSuccess from another job) is noticed promptly.
 var circuitParkPoll = 15 * time.Second
 
+// beginCircuitPark / endCircuitPark publish "the queue is deliberately
+// holding work while service circuits cool down" so the state is visible
+// from outside the process.
+//
+// It has to be visible, because from outside it is indistinguishable from a
+// hang: slots in the queue, speed at 0, no requests going out. The external
+// stuck-monitor on potatostack watched exactly those two numbers and
+// restarted this container eight times in the week to 2026-10-02, each time
+// discarding the breakers, the park and the requeue counters and failing
+// whatever was in flight. mode=warnings carries it now (and the monitor
+// consults it); /health mirrors it as circuit_park_until.
+func (h *Handler) beginCircuitPark(services []string, wait time.Duration) {
+	h.parkMu.Lock()
+	defer h.parkMu.Unlock()
+	h.parkServices = services
+	h.parkUntil = time.Now().Add(wait)
+}
+
+func (h *Handler) endCircuitPark() {
+	h.parkMu.Lock()
+	defer h.parkMu.Unlock()
+	h.parkServices = nil
+	h.parkUntil = time.Time{}
+}
+
+// circuitParkState reports how much longer the circuit park is expected to
+// last and which services it is waiting on. Zero when nothing is parked.
+func (h *Handler) circuitParkState() (time.Duration, []string) {
+	h.parkMu.Lock()
+	defer h.parkMu.Unlock()
+	if r := time.Until(h.parkUntil); r > 0 {
+		return r, append([]string(nil), h.parkServices...)
+	}
+	return 0, nil
+}
+
 // attemptDownload runs a single backend invocation and reports whether it
 // succeeded. On success it fully updates the job to Completed and moves it
 // to history itself (mirroring the previous inline behavior); on failure it
@@ -703,20 +979,31 @@ func (h *Handler) attemptDownload(ctx context.Context, job *queue.Job, jobDir st
 	// A previous download's browser is still running and will stop this one's
 	// from starting at all (see reapStaleBrowsers). Guarded on concurrency
 	// because a sibling job's browser is indistinguishable from a stray, so
-	// this is only safe when there cannot be a sibling.
-	if h.cfg.MaxConcurrent <= 1 {
+	// this is only safe when there cannot be a sibling. cap(h.sem), not
+	// cfg.MaxConcurrent: NewHandler falls back to a 3-slot semaphore when the
+	// configured value is 0, and the old test then believed it had the queue
+	// to itself and killed a sibling's browser.
+	if cap(h.sem) <= 1 {
 		reapStaleBrowsers()
 	}
 
 	events, errs := dl(ctx, job.SpotifyURL, jobDir, job.Service, job.Quality)
 
-	for {
+	// Both channels are drained until BOTH are closed. Returning as soon as
+	// `events` closes - as this used to, with the generic "cli exited
+	// without completion signal" - lost the backend's real reason about half
+	// the time: the producer closes both channels in one defer, so `events`
+	// and `errs` are ready together and Go's select picks between them at
+	// random. That mattered more than a vague message once the failure
+	// classification became string-based (see failure.go): a dropped
+	// "scheduled break" meant no park, and a dropped "couldn't find Tidal
+	// URL" meant the release was retried and fed to the breaker.
+	for events != nil || errs != nil {
 		select {
 		case evt, ok := <-events:
 			if !ok {
-				// A "complete" event always returns immediately below, so
-				// reaching a closed channel here means we never saw one.
-				return false, "cli exited without completion signal"
+				events = nil
+				continue
 			}
 			if evt.Type == "complete" {
 				return h.handleCompleteEvent(job, evt)
@@ -724,26 +1011,29 @@ func (h *Handler) attemptDownload(ctx context.Context, job *queue.Job, jobDir st
 			h.handleProgressEvent(job, evt)
 		case e, ok := <-errs:
 			if !ok {
+				errs = nil
 				continue
 			}
 			if e != nil {
 				var de *spotiflac.DownloadError
 				if errors.As(e, &de) && de.RawOutput != "" {
 					job.CLIOutput = de.RawOutput
-					// The backend's own reason lines are the only
-					// explanation a failure has. Logging just
-					// "spotiflac exited: exit status 1" - which is all
-					// this used to emit - leaves nothing to debug with.
-					h.log.Warn().
-						Str("nzo_id", job.NzoID).
-						Str("service", job.Service).
-						Str("detail", lastLines(de.RawOutput, 12)).
-						Msg("download backend reported a failure")
 				}
+				// The backend's own reason lines are the only explanation a
+				// failure has. Logging just "spotiflac exited: exit status
+				// 1" - which is all this used to emit - leaves nothing to
+				// debug with.
+				h.log.Warn().
+					Str("nzo_id", job.NzoID).
+					Str("service", job.Service).
+					Str("error", e.Error()).
+					Str("detail", lastLines(job.CLIOutput, 12)).
+					Msg("download backend reported a failure")
 				return false, e.Error()
 			}
 		}
 	}
+	return false, "cli exited without completion signal"
 }
 
 // handleProgressEvent applies every non-terminal CLI event to the in-memory
@@ -766,6 +1056,8 @@ func (h *Handler) handleProgressEvent(job *queue.Job, evt spotiflac.ProgressEven
 			job.Percentage = evt.Percent
 			job.Sizeleft = int64(float64(job.Size) * (100 - evt.Percent) / 100)
 		}
+		now := time.Now()
+		job.ProgressAt = &now
 		if err := h.queue.Update(job); err != nil {
 			h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("progress update failed")
 		}
@@ -777,6 +1069,8 @@ func (h *Handler) handleProgressEvent(job *queue.Job, evt spotiflac.ProgressEven
 		if job.TrackCount == 0 && evt.TrackCount > 0 {
 			job.TrackCount = evt.TrackCount
 		}
+		now := time.Now()
+		job.ProgressAt = &now
 		if err := h.queue.Update(job); err != nil {
 			h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("metadata update failed")
 		}
@@ -818,9 +1112,16 @@ func (h *Handler) handleCompleteEvent(job *queue.Job, evt spotiflac.ProgressEven
 	// download, which it then reports as an import failure instead of a
 	// download failure - and the release is blocklisted for the wrong reason.
 	// Files on disk are the only evidence that counts.
-	onDisk, cerr := storage.CountAudioFiles(evt.OutputPath)
+	// A backend that omits the path in its "complete" event would otherwise
+	// fail a download that worked: the directory we allocated for the job is
+	// the same one we handed the backend, so it is the right fallback.
+	outPath := evt.OutputPath
+	if outPath == "" {
+		outPath = job.OutputPath
+	}
+	onDisk, cerr := storage.CountAudioFiles(outPath)
 	if cerr != nil {
-		return false, fmt.Sprintf("cannot verify %s: %s", evt.OutputPath, cerr)
+		return false, fmt.Sprintf("cannot verify %s: %s", outPath, cerr)
 	}
 	if onDisk == 0 {
 		return false, "backend reported completion but wrote no audio files"
@@ -844,7 +1145,7 @@ func (h *Handler) handleCompleteEvent(job *queue.Job, evt spotiflac.ProgressEven
 	job.Percentage = 100
 	job.Size = evt.Size
 	job.Sizeleft = 0
-	job.OutputPath = evt.OutputPath
+	job.OutputPath = outPath
 	now := time.Now()
 	job.CompletedAt = &now
 	job.Filename = releaseName(job.Filename, evt)
@@ -854,7 +1155,7 @@ func (h *Handler) handleCompleteEvent(job *queue.Job, evt spotiflac.ProgressEven
 	if err := h.queue.MoveToHistory(job.NzoID); err != nil {
 		h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("move job to history failed")
 	}
-	h.log.Info().Str("nzo_id", job.NzoID).Str("path", evt.OutputPath).Msg("download complete")
+	h.log.Info().Str("nzo_id", job.NzoID).Str("path", outPath).Msg("download complete")
 	return true, ""
 }
 
@@ -936,7 +1237,7 @@ func jobToSlot(job *queue.Job, index int) sabnzbd.Slot {
 		Mbmissing:    0,
 		Percentage:   fmt.Sprintf("%.0f", job.Percentage),
 		Timeleft:     formatTimeleft(job.Sizeleft),
-		Priority:     job.Priority,
+		Priority:     sabPriorityName(job.Priority),
 		Cat:          job.Category,
 		TimeAdded:    job.TimeAdded.Unix(),
 		Script:       "Default",
@@ -944,6 +1245,33 @@ func jobToSlot(job *queue.Job, index int) sabnzbd.Slot {
 		AvgAge:       "0d",
 		DirectUnpack: "0",
 	}
+}
+
+// sabPriorityName renders a stored priority the way SABnzbd's API does: as
+// the NAME of a SabnzbdPriority member, not the number.
+//
+// Lidarr deserializes this field with Enum.TryParse over those names, and
+// falls back to the enum's zero value when the text is not one of them.
+// Lidarr sends the numeric priorities (-100 for its default), so passing the
+// number through gave every queue item the wrong priority silently.
+func sabPriorityName(p string) string {
+	names := map[string]string{
+		"-100": "Default",
+		"-2":   "Paused",
+		"-1":   "Low",
+		"0":    "Normal",
+		"1":    "High",
+		"2":    "Force",
+	}
+	if name, ok := names[strings.TrimSpace(p)]; ok {
+		return name
+	}
+	for _, name := range names {
+		if strings.EqualFold(p, name) {
+			return name
+		}
+	}
+	return "Normal"
 }
 
 func formatBytes(bytes int64) string {
