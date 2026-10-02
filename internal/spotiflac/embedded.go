@@ -4,14 +4,34 @@ import (
 	"embed"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 //go:embed python_wrapper/spotiflac-py-wrapper.py
 var pythonWrapperFS embed.FS
 
 // extractPythonWrapper writes the embedded Python wrapper script to a temp
-// file and returns its path. The caller should clean it up when done.
+// file and returns its path.
+//
+// The extraction is done ONCE per process and cached. It used to run on
+// every call - every download attempt, every backend probe and every Newznab
+// search - and the comment said "the caller should clean it up" while no
+// caller ever did, so the container's writable layer accumulated a directory
+// per call for the lifetime of the process.
+var (
+	wrapperOnce sync.Once
+	wrapperPath string
+	wrapperErr  error
+)
+
 func extractPythonWrapper() (string, error) {
+	wrapperOnce.Do(func() {
+		wrapperPath, wrapperErr = writePythonWrapper()
+	})
+	return wrapperPath, wrapperErr
+}
+
+func writePythonWrapper() (string, error) {
 	data, err := pythonWrapperFS.ReadFile("python_wrapper/spotiflac-py-wrapper.py")
 	if err != nil {
 		return "", err

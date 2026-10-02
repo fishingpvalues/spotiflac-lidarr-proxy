@@ -23,7 +23,7 @@ func drain(t *testing.T, lines string) ([]ProgressEvent, []error) {
 	var out bytes.Buffer
 	done := make(chan struct{})
 	go func() {
-		parseProgress(strings.NewReader(lines), events, errs, &out, nil)
+		parseProgress(strings.NewReader(lines), events, &out, nil, newErrSink(errs).send)
 		close(events)
 		close(errs)
 		close(done)
@@ -170,7 +170,7 @@ func TestCLIFormatVerificationRequiredReachesTheHook(t *testing.T) {
 	errs := make(chan error, 8)
 	var out bytes.Buffer
 	line := `{"type":"verification_required","url":"https://verify.example/x","cb":"https://cb"}` + "\n"
-	parseProgress(strings.NewReader(line), events, errs, &out, func(e ProgressEvent) { hookFired = e })
+	parseProgress(strings.NewReader(line), events, &out, func(e ProgressEvent) { hookFired = e }, newErrSink(errs).send)
 	close(events)
 
 	if hookFired.URL != "https://verify.example/x" {

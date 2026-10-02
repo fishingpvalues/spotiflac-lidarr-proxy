@@ -60,6 +60,12 @@ type Client struct {
 	// falling back to CLI if Python fails. Auto-detected if empty.
 	pythonVenv string
 
+	// hifiAdapters maps an upstream hifi-api base URL to the address of the
+	// local translating adapter serving it. One listener per upstream, for
+	// the process lifetime.
+	hifiMu       sync.Mutex
+	hifiAdapters map[string]string
+
 	// tidalAPIFallbacks is a list of additional Tidal API proxy URLs
 	// tried in order when the primary tidalAPIURL fails.
 	tidalAPIFallbacks []string
@@ -275,6 +281,20 @@ func probeHiFiTrack(baseURL string) (bool, string) {
 // hifi-api manifest format and SpotiFLAC-compatible direct URL format.
 // Returns the address (host:port) to pass as --tidal-api-url.
 func (c *Client) startHiFiAdapter(upstream string) (string, error) {
+	// One adapter per upstream for the process lifetime. It used to open a
+	// fresh listener and goroutine on every call - that is, once per
+	// fallback attempt whenever the resolved Tidal API is a hifi instance -
+	// and nothing ever closed them, so a long-lived proxy accumulated
+	// listeners and goroutines without bound.
+	c.hifiMu.Lock()
+	defer c.hifiMu.Unlock()
+	if c.hifiAdapters == nil {
+		c.hifiAdapters = make(map[string]string)
+	}
+	if addr, ok := c.hifiAdapters[upstream]; ok {
+		return addr, nil
+	}
+
 	adapter := NewHiFiAdapter(upstream)
 
 	mux := http.NewServeMux()
@@ -312,6 +332,7 @@ func (c *Client) startHiFiAdapter(upstream string) (string, error) {
 	}()
 
 	addr := fmt.Sprintf("http://127.0.0.1:%d", listener.Addr().(*net.TCPAddr).Port)
+	c.hifiAdapters[upstream] = addr
 	return addr, nil
 }
 
@@ -699,6 +720,10 @@ func (c *Client) runCLIBackend(ctx context.Context, events chan<- ProgressEvent,
 		args = append(args, "--qobuz-api-url", c.qobuzAPIURL)
 	}
 	cmd := exec.CommandContext(ctx, c.cliPath, args...)
+	// Own process group, so cancelling a job takes the CLI's Chromium and
+	// node extension bridge with it instead of leaving them holding the
+	// output pipe (see backend_wait.go).
+	cmd.SysProcAttr = processGroupAttr()
 	c.activeCmds.Store(outputDir, cmd)
 	defer c.activeCmds.Delete(outputDir)
 
@@ -731,28 +756,24 @@ func (c *Client) runCLIBackend(ctx context.Context, events chan<- ProgressEvent,
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 
-	if err := cmd.Start(); err != nil {
-		errs <- fmt.Errorf("start spotiflac: %w", err)
-		return
-	}
-
+	sink := newErrSink(errs)
 	var outputBuf bytes.Buffer
-	tee := io.TeeReader(stdout, &outputBuf)
-	parseProgress(tee, events, errs, &outputBuf, func(ev ProgressEvent) {
+	onVerify := func(ev ProgressEvent) {
 		// FSL auto-solving: when Byparr/FlareSolverr is configured and a
 		// verification_required event arrives, send the challenge URL to
 		// Byparr's headless browser for Turnstile solving.
 		if c.fslURL != "" && ev.URL != "" {
 			c.solveVerification(ev.URL)
 		}
-	})
-
-	if err := cmd.Wait(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			errs <- fmt.Errorf("spotiflac timed out after %s", c.timeout)
-		} else {
-			errs <- newExitError("cli exited", err, &stderrBuf, &outputBuf)
-		}
+	}
+	startErr, exitErr, canceled := streamBackend(ctx, cmd, stdout, events, sink.send, &outputBuf, onVerify)
+	switch {
+	case startErr != nil:
+		sink.send(fmt.Errorf("start spotiflac: %w", startErr))
+	case canceled:
+		sink.send(fmt.Errorf("spotiflac timed out after %s", c.timeout))
+	case exitErr != nil:
+		sink.send(newExitError("cli exited", exitErr, &stderrBuf, &outputBuf))
 	}
 }
 
@@ -782,6 +803,9 @@ func (c *Client) downloadWithPython(ctx context.Context, pythonBin, wrapperPath,
 		}
 
 		cmd := exec.CommandContext(ctx, pythonBin, args...)
+		// Own process group: the wrapper starts a headless Chromium for
+		// verification, and that browser must not outlive a cancelled job.
+		cmd.SysProcAttr = processGroupAttr()
 		c.activeCmds.Store(outputDir, cmd)
 		defer c.activeCmds.Delete(outputDir)
 		cmd.Env = os.Environ() // passes HTTP_PROXY through
@@ -795,21 +819,16 @@ func (c *Client) downloadWithPython(ctx context.Context, pythonBin, wrapperPath,
 		var stderrBuf bytes.Buffer
 		cmd.Stderr = &stderrBuf
 
-		if err := cmd.Start(); err != nil {
-			errs <- fmt.Errorf("start python wrapper: %w", err)
-			return
-		}
-
+		sink := newErrSink(errs)
 		var outputBuf bytes.Buffer
-		tee := io.TeeReader(stdout, &outputBuf)
-		parseProgress(tee, events, errs, &outputBuf, nil)
-
-		if err := cmd.Wait(); err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				errs <- fmt.Errorf("python download timed out after %s", c.timeout)
-			} else {
-				errs <- newExitError("python wrapper exited", err, &stderrBuf, &outputBuf)
-			}
+		startErr, exitErr, canceled := streamBackend(ctx, cmd, stdout, events, sink.send, &outputBuf, nil)
+		switch {
+		case startErr != nil:
+			sink.send(fmt.Errorf("start python wrapper: %w", startErr))
+		case canceled:
+			sink.send(fmt.Errorf("python download timed out after %s", c.timeout))
+		case exitErr != nil:
+			sink.send(newExitError("python wrapper exited", exitErr, &stderrBuf, &outputBuf))
 		}
 	}()
 
@@ -1291,7 +1310,16 @@ func filterOut(env []string, names ...string) []string {
 	}
 	out := make([]string, 0, len(env))
 	for _, e := range env {
-		key := strings.ToUpper(e[:strings.IndexByte(e, '=')])
+		// An entry without '=' is not a key=value pair and cannot match a
+		// drop key. The old code sliced to IndexByte's -1 and panicked,
+		// inside a bare goroutine with no recover anywhere in the process -
+		// so one malformed environment entry killed the proxy.
+		eq := strings.IndexByte(e, '=')
+		if eq < 0 {
+			out = append(out, e)
+			continue
+		}
+		key := strings.ToUpper(e[:eq])
 		if !drop[key] {
 			out = append(out, e)
 		}

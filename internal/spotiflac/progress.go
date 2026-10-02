@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 )
@@ -77,7 +78,16 @@ func (m MetadataResult) EntityKind() string {
 	return ""
 }
 
-func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- error, output *bytes.Buffer, onVerify func(ProgressEvent)) {
+// parseProgress decodes a backend's stdout into progress events until the
+// stream ends or its read deadline passes.
+//
+// onErr, not a channel, is how a terminal error leaves this function: only
+// the FIRST error of a run is ever consumed by the caller (it returns as
+// soon as it has one), so a second send into a small buffered channel blocks
+// forever - a leaked goroutine, and a channel pair that is never closed, per
+// failed attempt. streamBackend supplies a sink that keeps the first and
+// drops the rest.
+func parseProgress(reader io.Reader, events chan<- ProgressEvent, output *bytes.Buffer, onVerify func(ProgressEvent), onErr func(error)) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -93,13 +103,13 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 			// NETWORK_ERROR: Timeout (120s) calling download") to stdout,
 			// which only this buffer has. Reporting one and dropping the
 			// other loses the reason about half the time.
-			errors <- &DownloadError{
+			onErr(&DownloadError{
 				Message: event.ErrorMessage,
 				RawOutput: joinNonEmpty(
 					significantLines(event.Detail, 12),
 					significantLines(output.String(), 12),
 				),
-			}
+			})
 		case "complete":
 			events <- event
 		case "track_done":
@@ -123,7 +133,7 @@ func parseProgress(reader io.Reader, events chan<- ProgressEvent, errors chan<- 
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		errors <- err
+		onErr(err)
 	}
 }
 
@@ -199,4 +209,15 @@ type DownloadError struct {
 
 func (e *DownloadError) Error() string {
 	return "spotiflac: " + e.Message
+}
+
+// ErrorDetail returns the backend's own captured output for an error, or ""
+// when the error carries none. Callers log it so a failure is diagnosable
+// from the proxy's own logs instead of only from "exit status 1".
+func ErrorDetail(err error) string {
+	var de *DownloadError
+	if errors.As(err, &de) {
+		return significantLines(de.RawOutput, 12)
+	}
+	return ""
 }
