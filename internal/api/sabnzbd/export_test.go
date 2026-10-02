@@ -133,3 +133,23 @@ func (h *Handler) warningIDs() ([]string, error) {
 func (h *Handler) DispatchJobForTest(job *queue.Job) {
 	h.dispatchJob(job)
 }
+
+// RequeueAfterCooldownForTest exposes the cooldown requeue path so a test can
+// exhaust its budget without parking the queue for real hours.
+func (h *Handler) RequeueAfterCooldownForTest(job *queue.Job, cooldown time.Duration, lastErr string) (bool, string) {
+	return h.requeueAfterCooldown(job, cooldown, lastErr)
+}
+
+// MaxCooldownRequeuesForTest exposes the bound to the external test package.
+func MaxCooldownRequeuesForTest() int { return maxCooldownRequeues }
+
+// InFlightForTest reports how many job workers are currently running, so a
+// test can wait for them instead of racing the temp-dir cleanup.
+func (h *Handler) InFlightForTest() int {
+	n := 0
+	h.inFlight.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}

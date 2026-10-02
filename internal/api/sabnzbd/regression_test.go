@@ -266,3 +266,47 @@ func TestDurationMismatchIsNotRetriedAndDoesNotOpenTheBreaker(t *testing.T) {
 			"a wrong-edit mismatch must not open the %s circuit: six of them would, and every other release parks behind it", svc)
 	}
 }
+
+// A job must outlast a real outage. The cooldown requeue bound was 3, and with
+// SPF_MAX_CONCURRENT=1 the jobs drain one at a time between announced windows,
+// so a single job collects a requeue per break it happens to be running
+// through: measured 2026-10-02, spotbye announced 79-, 120- and 118-minute
+// breaks in one evening and the largest job was already on its third requeue.
+// The next one would have failed it with "the server is taking a scheduled
+// short break" as its whole error - the very symptom this work removes.
+func TestCooldownRequeueBudgetOutlastsAnOutage(t *testing.T) {
+	if sabnzbd.MaxCooldownRequeuesForTest() < 10 {
+		t.Fatalf("maxCooldownRequeues = %d: three two-hour breaks in one evening exhausts it, and the job then fails for an upstream that was down",
+			sabnzbd.MaxCooldownRequeuesForTest())
+	}
+}
+
+// When the budget IS spent, the row has to say why: the caller's last error is
+// the upstream's own "take a break" message, which reads as if the release
+// were broken.
+func TestCooldownRequeueExhaustionExplainsItself(t *testing.T) {
+	cli := failingCLI(t, `{"message":"Download failed: The server is taking a scheduled short break. Please try again in about 60 minute(s).","type":"error"}`)
+	h, q := failureHandler(t, cli, nil)
+
+	job := &queue.Job{
+		NzoID:      "SABnzbd_nzo_exhaust",
+		SpotifyURL: "https://open.spotify.com/album/exhaust",
+		Service:    "tidal",
+		Filename:   "Long Outage",
+	}
+	require.NoError(t, q.Add(job))
+
+	// Spend the budget directly: each real requeue would park the queue for the
+	// announced hour.
+	for i := 0; i <= sabnzbd.MaxCooldownRequeuesForTest(); i++ {
+		requeued, giveUp := h.RequeueAfterCooldownForTest(job, time.Minute, "the server is taking a scheduled short break")
+		if requeued {
+			continue
+		}
+		require.NotEmpty(t, giveUp, "the give-up reason must be reported to the caller")
+		assert.Contains(t, giveUp, "gave up after")
+		assert.Contains(t, giveUp, "scheduled short break")
+		return
+	}
+	t.Fatalf("the requeue budget never ran out at %d requeues", sabnzbd.MaxCooldownRequeuesForTest())
+}

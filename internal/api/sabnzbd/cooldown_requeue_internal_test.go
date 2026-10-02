@@ -82,9 +82,10 @@ func TestExtendIsMonotonic(t *testing.T) {
 	assert.False(t, g.extend(0), "a zero cooldown is not a park")
 }
 
-// TestRequeueCounterBound pins the bound: three requeues, then the job is
-// failed for real. Unbounded requeueing would hide a permanently broken
-// release as a download that is forever about to start.
+// TestRequeueCounterBound pins the counter's behaviour: it increments per job,
+// and a terminal state resets it. The BOUND itself is asserted in
+// TestCooldownRequeueBudgetOutlastsAnOutage, which explains why it has to
+// outlast a real outage rather than being small.
 func TestRequeueCounterBound(t *testing.T) {
 	h := &Handler{}
 	got := []int{}
@@ -92,7 +93,7 @@ func TestRequeueCounterBound(t *testing.T) {
 		got = append(got, h.bumpRequeue("SABnzbd_nzo_bound"))
 	}
 	assert.Equal(t, []int{1, 2, 3, 4, 5}, got)
-	assert.Equal(t, 3, maxCooldownRequeues)
+	assert.Positive(t, maxCooldownRequeues, "a zero bound would fail every job on its first upstream pause")
 
 	h.clearRequeues("SABnzbd_nzo_bound")
 	assert.Equal(t, 1, h.bumpRequeue("SABnzbd_nzo_bound"), "a terminal state must reset the counter")

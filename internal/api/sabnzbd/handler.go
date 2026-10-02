@@ -719,14 +719,18 @@ func (h *Handler) concludeFailedAttempts(ctx context.Context, job *queue.Job, la
 	}
 
 	if out.cooldown > 0 && !budgetExhausted {
-		if h.requeueAfterCooldown(job, out.cooldown, lastErr) {
+		if requeued, giveUp := h.requeueAfterCooldown(job, out.cooldown, lastErr); requeued {
 			return
+		} else if giveUp != "" {
+			lastErr = giveUp
 		}
 	}
 	if cooldown, isCooldown := h.breakGate.cooldownFor(lastErr); isCooldown {
 		h.breakGate.extend(cooldown)
-		if h.requeueAfterCooldown(job, cooldown, lastErr) {
+		if requeued, giveUp := h.requeueAfterCooldown(job, cooldown, lastErr); requeued {
 			return
+		} else if giveUp != "" {
+			lastErr = giveUp
 		}
 	}
 	h.failJob(job, lastErr)
@@ -767,34 +771,51 @@ func (h *Handler) requeueUnattempted(job *queue.Job, lastErr string, candidates 
 }
 
 // maxCooldownRequeues bounds how often one job may be put back for an
-// upstream cooldown before it is failed for real. Unbounded requeueing would
-// hide a permanently broken release as an eternally pending download, which
-// is the failure mode ResumeQueuedJobs exists to clean up.
-const maxCooldownRequeues = 3
+// upstream cooldown before it is failed for real.
+//
+// It has to outlast a real outage, and 3 did not: an announced break parks the
+// whole queue, and with SPF_MAX_CONCURRENT=1 the jobs drain one at a time
+// between windows, so a single job collects a requeue per break it happens to
+// be running through. Measured 2026-10-02: spotbye announced 79-, 120- and
+// 118-minute breaks in one evening and the largest job was on its third
+// requeue with the backlog barely touched - the next one would have failed it
+// with "the server is taking a scheduled short break" as its whole error,
+// which is precisely the "downloads fail" symptom this classification work
+// exists to remove. 20 requeues is roughly two days of two-hour windows.
+//
+// The bound still exists because unbounded requeueing would hide a release
+// that can never be evaluated as an eternally pending download. It is
+// per-process: a restart resets it.
+const maxCooldownRequeues = 20
 
 // requeueAfterCooldown returns the job to Queued and re-dispatches it, so it
 // waits out the park window in parkForUpstreamBreak - which runs BEFORE the
 // concurrency semaphore, so a waiting job holds no slot. Reports whether the
 // job was requeued; false means the caller should fail it.
-func (h *Handler) requeueAfterCooldown(job *queue.Job, cooldown time.Duration, lastErr string) bool {
+func (h *Handler) requeueAfterCooldown(job *queue.Job, cooldown time.Duration, lastErr string) (requeued bool, giveUp string) {
 	n := h.bumpRequeue(job.NzoID)
 	if n > maxCooldownRequeues {
 		h.log.Warn().Str("nzo_id", job.NzoID).Int("requeues", n-1).
 			Msg("upstream cooldown requeue budget exhausted; failing job for real")
-		return false
+		// Say WHY it died. The caller would otherwise report the upstream's
+		// own "taking a scheduled short break" message, which reads as if the
+		// release were broken; the row has to say that the proxy spent a day
+		// retrying an outage instead.
+		return false, fmt.Sprintf("gave up after %d upstream cooldowns: %s", n-1, lastErr)
 	}
 	job.Status = sabnzbd.StatusQueued
 	job.ErrorMessage = ""
 	job.Percentage = 0
 	job.CompletedAt = nil
+	job.StartedAt = nil
 	if err := h.queue.Update(job); err != nil {
 		h.log.Error().Err(err).Str("nzo_id", job.NzoID).Msg("requeue after cooldown: update failed")
-		return false
+		return false, ""
 	}
 	h.log.Warn().Str("nzo_id", job.NzoID).Int("requeue", n).Dur("cooldown", cooldown).
 		Str("upstream_error", lastErr).Msg("upstream asked us to back off; requeuing job instead of failing it")
 	h.dispatchJob(job)
-	return true
+	return true, ""
 }
 
 // bumpRequeue increments and returns the requeue count for an nzo_id.

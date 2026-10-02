@@ -62,19 +62,22 @@ func TestResumeQueuedJobsPicksUpJobsStrandedByRestart(t *testing.T) {
 		t.Fatalf("ResumeQueuedJobs() = %d, want 3", got)
 	}
 
-	// Each resumed job must leave Queued. Anything still Queued once the
-	// dispatchers have run is the stranding bug reappearing.
+	// Each resumed job must leave Queued, AND every worker must have finished
+	// before this test returns: a worker that is still in its retry backoff
+	// wakes up afterwards and re-creates its job directory, which races
+	// t.TempDir()'s cleanup (observed as "directory not empty" flakiness).
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		jobs, _, err := q.List(queue.ListParams{Status: string(sabnzbd.StatusQueued)})
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
-		if len(jobs) == 0 {
+		if len(jobs) == 0 && h.InFlightForTest() == 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%d job(s) still Queued after resume", len(jobs))
+			t.Fatalf("%d job(s) still Queued after resume, %d worker(s) in flight",
+				len(jobs), h.InFlightForTest())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
