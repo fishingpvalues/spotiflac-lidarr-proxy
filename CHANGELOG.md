@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.7](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.6...v0.0.7) (2026-10-02)
+
+
+### Bug Fixes
+
+* **sabnzbd:** a wrong-edit duration mismatch is about the release, not the service ([7953f81](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/7953f810e814fed260459041367ad5bbc2b70282))
+
 ## [0.0.6](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.5...v0.0.6) (2026-10-02)
 
 
