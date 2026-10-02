@@ -94,6 +94,9 @@ func addMissingColumns(db *sql.DB) error {
 	}{
 		{"track_count", "ALTER TABLE jobs ADD COLUMN track_count INTEGER NOT NULL DEFAULT 0"},
 		{"cli_output", "ALTER TABLE jobs ADD COLUMN cli_output TEXT NOT NULL DEFAULT ''"},
+		{"started_at", "ALTER TABLE jobs ADD COLUMN started_at DATETIME"},
+		{"progress_at", "ALTER TABLE jobs ADD COLUMN progress_at DATETIME"},
+		{"recover_count", "ALTER TABLE jobs ADD COLUMN recover_count INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, a := range additions {
 		if existing[a.name] {
@@ -104,6 +107,45 @@ func addMissingColumns(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// jobColumns is the SELECT list every read path shares. It exists because
+// the same 17-column list was copied into four queries and each copy had
+// drifted: List never selected cli_output, so a job's backend output - the
+// only record of why it failed - was invisible in the queue, and Get never
+// did either, so handlePause re-saved a job and silently erased it.
+const jobColumns = `id, nzo_id, spotify_url, status, category, priority, filename,
+	output_path, size, sizeleft, percentage, time_added, completed_at,
+	error_message, service, quality, track_count, cli_output,
+	started_at, progress_at, recover_count`
+
+// rowScanner is satisfied by both *sql.Row and *sql.Rows.
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+// scanJob reads one row selected with jobColumns.
+func scanJob(row rowScanner) (*Job, error) {
+	job := &Job{}
+	var completedAt, startedAt, progressAt sql.NullTime
+	if err := row.Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status,
+		&job.Category, &job.Priority, &job.Filename, &job.OutputPath,
+		&job.Size, &job.Sizeleft, &job.Percentage, &job.TimeAdded,
+		&completedAt, &job.ErrorMessage, &job.Service, &job.Quality,
+		&job.TrackCount, &job.CLIOutput, &startedAt, &progressAt,
+		&job.RecoverCount); err != nil {
+		return nil, err
+	}
+	if completedAt.Valid {
+		job.CompletedAt = &completedAt.Time
+	}
+	if startedAt.Valid {
+		job.StartedAt = &startedAt.Time
+	}
+	if progressAt.Valid {
+		job.ProgressAt = &progressAt.Time
+	}
+	return job, nil
 }
 
 func existingColumns(db *sql.DB) (map[string]bool, error) {
@@ -141,50 +183,22 @@ func (q *SQLiteQueue) Add(job *Job) error {
 }
 
 func (q *SQLiteQueue) Get(nzoID string) (*Job, error) {
-	job := &Job{}
-	var completedAt sql.NullTime
-	err := q.db.QueryRow(
-		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
-		        output_path, size, sizeleft, percentage, time_added, completed_at,
-		        error_message, service, quality, track_count
-		 FROM jobs WHERE nzo_id = ? AND is_history = 0`, nzoID,
-	).Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status, &job.Category,
-		&job.Priority, &job.Filename, &job.OutputPath, &job.Size, &job.Sizeleft,
-		&job.Percentage, &job.TimeAdded, &completedAt, &job.ErrorMessage,
-		&job.Service, &job.Quality, &job.TrackCount)
-	if err != nil {
-		return nil, err
-	}
-	if completedAt.Valid {
-		job.CompletedAt = &completedAt.Time
-	}
-	return job, nil
+	row := q.db.QueryRow(
+		`SELECT `+jobColumns+`
+		 FROM jobs WHERE nzo_id = ? AND is_history = 0`, nzoID)
+	return scanJob(row)
 }
 
 // FindActiveBySpotifyURL returns the first non-terminal (Queued or
 // Downloading), non-history job matching the given Spotify URL, if any.
 func (q *SQLiteQueue) FindActiveBySpotifyURL(url string) (*Job, error) {
-	job := &Job{}
-	var completedAt sql.NullTime
-	err := q.db.QueryRow(
-		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
-		        output_path, size, sizeleft, percentage, time_added, completed_at,
-		        error_message, service, quality, track_count
+	row := q.db.QueryRow(
+		`SELECT `+jobColumns+`
 		 FROM jobs
 		 WHERE spotify_url = ? AND is_history = 0 AND status IN (?, ?)
 		 ORDER BY time_added ASC LIMIT 1`,
-		url, sabnzbd.StatusQueued, sabnzbd.StatusDownloading,
-	).Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status, &job.Category,
-		&job.Priority, &job.Filename, &job.OutputPath, &job.Size, &job.Sizeleft,
-		&job.Percentage, &job.TimeAdded, &completedAt, &job.ErrorMessage,
-		&job.Service, &job.Quality, &job.TrackCount)
-	if err != nil {
-		return nil, err
-	}
-	if completedAt.Valid {
-		job.CompletedAt = &completedAt.Time
-	}
-	return job, nil
+		url, sabnzbd.StatusQueued, sabnzbd.StatusDownloading)
+	return scanJob(row)
 }
 
 func (q *SQLiteQueue) List(params ListParams) ([]*Job, int, error) {
@@ -232,9 +246,7 @@ func (q *SQLiteQueue) List(params ListParams) ([]*Job, int, error) {
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
-		        output_path, size, sizeleft, percentage, time_added, completed_at,
-		        error_message, service, quality, track_count
+		`SELECT `+jobColumns+`
 		 FROM jobs %s ORDER BY time_added ASC LIMIT ? OFFSET ?`, whereClause)
 
 	allArgs := append(args, params.Limit, params.Start)
@@ -246,16 +258,9 @@ func (q *SQLiteQueue) List(params ListParams) ([]*Job, int, error) {
 
 	var jobs []*Job
 	for rows.Next() {
-		job := &Job{}
-		var completedAt sql.NullTime
-		if err := rows.Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status,
-			&job.Category, &job.Priority, &job.Filename, &job.OutputPath,
-			&job.Size, &job.Sizeleft, &job.Percentage, &job.TimeAdded,
-			&completedAt, &job.ErrorMessage, &job.Service, &job.Quality, &job.TrackCount); err != nil {
+		job, err := scanJob(rows)
+		if err != nil {
 			return nil, 0, err
-		}
-		if completedAt.Valid {
-			job.CompletedAt = &completedAt.Time
 		}
 		jobs = append(jobs, job)
 	}
@@ -269,17 +274,45 @@ func (q *SQLiteQueue) Update(job *Job) error {
 	_, err := q.db.Exec(
 		`UPDATE jobs SET status=?, category=?, priority=?, filename=?, output_path=?,
 		        size=?, sizeleft=?, percentage=?, completed_at=?, error_message=?,
-		        service=?, quality=?, track_count=?, cli_output=?
+		        service=?, quality=?, track_count=?, cli_output=?,
+		        started_at=?, progress_at=?, recover_count=?
 		 WHERE nzo_id=?`,
 		job.Status, job.Category, job.Priority, job.Filename, job.OutputPath,
 		job.Size, job.Sizeleft, job.Percentage, job.CompletedAt, job.ErrorMessage,
-		job.Service, job.Quality, job.TrackCount, job.CLIOutput, job.NzoID,
+		job.Service, job.Quality, job.TrackCount, job.CLIOutput,
+		job.StartedAt, job.ProgressAt, job.RecoverCount, job.NzoID,
 	)
 	return err
 }
 
 func (q *SQLiteQueue) Delete(nzoID string, delFiles bool) error {
 	_, err := q.db.Exec("DELETE FROM jobs WHERE nzo_id = ?", nzoID)
+	return err
+}
+
+// GetByNzoID returns a job regardless of whether it is queued or in history.
+//
+// Get deliberately filters `is_history = 0` - it serves the queue endpoints -
+// but mode=retry exists to re-run a FAILED download, which by definition
+// lives in history, so it needs this one.
+func (q *SQLiteQueue) GetByNzoID(nzoID string) (*Job, error) {
+	row := q.db.QueryRow(`SELECT `+jobColumns+` FROM jobs WHERE nzo_id = ?`, nzoID)
+	return scanJob(row)
+}
+
+// DeleteFromHistory removes a row only if it is in history. The history
+// delete endpoint used to call Delete, which has no is_history predicate, so
+// naming an active job deleted the active row out from under its worker.
+func (q *SQLiteQueue) DeleteFromHistory(nzoID string) error {
+	_, err := q.db.Exec("DELETE FROM jobs WHERE nzo_id = ? AND is_history = 1", nzoID)
+	return err
+}
+
+// MoveToQueue takes a row out of history and back into the active queue, so
+// mode=retry produces a job that queue listings and Rec/Resume logic can see
+// again. Update alone never cleared is_history.
+func (q *SQLiteQueue) MoveToQueue(nzoID string) error {
+	_, err := q.db.Exec("UPDATE jobs SET is_history = 0, recover_count = 0 WHERE nzo_id = ?", nzoID)
 	return err
 }
 
@@ -310,9 +343,7 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, nzo_id, spotify_url, status, category, priority, filename,
-		        output_path, size, sizeleft, percentage, time_added, completed_at,
-		        error_message, service, quality, track_count
+		`SELECT `+jobColumns+`
 		 FROM jobs %s ORDER BY completed_at DESC, id DESC LIMIT ? OFFSET ?`, whereClause)
 
 	allArgs := append(args, params.Limit, params.Start)
@@ -324,16 +355,9 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 
 	var jobs []*Job
 	for rows.Next() {
-		job := &Job{}
-		var completedAt sql.NullTime
-		if err := rows.Scan(&job.ID, &job.NzoID, &job.SpotifyURL, &job.Status,
-			&job.Category, &job.Priority, &job.Filename, &job.OutputPath,
-			&job.Size, &job.Sizeleft, &job.Percentage, &job.TimeAdded,
-			&completedAt, &job.ErrorMessage, &job.Service, &job.Quality, &job.TrackCount); err != nil {
+		job, err := scanJob(rows)
+		if err != nil {
 			return nil, 0, err
-		}
-		if completedAt.Valid {
-			job.CompletedAt = &completedAt.Time
 		}
 		jobs = append(jobs, job)
 	}
@@ -343,33 +367,72 @@ func (q *SQLiteQueue) History(params ListParams) ([]*Job, int, error) {
 	return jobs, total, nil
 }
 
-// RecoverStuckJobs marks any job left in Downloading status (from a prior
-// crash or unclean restart) as Failed and moves it to history. Called once
-// at startup — partial on-disk state from a killed subprocess is never
-// trusted or auto-resumed. Runs as a single atomic UPDATE so a mid-sweep
-// failure can't leave some jobs recovered and others not, and can't strand
-// a job between "marked Failed" and "moved to history".
+// RecoverStuckJobs puts every job left in Downloading status back into the
+// queue after a crash or unclean restart, and fails only the jobs that have
+// already been recovered MaxRecoveries times. Called once at startup.
+//
+// Requeueing rather than failing is the point. A restart interrupts a
+// download; it says nothing about whether the release is downloadable. The
+// old behaviour - fail and move to history - handed Lidarr a dead grab that
+// had to be blocklisted and re-searched, and the only thing that ever
+// brought the album back was an external re-grab cycle. Measured over the
+// week to 2026-10-02: the DAGU stuck-monitor restarted this container eight
+// times, and every in-flight job died "interrupted by restart" even though
+// most of those releases had downloaded successfully before. The partial job
+// directory is deleted, not trusted: the re-dispatched job starts from an
+// empty directory (ProcessDownloadSync -> storage.PrepareJobDir).
+//
+// Two statements in one transaction, so a mid-sweep failure cannot leave a
+// job stranded between "requeued" and "counter bumped", and a job can never
+// be failed without its counter having been bumped first.
 func (q *SQLiteQueue) RecoverStuckJobs() (int, error) {
-	// completed_at has to be set here, not left NULL. PruneHistory ranks
-	// history by completed_at, and a NULL loses to every timestamped row, so
-	// a job recovered into a full history was deleted by the very next
-	// addurl instead of being reported as failed. Observed in production: a
-	// release Lidarr had grabbed vanished from the queue database entirely,
-	// leaving Lidarr with a grab it could neither fail nor blocklist - so it
-	// re-grabbed the same release forever.
-	result, err := q.db.Exec(
+	tx, err := q.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("recover stuck jobs: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// completed_at has to be set when failing, not left NULL. PruneHistory
+	// ranks history by completed_at, and a NULL loses to every timestamped
+	// row, so a job recovered into a full history was deleted by the very
+	// next addurl instead of being reported as failed. Observed in
+	// production: a release Lidarr had grabbed vanished from the queue
+	// database entirely, leaving Lidarr with a grab it could neither fail
+	// nor blocklist - so it re-grabbed the same release forever.
+	result, err := tx.Exec(
 		`UPDATE jobs SET status = ?, error_message = ?, is_history = 1, completed_at = ?
-		 WHERE status = ? AND is_history = 0`,
-		sabnzbd.StatusFailed, "interrupted by restart", time.Now(), sabnzbd.StatusDownloading,
+		 WHERE status = ? AND is_history = 0 AND recover_count >= ?`,
+		sabnzbd.StatusFailed,
+		"interrupted by restart, and by more restarts than this job's recovery budget allows",
+		time.Now(), sabnzbd.StatusDownloading, MaxRecoveries,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("recover stuck jobs: %w", err)
 	}
-	affected, err := result.RowsAffected()
+	failed, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("count recovered jobs: %w", err)
 	}
-	return int(affected), nil
+
+	result, err = tx.Exec(
+		`UPDATE jobs SET status = ?, error_message = '', completed_at = NULL,
+		        sizeleft = size, percentage = 0, cli_output = '',
+		        started_at = NULL, progress_at = NULL,
+		        recover_count = recover_count + 1
+		 WHERE status = ? AND is_history = 0 AND recover_count < ?`,
+		sabnzbd.StatusQueued, sabnzbd.StatusDownloading, MaxRecoveries,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("requeue interrupted jobs: %w", err)
+	}
+	requeued, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count requeued jobs: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("recover stuck jobs: %w", err)
+	}
+	return int(requeued + failed), nil
 }
 
 // PruneHistory deletes history rows beyond the `keep` most recent

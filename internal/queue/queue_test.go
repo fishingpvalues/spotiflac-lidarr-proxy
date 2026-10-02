@@ -157,7 +157,10 @@ func TestFindActiveBySpotifyURLIgnoresHistory(t *testing.T) {
 	assert.Error(t, err, "a job already moved to history should not count as a duplicate")
 }
 
-func TestRecoverStuckJobsOnStartup(t *testing.T) {
+// A restart interrupts a download; it does not prove the release is broken.
+// The job goes back to Queued so it can be re-dispatched, with a persisted
+// counter so a crash loop cannot re-download one release forever.
+func TestRecoverStuckJobsRequeuesInterruptedJobs(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
 
 	q1, err := queue.New(dbPath)
@@ -168,19 +171,66 @@ func TestRecoverStuckJobsOnStartup(t *testing.T) {
 	require.NoError(t, q1.Update(job))
 	require.NoError(t, q1.Close())
 
-	// Simulate restart: reopening the DB via New() must recover the stuck job.
+	// Simulate restart: reopening the DB via New() must recover the job.
 	q2, err := queue.New(dbPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { q2.Close() })
 
-	_, err = q2.Get("SABnzbd_nzo_stuck001")
-	assert.Error(t, err, "recovered job should have moved to history, not stayed in the active queue")
+	back, err := q2.Get("SABnzbd_nzo_stuck001")
+	require.NoError(t, err, "an interrupted job must be requeued, not moved to history")
+	assert.Equal(t, sabnzbd.StatusQueued, back.Status)
+	assert.Equal(t, 1, back.RecoverCount)
+	assert.Nil(t, back.StartedAt, "the requeued job has not started yet")
+	assert.Nil(t, back.CompletedAt)
 
 	hist, _, err := q2.History(queue.ListParams{Limit: 10})
 	require.NoError(t, err)
-	require.Len(t, hist, 1)
+	assert.Empty(t, hist, "nothing may reach Lidarr's history for a mere restart")
+}
+
+// The bound: after MaxRecoveries interrupted runs the release is failed for
+// real rather than re-downloaded forever.
+func TestRecoverStuckJobsGivesUpAfterTheBudget(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+
+	// One extra round: MaxRecoveries requeues, and the NEXT restart is
+	// the one that fails it.
+	for i := 0; i <= queue.MaxRecoveries; i++ {
+		q, err := queue.New(dbPath)
+		require.NoError(t, err)
+		job, err := q.Get("SABnzbd_nzo_loop")
+		if err != nil {
+			job = &queue.Job{NzoID: "SABnzbd_nzo_loop", Status: sabnzbd.StatusQueued}
+			require.NoError(t, q.Add(job))
+		}
+		job.Status = sabnzbd.StatusDownloading
+		require.NoError(t, q.Update(job))
+		require.NoError(t, q.Close())
+	}
+
+	q, err := queue.New(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { q.Close() })
+
+	hist, _, err := q.History(queue.ListParams{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, hist, 1, "the job must be failed once its recovery budget is spent")
 	assert.Equal(t, sabnzbd.StatusFailed, hist[0].Status)
 	assert.Contains(t, hist[0].ErrorMessage, "interrupted by restart")
+}
+
+// A Paused row is stranded by a restart exactly like a Queued one, and
+// ResumeQueuedJobs has to pick it up: pause sets the status without stopping
+// the worker, so after a restart nothing else ever looks at it.
+func TestListReturnsPausedJobsForResume(t *testing.T) {
+	q := newTestQueue(t)
+	require.NoError(t, q.Add(&queue.Job{NzoID: "SABnzbd_nzo_paused", Status: sabnzbd.StatusPaused}))
+	require.NoError(t, q.Add(&queue.Job{NzoID: "SABnzbd_nzo_queued", Status: sabnzbd.StatusQueued}))
+
+	jobs, total, err := q.List(queue.ListParams{Limit: 50})
+	require.NoError(t, err)
+	assert.Equal(t, 2, total)
+	assert.Len(t, jobs, 2)
 }
 
 func TestPruneHistoryKeepsOnlyMostRecent(t *testing.T) {
@@ -357,9 +407,11 @@ func TestRecoverStuckJobsSurvivesAPrune(t *testing.T) {
 		require.NoError(t, q.MoveToHistory(id))
 	}
 
-	// The interrupted job: still Downloading when the process died. Add
-	// always inserts as Queued, so the status has to be set afterwards.
-	stuck := &queue.Job{NzoID: "SABnzbd_nzo_stuck"}
+	// The interrupted job: still Downloading when the process died, and out
+	// of recovery budget, so this recovery is the one that fails it into
+	// history. Add always inserts as Queued, so the status has to be set
+	// afterwards.
+	stuck := &queue.Job{NzoID: "SABnzbd_nzo_stuck", RecoverCount: queue.MaxRecoveries}
 	require.NoError(t, q.Add(stuck))
 	stuck.Status = sabnzbd.StatusDownloading
 	require.NoError(t, q.Update(stuck))
@@ -382,7 +434,7 @@ func TestRecoverStuckJobsSurvivesAPrune(t *testing.T) {
 func TestRecoverStuckJobsRecordsFailureAndTime(t *testing.T) {
 	q := newTestQueue(t)
 
-	job := &queue.Job{NzoID: "SABnzbd_nzo_rec"}
+	job := &queue.Job{NzoID: "SABnzbd_nzo_rec", RecoverCount: queue.MaxRecoveries}
 	require.NoError(t, q.Add(job))
 	job.Status = sabnzbd.StatusDownloading
 	require.NoError(t, q.Update(job))
@@ -391,13 +443,13 @@ func TestRecoverStuckJobsRecordsFailureAndTime(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 
-	// Get only looks at the active queue; a recovered job is history.
+	// Get only looks at the active queue; a job out of recovery budget is history.
 	hist, _, err := q.History(queue.ListParams{Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, hist, 1)
 	got := hist[0]
 	assert.Equal(t, sabnzbd.StatusFailed, got.Status)
-	assert.Equal(t, "interrupted by restart", got.ErrorMessage)
+	assert.Contains(t, got.ErrorMessage, "interrupted by restart")
 	require.NotNil(t, got.CompletedAt, "without a completion time the row is the first thing a prune deletes")
 	assert.WithinDuration(t, time.Now(), *got.CompletedAt, time.Minute)
 }
