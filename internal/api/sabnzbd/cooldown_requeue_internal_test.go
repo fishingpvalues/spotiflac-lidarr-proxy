@@ -82,7 +82,7 @@ func TestExtendIsMonotonic(t *testing.T) {
 	assert.False(t, g.extend(0), "a zero cooldown is not a park")
 }
 
-// TestRequeueCounterBound pins the counter's behaviour: it increments per job,
+// TestRequeueCounterBound pins the counter's behavior: it increments per job,
 // and a terminal state resets it. The BOUND itself is asserted in
 // TestCooldownRequeueBudgetOutlastsAnOutage, which explains why it has to
 // outlast a real outage rather than being small.
