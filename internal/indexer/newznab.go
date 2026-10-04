@@ -3,6 +3,7 @@ package indexer
 import (
 	"encoding/xml"
 	"fmt"
+	"hash/fnv"
 	"net/url"
 	"strconv"
 	"time"
@@ -141,6 +142,25 @@ func qualityTag(quality string) string {
 // claims to be year zero fails the year component of its album-match check
 // outright ("Album match is not close enough: 77.6 % vs 80 % [year, country,
 // tracks]" - seen against production on every SpotiFLAC grab).
+// pubDateEpoch anchors stablePubDate. Old enough to be "seen before" by any
+// client, recent enough to stay inside every realistic usenet retention.
+var pubDateEpoch = time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+// stablePubDate returns the same publish date for a release on every search.
+//
+// Lidarr (like Sonarr/Radarr) matches a usenet release against its blocklist
+// by title, indexer AND publish date (within two minutes). time.Now() made
+// every search look like a brand-new upload, so a failed download was grabbed
+// again on the next search - 114 times for one album on one instance - and
+// autoRedownloadFailed turned every failure into a loop. Deriving the date
+// from the Spotify URL keeps it stable, so the blocklist finally applies.
+func stablePubDate(spotifyURL string) time.Time {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(spotifyURL))
+	const year = int64(365 * 24 * 3600)
+	return pubDateEpoch.Add(time.Duration(int64(h.Sum64()%uint64(year))) * time.Second)
+}
+
 func yearAttr(year int) string {
 	if year <= 0 {
 		return ""
@@ -249,7 +269,7 @@ func NewznabXMLPage(results []spotiflac.MetadataResult, total, offset int, serve
 			Title:       title,
 			GUID:        GUID{Value: r.SpotifyURL, IsPermaLink: true},
 			Link:        downloadURL,
-			PubDate:     time.Now().Format(time.RFC1123Z),
+			PubDate:     stablePubDate(r.SpotifyURL).Format(time.RFC1123Z),
 			Category:    categoryLabel(r.Genre),
 			Description: fmt.Sprintf("%s - %s (%d tracks)", r.Artist, r.Album, r.TrackCount),
 			Comments:    "",
