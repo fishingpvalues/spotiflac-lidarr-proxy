@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.9](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.8...v0.0.9) (2026-10-04)
+
+
+### Bug Fixes
+
+* **indexer:** stable publish date so the blocklist matches ([#15](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/issues/15)) ([207a45e](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/207a45ee9327d431eed821f4b8d22b93bb937bb5))
+
 ## [0.0.8](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.7...v0.0.8) (2026-10-02)
 
 
