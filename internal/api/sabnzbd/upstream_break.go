@@ -58,6 +58,22 @@ var breakPattern = regexp.MustCompile(`(?i)short break[^\d]{0,80}(\d+)\s*minute`
 // flatlined at 173 missing albums for a quarter of an hour.
 var rateLimitPattern = regexp.MustCompile(`(?i)rate limited \(429\)|\b429\b[^\n]{0,40}too many requests|too many requests`)
 
+// resolverDownPattern matches this host's own DNS resolver timing out, which
+// is the network being down for a moment, not any service failing:
+//
+//	metadata fetch failed: failed to fetch metadata: failed to initialize spotify client:
+//	Get "https://open.spotify.com": dial tcp: lookup open.spotify.com on 127.0.0.1:53:
+//	read udp 127.0.0.1:41214->127.0.0.1:53: i/o timeout
+//
+// Measured 2026-10-16 behind a VPN container: 31 such errors in ten days,
+// in bursts of a few minutes while the tunnel re-keyed. Treated as a service
+// failure, each one walked the job through three retries and every fallback
+// service - all asking the same dead resolver - and failed it into Lidarr's
+// history. Parked like a rate limit instead, the job waits out the blip and
+// runs again. "no such host" is deliberately NOT matched: that is a resolver
+// that answered, and a name that is gone stays gone.
+var resolverDownPattern = regexp.MustCompile(`(?i)lookup \S+ on \S+:\d+: (read udp \S+: )?i/o timeout|lookup \S+ on \S+: server misbehaving|connect: network is unreachable`)
+
 // defaultRateLimitPark is deliberately short. A 429 is a "slow down", not a
 // maintenance window: park long enough that the next job is not part of the
 // same burst, short enough that a transient limit does not idle the queue.
@@ -127,7 +143,7 @@ func (g *upstreamBreakGate) cooldownFor(err string) (time.Duration, bool) {
 	if best > 0 {
 		return best, true
 	}
-	if rateLimitPattern.MatchString(err) {
+	if rateLimitPattern.MatchString(err) || resolverDownPattern.MatchString(err) {
 		g.mu.Lock()
 		park := g.rateLimitPark
 		g.mu.Unlock()

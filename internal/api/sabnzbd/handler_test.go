@@ -43,7 +43,7 @@ func newProgressTestHandler(t *testing.T) (*sabnzbd.Handler, *queue.SQLiteQueue)
 
 	cfg := &config.Config{
 		APIKey:         "test-key",
-		OutputDir:      t.TempDir(),
+		OutputDir:      outputDir(t),
 		DefaultService: "tidal",
 		DefaultQuality: "lossless",
 		MaxConcurrent:  1,
@@ -1372,4 +1372,26 @@ func TestWarningsSurfacesBackendWarnings(t *testing.T) {
 	require.Len(t, w.Warnings, 1)
 	assert.Equal(t, health.WarnNoExtensions, w.Warnings[0].ID)
 	assert.Equal(t, "no extensions", w.Warnings[0].Text)
+}
+
+// outputDir is a scratch directory for job output that, unlike t.TempDir,
+// tolerates a worker goroutine still writing into it when the test ends.
+// Handlers dispatch downloads asynchronously (a retry or requeue re-runs
+// processDownload), and t.TempDir's cleanup then failed the test with
+// "unlinkat ...: directory not empty" in roughly one full-suite run in two.
+func outputDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "spf-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 20; i++ {
+			if os.RemoveAll(dir) == nil {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
+	return dir
 }

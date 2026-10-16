@@ -52,7 +52,10 @@ var permanentFailurePattern = regexp.MustCompile(`(?i)` +
 	`couldn't find (tidal|qobuz|amazon|deezer) url` +
 	`|no platform links found` +
 	`|track link not found for isrc` +
-	`|(amazon|tidal|qobuz|deezer) api returned status 40[034]` +
+	// 409 joined 400/403/404 on 2026-10-16: Amazon answers 409 for the same
+	// track on every attempt, days apart ("Hardwell On Air Intro", 13 times
+	// in two weeks), so it describes the track, not the moment.
+	`|(amazon|tidal|qobuz|deezer) api returned status 40[0349]` +
 	`|unknown service:` +
 	`|is only available through the python backend` +
 	`|is not available in this deployment` +
@@ -70,8 +73,24 @@ var permanentFailurePattern = regexp.MustCompile(`(?i)` +
 	// around; what stops is asking the same provider for the same wrong file
 	// three times, and feeding a release-specific mismatch to the breaker
 	// that unrelated releases then park behind.
-	`|downloaded file duration mismatch`,
+	`|downloaded file duration mismatch` +
+	// The CLI detected that the provider served its 30-second preview
+	// instead of the track and deleted it. Measured 2026-10-16: 23 tracks,
+	// each tried three times on tidal, each time the same 30 s preview -
+	// the provider has no full-length rights to that track, which no
+	// retry changes. The other services still get their one attempt.
+	`|detected preview/sample download`,
 )
+
+// noRetryPattern matches failures that are about the service right now, not
+// about the release, and that a retry three seconds later cannot fix: a
+// community-verification challenge nobody is there to answer. The breaker
+// still sees them (they are the service's state), and the other services
+// still get their attempt; what stops is waiting out the same challenge
+// three times in a row on the one service that asked for it (measured
+// 2026-10-16: "verification timed out" three times per job, each attempt
+// holding the single download slot for the whole verification wait).
+var noRetryPattern = regexp.MustCompile(`(?i)community verification failed|verification timed out|"type":"verification_required"`)
 
 // classifyFailure sorts one attempt's final error into a failureClass, and
 // for a cooldown reports how long upstream asked us to stay away.
@@ -157,7 +176,7 @@ func (h *Handler) observe(errMsg string, attempted bool, out *jobOutcome, servic
 // by asking again three seconds later.
 func (h *Handler) shouldRetry(errMsg string) bool {
 	class, _ := h.classifyFailure(errMsg)
-	return class == failureRetryable
+	return class == failureRetryable && !noRetryPattern.MatchString(errMsg)
 }
 
 // recordServiceFailure feeds the circuit breaker for a real service-side
