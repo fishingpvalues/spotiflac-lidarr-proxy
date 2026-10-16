@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.10](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.9...v0.0.10) (2026-10-16)
+
+
+### Features
+
+* drop live/radio-show/video releases, stricter failure handling ([#19](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/issues/19)) ([62c44b7](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/62c44b7196efb3bb011a4c01695da91292ac776a))
+
 ## [0.0.9](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.8...v0.0.9) (2026-10-04)
 
 
