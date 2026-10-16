@@ -69,6 +69,20 @@ type Config struct {
 	// has a green Test out of the box; the binary's own default stays empty.
 	RSSQuery string `mapstructure:"rss_query"`
 
+	// ExcludePattern is a regular expression matched against release (album)
+	// titles. A search result whose title matches where the requested album
+	// does not is dropped, so "Born to Run" no longer returns "Born to Run
+	// (Live)". Defaults to indexer.DefaultExcludePattern (live recordings,
+	// radio shows, DJ mixes, video/lyric-video uploads, karaoke, sped-up
+	// edits, spoken word). "-" disables the filter.
+	ExcludePattern string `mapstructure:"exclude_pattern"`
+
+	// ExcludeQueries answers a search whose requested album itself matches
+	// ExcludePattern with no results, instead of searching. Default true:
+	// those are the releases every provider fails on, and an empty answer
+	// keeps Lidarr from grabbing them over and over.
+	ExcludeQueries bool `mapstructure:"exclude_queries"`
+
 	// VerifyRelayURL, if set, must be this proxy's own externally reachable
 	// /verify/callback URL (e.g. https://spotiflac.example.com/verify/callback).
 	// Passed to spotiflac-cli so it can relay Tidal/Qobuz/Amazon's one-time
@@ -124,6 +138,7 @@ func Load() (*Config, error) {
 	for _, key := range []string{
 		"api_key", "port", "output_dir", "spotiflac_cli_path",
 		"default_service", "default_quality", "max_concurrent", "rss_query",
+		"exclude_pattern", "exclude_queries",
 		"job_timeout", "python_budget", "skip_python_when_session_present",
 		"db_path", "log_level", "fallback_services",
 		"history_retention_count", "verify_relay_url",
@@ -204,6 +219,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("log_level", "info")
 	v.SetDefault("metrics_require_auth", true)
 	v.SetDefault("history_retention_count", 500)
+	v.SetDefault("exclude_queries", true)
 	v.SetDefault("verify_notify_title", "SpotiFLAC verification needed")
 	// Public hifi-api Tidal mirrors, probed in order at download time; dead
 	// ones are skipped (see probeAPI + probeHiFiTrack).

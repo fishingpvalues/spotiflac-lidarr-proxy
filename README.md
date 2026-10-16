@@ -291,10 +291,33 @@ Full table in [`docs/API.md`](docs/API.md).
 | `SPF_MAX_CONCURRENT` | `3` | Concurrent downloads |
 | `SPF_JOB_TIMEOUT` | `30m` | Ceiling per ATTEMPT; the whole job's budget is 2x this. Size it from the largest release you expect (`size / worst_sustained_rate`): a retry deletes the job directory first, so an attempt that times out throws its partial download away and starts from zero, and a release that cannot finish inside one attempt fails with "job wall-clock budget exhausted" however many times it is retried |
 | `SPF_RSS_QUERY` | none (compose: `new music friday`) | Search answering the browse feed; makes Lidarr's indexer Test pass |
+| `SPF_EXCLUDE_PATTERN` | built-in (see below) | Regex over release titles; results whose title matches where the requested album does not are dropped. `-` disables |
+| `SPF_EXCLUDE_QUERIES` | `true` | A search whose requested album itself matches `SPF_EXCLUDE_PATTERN` answers no results instead of searching |
 | `SPF_TIDAL_API_URL` | none | Your own Tidal API instance |
 | `SPOTIFLAC_REGISTRIES` | none | SpotiFLAC extension registry URL; backend 1 has no extensions without it |
 | `SPF_LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, `error` |
 | `SPF_METRICS_REQUIRE_AUTH` | `true` | Require the API key on `/metrics` |
+
+### Live albums, radio shows and video edits
+
+Lidarr's metadata lists far more than studio releases: live recordings,
+radio shows ("Hardwell On Air - Best Of May"), DJ mixes, YouTube-style
+"(Official Video)" and "TV version" uploads, karaoke and sped-up edits.
+The download providers carry the studio catalogue, so those grabs fail on
+every service, and Lidarr retries them on every search cycle. On one
+instance they were most of the failed-download history.
+
+The indexer therefore filters by release type. A search for "Born to Run"
+no longer returns "Born to Run (Live)", and a search whose album is itself
+a live album, radio show or video edit is answered with no results
+(`SPF_EXCLUDE_QUERIES=false` searches it anyway, still dropping the other
+variants). The built-in pattern matches title shapes, never a bare word, so
+"Live Forever" stays searchable. Set `SPF_EXCLUDE_PATTERN` to your own
+regular expression, or `-` to turn the filter off.
+
+The cleaner fix is upstream of the proxy: a Lidarr metadata profile that
+does not allow the Live, Broadcast, DJ-mix and Compilation types keeps
+those albums off the wanted list in the first place.
 
 ### Exposure
 

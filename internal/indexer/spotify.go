@@ -65,7 +65,7 @@ func filterResults(results []spotiflac.MetadataResult, artist, album string) []s
 		if r.Album == "" {
 			return false
 		}
-		if wantArtist != "" && !strings.Contains(normalizeForMatch(r.Artist), wantArtist) {
+		if wantArtist != "" && !creditsArtist(r.Artist, wantArtist) {
 			return false
 		}
 		if wantAlbum != "" && !strings.Contains(normalizeForMatch(r.Album), wantAlbum) {
@@ -92,6 +92,25 @@ func filterResults(results []spotiflac.MetadataResult, artist, album string) []s
 		filtered = append(filtered, r)
 	}
 	return filtered
+}
+
+// creditsArtist reports whether one of a result's comma-separated artist
+// credits IS the wanted artist (both already normalized for want).
+//
+// A substring test was too loose: "Michael Jackson Karaoke's Band" contains
+// "Michael Jackson", and Lidarr grabbed that band's "Hold My Hand Karaoke"
+// for Michael Jackson's "Hold My Hand" (2026-10-16). Spotify lists every
+// credit, comma-separated, so one of them has to match in full.
+func creditsArtist(credits, want string) bool {
+	if normalizeForMatch(credits) == want {
+		return true
+	}
+	for _, c := range strings.Split(credits, ",") {
+		if normalizeForMatch(c) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // releaseKey identifies the release a hit belongs to. Spotify credits a track to

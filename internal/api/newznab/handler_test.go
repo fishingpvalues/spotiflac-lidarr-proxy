@@ -387,3 +387,33 @@ func TestMusicHonoursOffsetAndLimit(t *testing.T) {
 		assert.Equal(t, tc.want, strings.Count(string(body), "<item>"), tc.query)
 	}
 }
+
+// A search for a variant album (live, radio show, video edit) is answered
+// with an empty feed and never reaches the backend. The CLI here does not
+// exist, so any search that DID run would come back as an error document.
+func TestMusicSkipsExcludedReleaseTypes(t *testing.T) {
+	client := spotiflac.NewClient("/nonexistent/spotiflac-cli", 5*time.Second, "tidal", "lossless", "", "", "", nil, noPython, nil)
+	handler := newznab.NewHandler(client, "test", "test-key", "lossless")
+	f, err := indexer.NewExcludeFilter(indexer.DefaultExcludePattern, true)
+	require.NoError(t, err)
+	handler.SetExcludeFilter(f)
+	app := fiber.New()
+	handler.RegisterRoutes(app)
+
+	req, _ := http.NewRequest("GET", "/api/newznab?t=music&artist=Hardwell&album=Hardwell+On+Air+-+Best+Of+May&apikey=test-key", nil)
+	resp, err := app.Test(req, noTimeout)
+	require.NoError(t, err)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Contains(t, string(body), "<rss", "skipped search must answer an (empty) feed")
+	assert.NotContains(t, string(body), "<error", "the backend must not have been called")
+	assert.NotContains(t, string(body), "<item>")
+
+	// The same handler still searches a studio album (and fails on the
+	// missing CLI, which proves the search really ran).
+	req, _ = http.NewRequest("GET", "/api/newznab?t=music&artist=Hardwell&album=Rebels+Never+Die&apikey=test-key", nil)
+	resp, err = app.Test(req, noTimeout)
+	require.NoError(t, err)
+	body, _ = io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "<error")
+}

@@ -2,6 +2,7 @@ package sabnzbd
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -172,10 +173,32 @@ func noPythonHandlerWithQueue(t *testing.T) *Handler {
 	q, err := queue.New(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { q.Close() })
-	out := t.TempDir()
+	out := outputDir(t)
 	h.cfg.OutputDir = out
 	h.cfg.JobTimeout = 30 * time.Minute
 	h.queue = q
 	h.storage = storage.New(out)
 	return h
+}
+
+// outputDir is a scratch directory for job output that, unlike t.TempDir,
+// tolerates a worker goroutine still writing into it when the test ends.
+// Handlers dispatch downloads asynchronously (a retry or requeue re-runs
+// processDownload), and t.TempDir's cleanup then failed the test with
+// "unlinkat ...: directory not empty" in roughly one full-suite run in two.
+func outputDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "spf-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 20; i++ {
+			if os.RemoveAll(dir) == nil {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
+	return dir
 }

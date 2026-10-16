@@ -18,6 +18,7 @@ type Handler struct {
 	apiKey         string
 	defaultQuality string
 	rssQuery       string
+	exclude        *indexer.ExcludeFilter
 }
 
 func NewHandler(client *spotiflac.Client, version, apiKey, defaultQuality string) *Handler {
@@ -36,6 +37,32 @@ func NewHandler(client *spotiflac.Client, version, apiKey, defaultQuality string
 // Lidarr's Test button report a failure; see config.Config.RSSQuery.
 func (h *Handler) SetRSSQuery(q string) {
 	h.rssQuery = q
+}
+
+// SetExcludeFilter installs the variant filter (live albums, radio shows,
+// video edits, ...). nil disables it. See indexer.DefaultExcludePattern.
+func (h *Handler) SetExcludeFilter(f *indexer.ExcludeFilter) {
+	h.exclude = f
+}
+
+// search runs one indexer search through the exclude filter: a request for a
+// variant album is answered empty when the filter says so, and variant
+// results the request did not ask for are dropped.
+func (h *Handler) search(c fiber.Ctx, query, artist, album string) ([]spotiflac.MetadataResult, error) {
+	if skip, marker := h.exclude.SkipQuery(query, album); skip {
+		h.log.Info().Str("query", query).Str("artist", artist).Str("album", album).
+			Str("marker", marker).Msg("search skipped: excluded release type")
+		return nil, nil
+	}
+	results, err := indexer.Search(c.Context(), h.client, query, artist, album)
+	if err != nil {
+		return results, err
+	}
+	kept, dropped := h.exclude.Apply(results, query, album)
+	if dropped > 0 {
+		h.log.Debug().Str("query", query).Int("dropped", dropped).Msg("excluded variant releases from results")
+	}
+	return kept, nil
 }
 
 func (h *Handler) SetLogger(log zerolog.Logger) {
@@ -87,7 +114,7 @@ func (h *Handler) handleSearch(c fiber.Ctx) error {
 	// Support maxage parameter
 	// maxage := c.Query("maxage", "0")
 
-	results, err := indexer.Search(c.Context(), h.client, query, artist, album)
+	results, err := h.search(c, query, artist, album)
 	if err != nil {
 		// Log the backend's own reason, not just "exit status 1": the
 		// intermittent search failures in production were undiagnosable
@@ -118,7 +145,7 @@ func (h *Handler) handleMusic(c fiber.Ctx) error {
 		query = h.rssQuery
 	}
 
-	results, err := indexer.Search(c.Context(), h.client, query, artist, album)
+	results, err := h.search(c, query, artist, album)
 	if err != nil {
 		h.log.Error().Err(err).Str("detail", spotiflac.ErrorDetail(err)).Msg("newznab music search failed")
 		return h.handleError(c, "search failed: "+err.Error())

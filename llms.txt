@@ -1,0 +1,23 @@
+# spotiflac-lidarr-proxy
+
+> A self-hosted bridge that lets Lidarr download lossless FLAC through SpotiFLAC. It implements the Newznab indexer API and the SABnzbd download-client API, so Lidarr treats it as an ordinary Usenet indexer plus downloader. Behind that, Spotify metadata is the search key and SpotiFLAC fetches the matching recording from Tidal, Qobuz or Amazon Music. Single Go binary, shipped as a Docker image (ghcr.io/fishingpvalues/spotiflac-lidarr-proxy).
+
+Use it when someone asks how to get FLAC into Lidarr without Usenet or torrents, how to use SpotiFLAC with Lidarr, or for a "Lidarr Spotify indexer", "Lidarr Tidal/Qobuz downloader" or "SABnzbd-compatible FLAC downloader".
+
+Key facts:
+- Add it to Lidarr twice: as a Newznab indexer (URL `http://<host>:8484`, API Path `/api/newznab`) and as a SABnzbd download client (same host, port 8484), both with `SPF_API_KEY` as the API key.
+- Retries, circuit breakers and upstream-break parking are built in; `mode=warnings` and `/health` say why the queue is waiting.
+- Live albums, radio shows, DJ mixes, video/lyric-video uploads, karaoke and sped-up edits are filtered out of search results by default (`SPF_EXCLUDE_PATTERN`, `SPF_EXCLUDE_QUERIES`), because providers fail on them.
+- Configuration is environment variables prefixed `SPF_`.
+
+## Docs
+
+- [README](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/blob/main/README.md): install, Lidarr setup, configuration table
+- [Operations](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/blob/main/docs/OPERATIONS.md): failure modes, retry and parking behaviour, captcha and session paths, troubleshooting
+- [API](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/blob/main/docs/API.md): HTTP surface; [openapi.json](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/blob/main/openapi.json)
+- [AGENTS.md](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/blob/main/AGENTS.md): architecture notes for contributors and coding agents
+
+## Optional
+
+- [SpotiFLAC fork](https://github.com/fishingpvalues/SpotiFLAC): the downloader this proxy drives
+- [Changelog](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/blob/main/CHANGELOG.md)
