@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/api/verify"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/config"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/health"
+	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/indexer"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/metrics"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/queue"
 	"github.com/fishingpvalues/spotiflac-lidarr-proxy/internal/spotiflac"
@@ -86,6 +88,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	log := zerolog.New(os.Stderr).With().Timestamp().Logger()
 	log = log.Level(resolveLogLevel(cfg.LogLevel, verbose))
 
+	ensureWritableHome(cfg.DBPath, log)
+
 	q, err := queue.New(cfg.DBPath)
 	if err != nil {
 		return fmt.Errorf("init queue: %w", err)
@@ -110,6 +114,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	client.SetSkipPythonWhenSessionPresent(cfg.SkipPythonWhenSessionPresent)
 	client.SetRelayPort(cfg.Port)
 
+	if _, err := excludeFilterFor(cfg); err != nil {
+		return fmt.Errorf("SPF_EXCLUDE_PATTERN: %w", err)
+	}
+
 	app := buildApp(cfg, q, client, st, log, version)
 
 	log.Info().Int("port", cfg.Port).Str("version", version).Msg("starting server")
@@ -130,6 +138,52 @@ func runServe(cmd *cobra.Command, args []string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return app.ShutdownWithContext(shutdownCtx)
+}
+
+// ensureWritableHome points $HOME somewhere this process can write when the
+// image's own home is not writable.
+//
+// The backends keep state under $HOME (~/.spotiflac extensions and session,
+// ~/.cache isrc cache, Chromium's profile). The image creates
+// /home/spotiflac for uid 1000, so a container started with any other
+// user (`user: 1001:1001`, a Kubernetes runAsUser) got "Permission denied"
+// on every one of those paths and every download failed with "No extensions
+// found" (issue #17). The data directory is the one place the operator has
+// already made writable for that user, so $HOME moves under it.
+func ensureWritableHome(dbPath string, log zerolog.Logger) {
+	home := os.Getenv("HOME")
+	if home != "" && dirWritable(home) {
+		return
+	}
+	fallback := filepath.Join(filepath.Dir(dbPath), "home")
+	if err := os.MkdirAll(fallback, 0o700); err != nil || !dirWritable(fallback) {
+		fallback = filepath.Join(os.TempDir(), "spotiflac-home")
+		_ = os.MkdirAll(fallback, 0o700)
+	}
+	log.Warn().Str("home", home).Str("using", fallback).Int("uid", os.Getuid()).
+		Msg("HOME is not writable for this user; backend state goes to the data directory instead")
+	_ = os.Setenv("HOME", fallback)
+}
+
+func dirWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".write-test-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
+}
+
+// excludeFilterFor builds the indexer's variant filter from the config. An
+// unset pattern means the built-in default; "-" disables the filter.
+func excludeFilterFor(cfg *config.Config) (*indexer.ExcludeFilter, error) {
+	pattern := cfg.ExcludePattern
+	if pattern == "" {
+		pattern = indexer.DefaultExcludePattern
+	}
+	return indexer.NewExcludeFilter(pattern, cfg.ExcludeQueries)
 }
 
 // buildApp wires every route and its auth middleware and returns the app
@@ -249,6 +303,9 @@ func buildApp(
 
 	nznbHandler := newznab.NewHandler(client, version, cfg.APIKey, cfg.DefaultQuality)
 	nznbHandler.SetRSSQuery(cfg.RSSQuery)
+	// runServe has already rejected a pattern that does not compile.
+	excludeFilter, _ := excludeFilterFor(cfg)
+	nznbHandler.SetExcludeFilter(excludeFilter)
 	nznbHandler.SetLogger(log)
 
 	app.Use(api.RequestLogger(log))

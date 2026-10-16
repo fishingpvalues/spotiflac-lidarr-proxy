@@ -30,7 +30,21 @@ func TestFilterResultsMatchesArtistCaseInsensitively(t *testing.T) {
 
 	got := filterResults(results, "DAFT PUNK", "")
 
-	assert.Len(t, got, 3, "\"Not Daft Punk\" contains the query as a substring, matching current contains-based filtering")
+	assert.Len(t, got, 2, "case folds, but \"Not Daft Punk\" is another artist, not a credit of Daft Punk")
+}
+
+func TestFilterResultsRequiresAWholeCredit(t *testing.T) {
+	results := []spotiflac.MetadataResult{
+		{Artist: "Michael Jackson Karaoke's Band", Album: "Hold My Hand Karaoke"},
+		{Artist: "Michael Jackson, Akon", Album: "Hold My Hand"},
+		{Artist: "Simon & Garfunkel", Album: "Bookends"},
+	}
+	got := filterResults(results, "Michael Jackson", "")
+	assert.Len(t, got, 1)
+	assert.Equal(t, "Hold My Hand", got[0].Album)
+
+	got = filterResults(results, "Simon & Garfunkel", "")
+	assert.Len(t, got, 1, "a duo name with '&' is one credit, not two")
 }
 
 func TestFilterResultsAppliesAlbumFilterToo(t *testing.T) {
