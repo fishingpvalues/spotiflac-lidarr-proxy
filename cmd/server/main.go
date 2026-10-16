@@ -157,8 +157,14 @@ func ensureWritableHome(dbPath string, log zerolog.Logger) {
 	}
 	fallback := filepath.Join(filepath.Dir(dbPath), "home")
 	if err := os.MkdirAll(fallback, 0o700); err != nil || !dirWritable(fallback) {
-		fallback = filepath.Join(os.TempDir(), "spotiflac-home")
-		_ = os.MkdirAll(fallback, 0o700)
+		// A random name, never a fixed /tmp path another user could have
+		// created (or symlinked) first.
+		tmp, terr := os.MkdirTemp("", "spotiflac-home-*")
+		if terr != nil {
+			log.Error().Err(terr).Msg("no writable directory for $HOME; downloads will fail")
+			return
+		}
+		fallback = tmp
 	}
 	log.Warn().Str("home", home).Str("using", fallback).Int("uid", os.Getuid()).
 		Msg("HOME is not writable for this user; backend state goes to the data directory instead")
