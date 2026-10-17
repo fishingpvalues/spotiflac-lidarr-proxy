@@ -76,3 +76,40 @@ func TestFallbackServicesDefaultEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, cfg.FallbackServices)
 }
+
+// Issue #18: a path-only relay produced a challenge cb=/api/verify-relay
+// and a verification error page instead of a callback to this proxy.
+func TestVerifyRelayURLValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		url   string
+		valid bool
+	}{
+		{"unset", "", true},
+		{"manual", "http://10.0.0.224:8484/verify/callback", true},
+		{"api relay", "https://proxy.example/api/verify-relay", true},
+		{"path only", "/api/verify-relay", false},
+		{"no scheme", "proxy.example:8484/verify/callback", false},
+		{"scheme relative", "//proxy.example/verify/callback", false},
+		{"missing host", "http:///verify/callback", false},
+		{"wrong scheme", "ftp://proxy.example/verify/callback", false},
+		{"credentials", "https://user:secret@proxy.example/verify/callback", false},
+		{"fragment", "https://proxy.example/verify/callback#fragment", false},
+		{"malformed", "http://[invalid", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SPF_API_KEY", "test")
+			t.Setenv("SPF_OUTPUT_DIR", t.TempDir())
+			t.Setenv("SPF_DB_PATH", filepath.Join(t.TempDir(), "q.db"))
+			t.Setenv("SPF_VERIFY_RELAY_URL", tc.url)
+			cfg, err := config.Load()
+			if tc.valid {
+				require.NoError(t, err)
+				assert.Equal(t, tc.url, cfg.VerifyRelayURL)
+			} else {
+				require.ErrorContains(t, err, "SPF_VERIFY_RELAY_URL must be an absolute http(s) callback URL")
+				assert.NotContains(t, err.Error(), "secret")
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,13 +84,12 @@ type Config struct {
 	// keeps Lidarr from grabbing them over and over.
 	ExcludeQueries bool `mapstructure:"exclude_queries"`
 
-	// VerifyRelayURL, if set, must be this proxy's own externally reachable
-	// /verify/callback URL (e.g. https://spotiflac.example.com/verify/callback).
-	// Passed to spotiflac-cli so it can relay Tidal/Qobuz/Amazon's one-time
-	// community-verification challenge to a real person's real browser
-	// instead of failing outright on a headless host with no browser of its
-	// own. Optional: without it, that challenge simply can't complete
-	// headlessly, same as before this existed.
+	// VerifyRelayURL is an absolute http(s) URL for this proxy's own
+	// /verify/callback or /api/verify-relay endpoint, reachable by the
+	// browser completing verification. This only provides the callback
+	// transport: the upstream verification service may reject non-loopback
+	// callbacks. For a solver sharing the proxy's network namespace, leave
+	// this unset so the CLI keeps its original loopback callback.
 	VerifyRelayURL string `mapstructure:"verify_relay_url"`
 
 	// TidalAPIURL / QobuzAPIURL point spotiflac-cli at a custom, self-hosted
@@ -189,6 +189,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("SPF_API_KEY is required")
 	}
 
+	if err := validateVerifyRelayURL(cfg.VerifyRelayURL); err != nil {
+		return nil, err
+	}
+
 	if err := os.MkdirAll(cfg.OutputDir, 0755); err != nil {
 		return nil, fmt.Errorf("create output dir %s: %w", cfg.OutputDir, err)
 	}
@@ -199,6 +203,19 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// A relative callback is resolved against the remote verification site, not
+// this proxy. Reject it at startup instead of letting every job time out.
+func validateVerifyRelayURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+		return fmt.Errorf("SPF_VERIFY_RELAY_URL must be an absolute http(s) callback URL without credentials or a fragment (for example http://your-proxy:8484/verify/callback); a path such as /api/verify-relay is not sufficient")
+	}
+	return nil
 }
 
 func setDefaults(v *viper.Viper) {

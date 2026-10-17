@@ -750,10 +750,9 @@ func (c *Client) runCLIBackend(ctx context.Context, events chan<- ProgressEvent,
 	sink := newErrSink(errs)
 	var outputBuf, stderrBuf bytes.Buffer
 	onVerify := func(ev ProgressEvent) {
-		// FSL auto-solving: when Byparr/FlareSolverr is configured and a
-		// verification_required event arrives, send the challenge URL to
-		// Byparr's headless browser for Turnstile solving.
-		if c.fslURL != "" && ev.URL != "" {
+		// Record the callback before publishing the event, including when
+		// a person opens the link without an automatic solver configured.
+		if ev.URL != "" {
 			c.solveVerification(ev.URL)
 		}
 	}
@@ -1121,7 +1120,8 @@ func parseYear(raw json.RawMessage) int {
 	return year
 }
 
-// solveVerification sends a community verification challenge URL to Byparr/FlareSolverr.
+// solveVerification records a community verification callback and optionally
+// sends the challenge URL to Byparr/FlareSolverr.
 // SpotiFLAC's relay mechanism embeds upstream_cb inside the cb= query parameter:
 //
 //	challenge URL:  https://verify.xx/challenge?cb=<relay-cb-url-with-upstream_cb>&id=...
@@ -1159,6 +1159,12 @@ func (c *Client) solveVerification(challengeURL string) {
 				c.verificationStates.Store(verifyState, upstreamCB)
 			}
 		}
+	}
+
+	// Manual browser callbacks need the same recorded target as automatic
+	// callbacks. Only the browser request itself depends on FSL being set.
+	if c.fslURL == "" {
+		return
 	}
 
 	// Send to Byparr/FlareSolverr asynchronously — the browser
