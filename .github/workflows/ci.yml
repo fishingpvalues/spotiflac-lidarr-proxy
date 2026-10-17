@@ -122,3 +122,17 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  # Branch protection requires this stable name; matrix display names change
+  # with each supported Lidarr version. Fail if any matrix entry fails or
+  # is canceled/skipped, rather than leaving the required check missing.
+  integration-result:
+    name: integration
+    needs: integration
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every supported Lidarr version to pass
+        env:
+          MATRIX_RESULT: ${{ needs.integration.result }}
+        run: test "$MATRIX_RESULT" = success
