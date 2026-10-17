@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.11](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.10...v0.0.11) (2026-10-17)
+
+
+### Bug Fixes
+
+* **verification:** validate relay URLs and register manual callbacks ([#21](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/issues/21)) ([4728673](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/commit/47286738f6457b263d36cb6fcb807ab69ceca36a))
+
 ## [0.0.10](https://github.com/fishingpvalues/spotiflac-lidarr-proxy/compare/v0.0.9...v0.0.10) (2026-10-16)
 
 
